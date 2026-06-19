@@ -1,8 +1,4 @@
 //! Default microphone capture with simple volume activity logging.
-//!
-//! `start_default_mic_capture` builds the input stream, plays it, and returns
-//! it. The caller holds the returned `Stream` to keep capture alive; dropping
-//! it stops the stream.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -11,13 +7,14 @@ use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
-/// Minimum average absolute amplitude that triggers a volume log line.
+use super::volume::{calculate_average_volume, is_above_threshold};
+
 const VOLUME_THRESHOLD: f32 = 0.01;
-/// Minimum spacing between consecutive volume log lines from the audio callback.
 const LOG_COOLDOWN: Duration = Duration::from_millis(100);
 
-/// Starts capturing audio from the default microphone and returns the active
-/// `Stream`. Drop the returned `Stream` to stop capture.
+/// Starts capturing audio from the default microphone and returns the
+/// un-played `Stream`. Callers must `.play()?` the stream and hold it in
+/// scope to keep capture alive; dropping it stops the stream.
 pub fn start_default_mic_capture() -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
@@ -44,9 +41,9 @@ where
     T: Sample + SizedSample,
     f32: FromSample<T>,
 {
-    // `Instant::now()` is not a const fn, so this can't live in a module-level
-    // `const`. Set the timestamp to (now - cooldown) so the first event above
-    // the threshold is logged immediately.
+    // `Instant::now()` is not a const fn, so this can't live in a module-
+    // level `const`. Set the timestamp to (now - cooldown) so the first
+    // event above the threshold fires immediately.
     let last_log: Mutex<Instant> = Mutex::new(Instant::now() - LOG_COOLDOWN);
 
     let err_fn = |err| eprintln!("mic stream error: {}", err);
@@ -54,8 +51,16 @@ where
     let stream = device.build_input_stream(
         *config,
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
-            let avg = average_amplitude(data);
-            if avg < VOLUME_THRESHOLD {
+            // Convert to f32 once so the testable volume helpers can
+            // operate on a uniform slice. Buffer size is bounded by the
+            // device's max-buffer-size config (≤ a few k samples), and
+            // any allocation cost is acceptable for this CLI demo.
+            // TODO(realtime): in production, switch to a lock-free
+            // channel and a printer thread before this scales.
+            let converted: Vec<f32> =
+                data.iter().map(|&s| f32::from_sample(s)).collect();
+            let avg = calculate_average_volume(&converted);
+            if !is_above_threshold(avg, VOLUME_THRESHOLD) {
                 return;
             }
             if let Ok(mut last) = last_log.lock() {
@@ -70,21 +75,4 @@ where
     )?;
 
     Ok(stream)
-}
-
-/// Average absolute amplitude across all samples in the buffer.
-/// Returns 0.0 for an empty buffer.
-fn average_amplitude<T>(data: &[T]) -> f32
-where
-    T: Sample + SizedSample,
-    f32: FromSample<T>,
-{
-    if data.is_empty() {
-        return 0.0;
-    }
-    let mut sum = 0.0f32;
-    for &sample in data {
-        sum += f32::from_sample(sample).abs();
-    }
-    sum / data.len() as f32
 }
