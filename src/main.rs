@@ -9,6 +9,7 @@
 //!   cargo run -- chunk-test  -> 10 s of mic capture, 1 s chunks, no WAV file
 //!   cargo run -- mock-transcribe -> 10 s of mic, mock transcript vs silence per chunk
 //!   cargo run -- save-chunks-test -> 10 s of mic, save each 1 s chunk as output/chunks/chunk_NNN.wav
+//!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -19,7 +20,7 @@ mod audio;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cpal::traits::StreamTrait;
 
 fn main() -> Result<()> {
@@ -32,9 +33,10 @@ fn main() -> Result<()> {
         Some("chunk-test") => run_chunk_test(),
         Some("mock-transcribe") => run_mock_transcribe(),
         Some("save-chunks-test") => run_save_chunks_test(),
+        Some("mock-transcribe-file") => run_mock_transcribe_file(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
-            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test]");
+            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path>]");
             std::process::exit(2);
         }
     }
@@ -82,4 +84,11 @@ fn run_mock_transcribe() -> Result<()> {
 
 fn run_save_chunks_test() -> Result<()> {
     audio::chunk_recorder::run_save_chunks_test(10, 1000, "output/chunks")
+}
+
+fn run_mock_transcribe_file() -> Result<()> {
+    let path = std::env::args().nth(2).ok_or_else(|| {
+        anyhow!("mock-transcribe-file requires a path argument.\nUsage: cargo run -- mock-transcribe-file <path-to-wav>")
+    })?;
+    transcription::file_pipeline::run_mock_transcribe_file(&path)
 }
