@@ -1,49 +1,79 @@
-//! Pure chunk classifier that mimics the future transcription-stage
-//! decision: "did this chunk contain speech, or is it silence?".
+//! `MockTranscriber` — pure per-chunk classifier implementing [`Transcriber`].
+//!
+//! Returns `Some(TranscriptionResult)` with placeholder text whenever
+//! the chunk's average volume exceeds the configured threshold, or
+//! `None` when it's at-or-below threshold so the pipeline prints a
+//! silence line instead.
 
 use crate::audio::volume::calculate_average_volume;
+use crate::transcription::transcriber::{Transcriber, TranscriptionResult};
 
-/// Decide whether `samples` should be sent to the (yet-to-exist)
-/// real transcription API. Returns `Some(transcript_line)` when the
-/// chunk is loud enough, `None` when it's silence.
-///
-/// The contract is intentionally strict (`<= threshold` → silence):
-/// equal-to-threshold chunks are skipped, just above the threshold
-/// is enough to pass. Future tuning happens here, without touching
-/// the capture loop.
-pub fn mock_transcribe_chunk(
-    chunk_index: usize,
-    samples: &[f32],
-    volume_threshold: f32,
-) -> Option<String> {
-    let avg = calculate_average_volume(samples);
-    if avg <= volume_threshold {
-        return None;
+/// Mock implementation of [`Transcriber`] that emits a placeholder
+/// transcript whenever the chunk's average volume exceeds
+/// `volume_threshold`. Pure, synchronous, object-safe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MockTranscriber {
+    pub volume_threshold: f32,
+}
+
+impl MockTranscriber {
+    /// Construct a `MockTranscriber` with the given speech threshold
+    /// (same scale as [`calculate_average_volume`]).
+    pub fn new(volume_threshold: f32) -> Self {
+        Self { volume_threshold }
     }
-    Some(format!(
-        "[chunk {chunk_index}] mock transcript: speech detected, sending to transcription later..."
-    ))
+}
+
+impl Transcriber for MockTranscriber {
+    fn transcribe_chunk(
+        &self,
+        chunk_index: usize,
+        samples: &[f32],
+    ) -> Option<TranscriptionResult> {
+        let average_volume = calculate_average_volume(samples);
+        if average_volume <= self.volume_threshold {
+            return None;
+        }
+        Some(TranscriptionResult {
+            chunk_index,
+            text: format!(
+                "mock transcript for chunk {chunk_index}: speech detected"
+            ),
+            average_volume,
+            is_final: true,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn linspace(start: f32, end: f32, n: usize) -> Vec<f32> {
-        (0..n).map(|i| start + (end - start) * (i as f32) / (n as f32)).collect()
+    /// Loose-equality helper for floating-point assertions. f32 sums
+    /// drift — callers pick an epsilon sized to the operation's
+    /// expected magnitude.
+    fn assert_approx_eq(actual: f32, expected: f32, epsilon: f32) {
+        assert!(
+            (actual - expected).abs() <= epsilon,
+            "actual: {actual}, expected: {expected}",
+        );
+    }
+
+    fn transcriber() -> MockTranscriber {
+        MockTranscriber::new(0.01)
     }
 
     // ---- silence / edge cases ------------------------------------------
 
     #[test]
     fn silent_chunk_returns_none() {
-        let r = mock_transcribe_chunk(1, &vec![0.0_f32; 1000], 0.01);
+        let r = transcriber().transcribe_chunk(1, &vec![0.0_f32; 1000]);
         assert!(r.is_none());
     }
 
     #[test]
     fn empty_chunk_returns_none() {
-        let r = mock_transcribe_chunk(2, &[], 0.01);
+        let r = transcriber().transcribe_chunk(2, &[]);
         assert!(r.is_none());
     }
 
@@ -51,7 +81,7 @@ mod tests {
     fn low_volume_chunk_returns_none() {
         // avg = 0.005 < 0.01 (threshold)
         let samples = vec![0.005_f32; 1000];
-        let r = mock_transcribe_chunk(3, &samples, 0.01);
+        let r = transcriber().transcribe_chunk(3, &samples);
         assert!(r.is_none());
     }
 
@@ -59,10 +89,10 @@ mod tests {
     fn volume_equal_to_threshold_returns_none() {
         // Single-sample: avg round-trip is exact (no f32 sum drift), so
         // avg == threshold == 0.01 and the boundary must be silence.
-        // The multi-sample equivalent (vec![0.01; 1000]) accumulates
+        // The multi-sample equivalent (`vec![0.01; 1000]`) accumulates
         // rounding on each `sum +=` and lands slightly above 0.01, which
         // is why we don't use it here.
-        let r = mock_transcribe_chunk(4, &[0.01_f32], 0.01);
+        let r = transcriber().transcribe_chunk(4, &[0.01_f32]);
         assert!(r.is_none(), "equal-to-threshold must be silence");
     }
 
@@ -72,34 +102,53 @@ mod tests {
     fn voice_like_chunk_above_threshold_returns_some() {
         // avg = 0.05 > 0.01
         let samples = vec![0.05_f32; 1000];
-        let r = mock_transcribe_chunk(5, &samples, 0.01);
+        let r = transcriber().transcribe_chunk(5, &samples);
         assert!(r.is_some());
     }
 
     #[test]
-    fn returned_text_includes_chunk_index() {
+    fn result_includes_correct_chunk_index() {
         let samples = vec![0.05_f32; 1000];
-        let r = mock_transcribe_chunk(7, &samples, 0.01).unwrap();
-        assert!(r.contains("chunk 7"), "expected 'chunk 7' in: {r}");
+        let r = transcriber().transcribe_chunk(7, &samples).unwrap();
+        assert_eq!(r.chunk_index, 7);
     }
 
     #[test]
-    fn returned_text_includes_speech_detected_phrase() {
+    fn result_text_includes_speech_detected() {
         let samples = vec![0.05_f32; 1000];
-        let r = mock_transcribe_chunk(8, &samples, 0.01).unwrap();
+        let r = transcriber().transcribe_chunk(8, &samples).unwrap();
         assert!(
-            r.to_lowercase().contains("speech detected"),
-            "expected 'speech detected' in: {r}"
+            r.text.to_lowercase().contains("speech detected"),
+            "expected 'speech detected' in: {}",
+            r.text,
         );
     }
 
-    // ---- extra coverage ------------------------------------------------
+    #[test]
+    fn result_average_volume_greater_than_threshold() {
+        let t = transcriber();
+        let samples = vec![0.05_f32; 1000];
+        let r = t.transcribe_chunk(9, &samples).unwrap();
+        assert!(
+            r.average_volume > t.volume_threshold,
+            "expected avg {} > threshold {}",
+            r.average_volume,
+            t.volume_threshold,
+        );
+    }
 
     #[test]
-    fn ramped_signal_above_threshold_returns_some() {
-        // avg ~= 0.025 > 0.01
-        let samples = linspace(0.0, 0.05, 1000);
-        let r = mock_transcribe_chunk(9, &samples, 0.01);
-        assert!(r.is_some());
+    fn result_is_final_is_true() {
+        let samples = vec![0.05_f32; 1000];
+        let r = transcriber().transcribe_chunk(10, &samples).unwrap();
+        assert!(r.is_final, "expected is_final = true for mock");
+    }
+
+    // ---- struct construction -------------------------------------------
+
+    #[test]
+    fn mock_transcriber_new_stores_threshold() {
+        let t = MockTranscriber::new(0.42);
+        assert_approx_eq(t.volume_threshold, 0.42, f32::EPSILON);
     }
 }

@@ -1,13 +1,14 @@
-//! CPAL-driven mock pipeline.
+//! CPAL-driven transcription pipeline.
 //!
 //! Captures ~`seconds` from the default mic, splits the buffer into
 //! `chunk_duration_ms` chunks via the shared `audio::chunker` helpers,
-//! and routes each chunk through `mock_transcribe_chunk` to decide
-//! whether to print a fake transcript line or a silence skip line.
+//! and routes each chunk through a [`Transcriber`] impl to decide
+//! whether to print a transcript line or a silence skip line.
 //!
-//! The mock data path is the scaffolding for tomorrow's real
-//! transcription API: only `mock_transcribe_chunk` changes when we
-//! wire in the real model.
+//! Today the pipeline uses `MockTranscriber`; once a real API impl
+//! lands behind a feature flag, only this file changes — the trait,
+//! the pure logic, and the chunking layer stay untouched. CPAL stays
+//! here; the `Transcriber` trait itself never imports CPAL.
 
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -21,15 +22,16 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use crate::audio::chunker::{
     calculate_chunk_size_samples, drain_chunk, has_complete_chunk,
 };
-use crate::transcription::mock::mock_transcribe_chunk;
+use crate::transcription::mock::MockTranscriber;
+use crate::transcription::transcriber::Transcriber;
 
 /// Volume threshold for "speech vs. silence" decisions. Matches the
 /// value used by the live volume log in `audio::mic`.
 const VOLUME_THRESHOLD: f32 = 0.01;
 
-/// Run the mock transcription pipeline for `seconds` of mic capture,
-/// routing each completed 1-second-equivalent chunk through
-/// `mock_transcribe_chunk`.
+/// Run the (today MockTranscriber-based) transcription pipeline for
+/// `seconds` of mic capture, routing each completed
+/// `chunk_duration_ms`-equivalent chunk through the trait.
 pub fn run_mock_transcription_test(seconds: u64, chunk_duration_ms: u64) -> Result<()> {
     let host = cpal::default_host();
     let device = host
@@ -55,6 +57,8 @@ pub fn run_mock_transcription_test(seconds: u64, chunk_duration_ms: u64) -> Resu
          ({chunk_size} samples per chunk, {sample_rate} Hz, {channels} ch, \
          threshold {VOLUME_THRESHOLD})"
     );
+
+    let transcriber = MockTranscriber::new(VOLUME_THRESHOLD);
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = match sample_format {
@@ -92,10 +96,13 @@ pub fn run_mock_transcription_test(seconds: u64, chunk_duration_ms: u64) -> Resu
             let Some(chunk) = drained else { break };
 
             chunk_index += 1;
-            match mock_transcribe_chunk(chunk_index, &chunk, VOLUME_THRESHOLD) {
-                Some(transcript) => {
+            match transcriber.transcribe_chunk(chunk_index, &chunk) {
+                Some(result) => {
                     speech_chunks += 1;
-                    println!("{transcript}");
+                    println!(
+                        "[chunk {}] {} | volume: {:.4}",
+                        result.chunk_index, result.text, result.average_volume,
+                    );
                 }
                 None => {
                     silence_chunks += 1;
