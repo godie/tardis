@@ -25,12 +25,14 @@ pub fn is_above_threshold(volume: f32, threshold: f32) -> bool {
 /// Convert an i16 PCM sample to a f32 in approximately `[-1.0, 1.0]`.
 /// Silence is `0.0`; full-scale positive is near `1.0`; full-scale negative
 /// is `-1.0`. Divisor is `32768` so the range is symmetric.
+#[allow(dead_code)] // used by tests + reserved for future callers
 pub fn normalize_sample_i16(sample: i16) -> f32 {
     sample as f32 / 32768.0
 }
 
 /// Convert a u16 PCM sample to a f32 centered around `0.0`.
 /// The midpoint `32768` maps to `~0.0`; full-scale clips to roughly `±1.0`.
+#[allow(dead_code)] // used by tests + reserved for future callers
 pub fn normalize_sample_u16(sample: u16) -> f32 {
     (sample as f32 - 32768.0) / 32768.0
 }

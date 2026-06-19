@@ -5,6 +5,7 @@
 //!   cargo run -- devices   -> print host + input/output devices and exit
 //!   cargo run -- mic       -> capture from default mic until Ctrl+C
 //!   cargo run -- mic-5s    -> capture from default mic for 5 seconds and exit
+//!   cargo run -- record-5s -> record 5 s of mic audio to output/mic_test.wav
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -22,9 +23,10 @@ fn main() -> Result<()> {
         None | Some("devices") => run_devices(),
         Some("mic") => run_mic_continuous(),
         Some("mic-5s") => run_mic_for(Duration::from_secs(5)),
+        Some("record-5s") => run_record_5s(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
-            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s]");
+            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s]");
             std::process::exit(2);
         }
     }
@@ -56,4 +58,8 @@ fn run_mic_for(duration: Duration) -> Result<()> {
     }
     println!("Capture finished.");
     Ok(())
+}
+
+fn run_record_5s() -> Result<()> {
+    audio::recorder::record_default_mic_to_wav_for_seconds(5, "output/mic_test.wav")
 }
