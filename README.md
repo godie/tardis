@@ -1,4 +1,5 @@
-# tardis
+# TARDIS
+> Transcription And Real-time Dual-input Interpretation System
 
 Real-time audio capture + chunking CLI foundation, written in Rust. Captures audio from the default microphone, splits it into chunks, and either prints per-chunk statistics or feeds each chunk through a mock transcript classifier.
 
@@ -79,6 +80,10 @@ cargo test
 | `hound`  | `3.5`    | 16-bit PCM WAV writer.                                     |
 
 > **CPAL 0.18 note:** `cpal::StreamConfig::sample_rate` is a bare `u32` (not a tuple struct), `Device` no longer exposes `.name()` (use `format!("{device}")` / `Display`), and `Sample`/`FromSample` come from `dasp_sample`. A full list of traps is in `AGENTS.md`.
+
+## Roadmap
+
+TARDIS is structured around five axes — **T**ranscription · **A**nd · **R**eal-time · **D**ual-input · **I**nterpretation · **S**ystem. Each axis is a separable workstream with its own pure helpers, unit tests, and manual CLI mode. See [`ROADMAP.md`](./ROADMAP.md) for the long-form status per axis and the next concrete improvement.
 
 ## License
 
