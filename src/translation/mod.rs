@@ -10,6 +10,6 @@
 //! Both the `Transcriber` and `Translator` traits stay audio-agnostic;
 //! only `pipeline` imports CPAL.
 
-pub mod translator;
 pub mod mock;
 pub mod pipeline;
+pub mod translator;

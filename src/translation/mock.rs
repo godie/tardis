@@ -5,7 +5,7 @@
 //! input has visible content, or `None` when the input is empty or
 //! whitespace-only so the pipeline can short-circuit it.
 
-use crate::translation::translator::{Translator, TranslationResult};
+use crate::translation::translator::{TranslationResult, Translator};
 
 /// Mock implementation of [`Translator`] that emits a placeholder
 /// translation whenever the input text is non-empty after trimming.
@@ -32,9 +32,7 @@ impl Translator for MockTranslator {
         }
         Some(TranslationResult {
             source_text: text.to_string(),
-            translated_text: format!(
-                "[mock {target_language}] mock translation: \"{text}\""
-            ),
+            translated_text: format!("[mock {target_language}] mock translation: \"{text}\""),
             source_language: source_language.to_string(),
             target_language: target_language.to_string(),
             is_final: true,

@@ -15,19 +15,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
-use crate::audio::chunker::{
-    calculate_chunk_size_samples, drain_chunk, has_complete_chunk,
-};
+use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
+use crate::config::DEFAULT_VOLUME_THRESHOLD;
 use crate::transcription::mock::MockTranscriber;
 use crate::transcription::transcriber::Transcriber;
-
-/// Volume threshold for "speech vs. silence" decisions. Matches the
-/// value used by the live volume log in `audio::mic`.
-const VOLUME_THRESHOLD: f32 = 0.01;
 
 /// Run the (today MockTranscriber-based) transcription pipeline for
 /// `seconds` of mic capture, routing each completed
@@ -55,10 +50,10 @@ pub fn run_mock_transcription_test(seconds: u64, chunk_duration_ms: u64) -> Resu
     println!(
         "Mock pipeline: chunking every {chunk_duration_ms} ms \
          ({chunk_size} samples per chunk, {sample_rate} Hz, {channels} ch, \
-         threshold {VOLUME_THRESHOLD})"
+         threshold {DEFAULT_VOLUME_THRESHOLD})"
     );
 
-    let transcriber = MockTranscriber::new(VOLUME_THRESHOLD);
+    let transcriber = MockTranscriber::new(DEFAULT_VOLUME_THRESHOLD);
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = match sample_format {

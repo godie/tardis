@@ -11,16 +11,13 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use hound::{SampleFormat as HoundSampleFormat, WavReader};
 
 use crate::audio::volume::calculate_average_volume;
+use crate::config::DEFAULT_VOLUME_THRESHOLD;
 use crate::transcription::mock::MockTranscriber;
 use crate::transcription::transcriber::Transcriber;
-
-/// Volume threshold for "speech vs. silence" — matches the live mock
-/// pipeline (`transcription::pipeline::VOLUME_THRESHOLD`).
-const VOLUME_THRESHOLD: f32 = 0.01;
 
 // ---- pure helpers ----------------------------------------------------------
 
@@ -42,12 +39,12 @@ pub fn i16_samples_to_f32(samples: &[i16]) -> Vec<f32> {
 // ---- WAV-driven driver -----------------------------------------------------
 
 /// Read `file_path`, classify it via [`MockTranscriber`] at threshold
-/// [`VOLUME_THRESHOLD`], and print a per-file summary. Currently
+/// [`DEFAULT_VOLUME_THRESHOLD`], and print a per-file summary. Currently
 /// supports 16-bit Int WAV only (the format `chunk_recorder` writes).
 pub fn run_mock_transcribe_file(file_path: &str) -> Result<()> {
     let path = Path::new(file_path);
-    let mut reader = WavReader::open(path)
-        .with_context(|| format!("open WAV file {}", path.display()))?;
+    let mut reader =
+        WavReader::open(path).with_context(|| format!("open WAV file {}", path.display()))?;
     let spec = reader.spec();
 
     if spec.bits_per_sample != 16 || spec.sample_format != HoundSampleFormat::Int {
@@ -66,7 +63,7 @@ pub fn run_mock_transcribe_file(file_path: &str) -> Result<()> {
 
     let samples_f32 = i16_samples_to_f32(&i16_samples);
     let avg_volume = calculate_average_volume(&samples_f32);
-    let transcriber = MockTranscriber::new(VOLUME_THRESHOLD);
+    let transcriber = MockTranscriber::new(DEFAULT_VOLUME_THRESHOLD);
     let chunk_index: usize = 1; // a file is one "chunk".
 
     println!("File: {}", path.display());

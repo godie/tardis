@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
@@ -116,8 +116,8 @@ pub fn run_chunk_test(seconds: u64, chunk_duration_ms: u64) -> Result<()> {
 
             chunk_index += 1;
             let samples = chunk.len();
-            let approx_duration_ms = (samples as u128 * 1000)
-                / ((sample_rate as u128) * (channels as u128));
+            let approx_duration_ms =
+                (samples as u128 * 1000) / ((sample_rate as u128) * (channels as u128));
             let avg = calculate_average_volume(&chunk);
             println!(
                 "[chunk #{chunk_index:>3}] samples={samples:>6} ~{approx_duration_ms:>5} ms vol={avg:.3}"

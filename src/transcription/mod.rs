@@ -8,6 +8,6 @@
 //! re-running the microphone capture.
 
 pub mod file_pipeline;
-pub mod transcriber;
 pub mod mock;
 pub mod pipeline;
+pub mod transcriber;

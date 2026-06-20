@@ -18,21 +18,16 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
-use crate::audio::chunker::{
-    calculate_chunk_size_samples, drain_chunk, has_complete_chunk,
-};
+use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
+use crate::config::DEFAULT_VOLUME_THRESHOLD;
 use crate::transcription::mock::MockTranscriber;
 use crate::transcription::transcriber::Transcriber;
 use crate::translation::mock::MockTranslator;
 use crate::translation::translator::Translator;
-
-/// Volume threshold for "speech vs. silence" — matches
-/// `transcription::pipeline::VOLUME_THRESHOLD` and `transcription::mock`.
-const VOLUME_THRESHOLD: f32 = 0.01;
 
 /// Run the (today MockTranscriber + MockTranslator) translation
 /// pipeline for `seconds` of mic capture, splitting on
@@ -69,10 +64,10 @@ pub fn run_mock_translate_test(
     println!(
         "Mock translate: chunking every {chunk_duration_ms} ms \
          ({chunk_size} samples per chunk, {sample_rate} Hz, {channels} ch, \
-         threshold {VOLUME_THRESHOLD}, {source_language} -> {target_language})"
+         threshold {DEFAULT_VOLUME_THRESHOLD}, {source_language} -> {target_language})"
     );
 
-    let transcriber = MockTranscriber::new(VOLUME_THRESHOLD);
+    let transcriber = MockTranscriber::new(DEFAULT_VOLUME_THRESHOLD);
     let translator = MockTranslator::new();
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));

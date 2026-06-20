@@ -39,9 +39,5 @@ pub struct TranscriptionResult {
 /// skip it", which the pipeline uses to print a silence line instead
 /// of a transcript one.
 pub trait Transcriber {
-    fn transcribe_chunk(
-        &self,
-        chunk_index: usize,
-        samples: &[f32],
-    ) -> Option<TranscriptionResult>;
+    fn transcribe_chunk(&self, chunk_index: usize, samples: &[f32]) -> Option<TranscriptionResult>;
 }

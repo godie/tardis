@@ -18,11 +18,12 @@ mod transcription;
 mod translation;
 
 mod audio;
+mod config;
 
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::StreamTrait;
 
 fn main() -> Result<()> {
@@ -30,7 +31,7 @@ fn main() -> Result<()> {
     match arg.as_deref() {
         None | Some("devices") => run_devices(),
         Some("mic") => run_mic_continuous(),
-        Some("mic-5s") => run_mic_for(Duration::from_secs(5)),
+        Some("mic-5s") => run_mic_for(Duration::from_secs(config::DEFAULT_SHORT_CAPTURE_SECONDS)),
         Some("record-5s") => run_record_5s(),
         Some("chunk-test") => run_chunk_test(),
         Some("mock-transcribe") => run_mock_transcribe(),
@@ -39,7 +40,9 @@ fn main() -> Result<()> {
         Some("mock-translate") => run_mock_translate(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
-            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate]");
+            eprintln!(
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate]"
+            );
             std::process::exit(2);
         }
     }
@@ -74,19 +77,32 @@ fn run_mic_for(duration: Duration) -> Result<()> {
 }
 
 fn run_record_5s() -> Result<()> {
-    audio::recorder::record_default_mic_to_wav_for_seconds(5, "output/mic_test.wav")
+    audio::recorder::record_default_mic_to_wav_for_seconds(
+        config::DEFAULT_SHORT_CAPTURE_SECONDS,
+        config::DEFAULT_MIC_RECORDING_PATH,
+    )
 }
 
 fn run_chunk_test() -> Result<()> {
-    audio::chunker::run_chunk_test(10, 1000)
+    audio::chunker::run_chunk_test(
+        config::DEFAULT_PIPELINE_TEST_SECONDS,
+        config::DEFAULT_CHUNK_DURATION_MS,
+    )
 }
 
 fn run_mock_transcribe() -> Result<()> {
-    transcription::pipeline::run_mock_transcription_test(10, 1000)
+    transcription::pipeline::run_mock_transcription_test(
+        config::DEFAULT_PIPELINE_TEST_SECONDS,
+        config::DEFAULT_CHUNK_DURATION_MS,
+    )
 }
 
 fn run_save_chunks_test() -> Result<()> {
-    audio::chunk_recorder::run_save_chunks_test(10, 1000, "output/chunks")
+    audio::chunk_recorder::run_save_chunks_test(
+        config::DEFAULT_PIPELINE_TEST_SECONDS,
+        config::DEFAULT_CHUNK_DURATION_MS,
+        config::DEFAULT_CHUNKS_DIR,
+    )
 }
 
 fn run_mock_transcribe_file() -> Result<()> {
@@ -97,5 +113,10 @@ fn run_mock_transcribe_file() -> Result<()> {
 }
 
 fn run_mock_translate() -> Result<()> {
-    translation::pipeline::run_mock_translate_test(10, 1000, "en", "es")
+    translation::pipeline::run_mock_translate_test(
+        config::DEFAULT_PIPELINE_TEST_SECONDS,
+        config::DEFAULT_CHUNK_DURATION_MS,
+        config::DEFAULT_SOURCE_LANGUAGE,
+        config::DEFAULT_TARGET_LANGUAGE,
+    )
 }
