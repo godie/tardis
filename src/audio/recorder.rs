@@ -11,10 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec};
+
+use crate::config::WAV_BITS_PER_SAMPLE;
 
 /// Records `seconds` of audio from the default microphone and writes a
 /// 16-bit PCM WAV file to `output_path`. Creates any missing parent
@@ -65,7 +67,7 @@ pub fn record_default_mic_to_wav_for_seconds(seconds: u64, output_path: &str) ->
     let spec = WavSpec {
         channels: config.channels,
         sample_rate: config.sample_rate,
-        bits_per_sample: 16,
+        bits_per_sample: WAV_BITS_PER_SAMPLE,
         sample_format: HoundSampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(output_path, spec)

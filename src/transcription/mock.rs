@@ -25,20 +25,14 @@ impl MockTranscriber {
 }
 
 impl Transcriber for MockTranscriber {
-    fn transcribe_chunk(
-        &self,
-        chunk_index: usize,
-        samples: &[f32],
-    ) -> Option<TranscriptionResult> {
+    fn transcribe_chunk(&self, chunk_index: usize, samples: &[f32]) -> Option<TranscriptionResult> {
         let average_volume = calculate_average_volume(samples);
         if average_volume <= self.volume_threshold {
             return None;
         }
         Some(TranscriptionResult {
             chunk_index,
-            text: format!(
-                "mock transcript for chunk {chunk_index}: speech detected"
-            ),
+            text: format!("mock transcript for chunk {chunk_index}: speech detected"),
             average_volume,
             is_final: true,
         })
@@ -60,7 +54,7 @@ mod tests {
     }
 
     fn transcriber() -> MockTranscriber {
-        MockTranscriber::new(0.01)
+        MockTranscriber::new(crate::config::DEFAULT_VOLUME_THRESHOLD)
     }
 
     // ---- silence / edge cases ------------------------------------------

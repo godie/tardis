@@ -17,15 +17,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 
-use crate::audio::chunker::{
-    calculate_chunk_size_samples, drain_chunk, has_complete_chunk,
-};
+use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
 use crate::audio::volume::calculate_average_volume;
+use crate::config::WAV_BITS_PER_SAMPLE;
 
 // ---- pure helpers ----------------------------------------------------------
 
@@ -65,13 +64,8 @@ pub fn f32_samples_to_i16(samples: &[f32]) -> Vec<i16> {
 /// completed chunk of size `chunk_duration_ms` into `output_dir`.
 /// Mirrors channels + sample rate from the device's default input
 /// config into each WAV header.
-pub fn run_save_chunks_test(
-    seconds: u64,
-    chunk_duration_ms: u64,
-    output_dir: &str,
-) -> Result<()> {
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("create output dir {output_dir}"))?;
+pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &str) -> Result<()> {
+    fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
 
     let host = cpal::default_host();
     let device = host
@@ -146,9 +140,7 @@ pub fn run_save_chunks_test(
     }
 
     drop(stream);
-    println!(
-        "Chunk recorder finished. {chunk_index} chunks written to {output_dir}/"
-    );
+    println!("Chunk recorder finished. {chunk_index} chunks written to {output_dir}/");
     Ok(())
 }
 
@@ -188,11 +180,11 @@ fn write_chunk_wav(
     let spec = WavSpec {
         channels: channels as u16,
         sample_rate,
-        bits_per_sample: 16,
+        bits_per_sample: WAV_BITS_PER_SAMPLE,
         sample_format: HoundSampleFormat::Int,
     };
-    let mut writer = WavWriter::create(path, spec)
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut writer =
+        WavWriter::create(path, spec).with_context(|| format!("create {}", path.display()))?;
 
     let i16_samples = f32_samples_to_i16(samples_f32);
     for s in i16_samples {

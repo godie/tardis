@@ -3,13 +3,13 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
 use super::volume::{calculate_average_volume, is_above_threshold};
+use crate::config::DEFAULT_VOLUME_THRESHOLD;
 
-const VOLUME_THRESHOLD: f32 = 0.01;
 const LOG_COOLDOWN: Duration = Duration::from_millis(100);
 
 /// Starts capturing audio from the default microphone and returns the
@@ -57,10 +57,9 @@ where
             // any allocation cost is acceptable for this CLI demo.
             // TODO(realtime): in production, switch to a lock-free
             // channel and a printer thread before this scales.
-            let converted: Vec<f32> =
-                data.iter().map(|&s| f32::from_sample(s)).collect();
+            let converted: Vec<f32> = data.iter().map(|&s| f32::from_sample(s)).collect();
             let avg = calculate_average_volume(&converted);
-            if !is_above_threshold(avg, VOLUME_THRESHOLD) {
+            if !is_above_threshold(avg, DEFAULT_VOLUME_THRESHOLD) {
                 return;
             }
             if let Ok(mut last) = last_log.lock() {
