@@ -5,6 +5,7 @@
 //! `None` when it's at-or-below threshold so the pipeline prints a
 //! silence line instead.
 
+use crate::audio::activity::{AudioActivity, classify_audio_activity};
 use crate::audio::volume::calculate_average_volume;
 use crate::transcription::transcriber::{Transcriber, TranscriptionResult};
 
@@ -27,15 +28,15 @@ impl MockTranscriber {
 impl Transcriber for MockTranscriber {
     fn transcribe_chunk(&self, chunk_index: usize, samples: &[f32]) -> Option<TranscriptionResult> {
         let average_volume = calculate_average_volume(samples);
-        if average_volume <= self.volume_threshold {
-            return None;
+        match classify_audio_activity(average_volume, self.volume_threshold) {
+            AudioActivity::Silence => None,
+            AudioActivity::SpeechLike => Some(TranscriptionResult {
+                chunk_index,
+                text: format!("mock transcript for chunk {chunk_index}: speech detected"),
+                average_volume,
+                is_final: true,
+            }),
         }
-        Some(TranscriptionResult {
-            chunk_index,
-            text: format!("mock transcript for chunk {chunk_index}: speech detected"),
-            average_volume,
-            is_final: true,
-        })
     }
 }
 
