@@ -10,10 +10,12 @@
 //!   cargo run -- mock-transcribe -> 10 s of mic, mock transcript vs silence per chunk
 //!   cargo run -- save-chunks-test -> 10 s of mic, save each 1 s chunk as output/chunks/chunk_NNN.wav
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
+//!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
 mod transcription;
+mod translation;
 
 mod audio;
 
@@ -34,9 +36,10 @@ fn main() -> Result<()> {
         Some("mock-transcribe") => run_mock_transcribe(),
         Some("save-chunks-test") => run_save_chunks_test(),
         Some("mock-transcribe-file") => run_mock_transcribe_file(),
+        Some("mock-translate") => run_mock_translate(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
-            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path>]");
+            eprintln!("Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate]");
             std::process::exit(2);
         }
     }
@@ -91,4 +94,8 @@ fn run_mock_transcribe_file() -> Result<()> {
         anyhow!("mock-transcribe-file requires a path argument.\nUsage: cargo run -- mock-transcribe-file <path-to-wav>")
     })?;
     transcription::file_pipeline::run_mock_transcribe_file(&path)
+}
+
+fn run_mock_translate() -> Result<()> {
+    translation::pipeline::run_mock_translate_test(10, 1000, "en", "es")
 }
