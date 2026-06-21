@@ -1,0 +1,60 @@
+# Local faster-whisper HTTP transcription server (OpenAI-compatible API).
+#
+# Image: fedirz/faster-whisper-server
+#   • Wraps faster-whisper (CTranslate2 under the hood, CPU-friendly).
+#   • Exposes OpenAI-compatible POST /v1/audio/transcriptions on port 8000.
+#   • Tag :latest-cpu -> CPU-only build, no NVIDIA driver needed (slower than GPU).
+#   • Tag :latest      -> CUDA GPU build. Swap image to enable GPU; requires
+#                         the NVIDIA Container Toolkit on the host.
+#
+# Usage:
+#   docker compose -f docker/faster-whisper/docker-compose.yml up
+#   docker compose -f docker/faster-whisper/docker-compose.yml down
+#
+# Test it manually with curl:
+#   curl http://localhost:8000/v1/audio/transcriptions \
+#        -F file=@output/chunks/chunk_001.wav \
+#        -F model=base -F language=en | jq -r .text
+#
+# The host volume ./hf_cache persists the downloaded model between runs so
+# the first cold start pays the download cost only once.
+
+services:
+  faster-whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: tardis-faster-whisper
+    ports:
+      # Bind only to the loopback interface so audio never leaks off-host.
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Default faster-whisper model loaded on container start.
+      # Smaller -> faster download + faster inference, larger -> better accuracy.
+      # Valid IDs: tiny | base | small | medium | large-v2 | large-v3
+      WHISPER_MODEL: base
+      # CPU thread budget; -1 lets faster-whisper auto-pick (usually nproc).
+      WHISPER_CPU_THREADS: "-1"
+    volumes:
+      # Hugging Face model cache is mapped to ./hf_cache on the host so
+      # subsequent container starts skip the multi-hundred-MB download.
+      - ./hf_cache:/root/.cache/huggingface
+
+    # ---------- GPU support (optional, off by default) -----------------
+    # To enable NVIDIA GPU acceleration:
+    #   1. Install the NVIDIA Container Toolkit on the host.
+    #   2. Change `image` above to `fedirz/faster-whisper-server:latest`.
+    #   3. Uncomment the deploy.resources block below.
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # ------------------------------------------------------------------
+
+    restart: unless-stopped
+
+    # Optional: cap memory if you don't want a single container dominating
+    # the host. The `base` model needs ~1 GB resident; `large-v3` ~6 GB.
+    # mem_limit: 4g

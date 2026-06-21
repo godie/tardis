@@ -53,3 +53,18 @@ pub const DEFAULT_TARGET_LANGUAGE: &str = "es";
 /// Bits per sample used by every 16-bit Int PCM WAV writer in this
 /// crate (both `audio::recorder` and `audio::chunk_recorder`).
 pub const WAV_BITS_PER_SAMPLE: u16 = 16;
+
+/// Base URL of the local faster-whisper Docker server. Matches
+/// `docker/faster-whisper/docker-compose.yml`'s `127.0.0.1:8000:8000`
+/// port binding — audio never leaves the loopback interface.
+pub const LOCAL_WHISPER_BASE_URL: &str = "http://localhost:8000";
+
+/// Default faster-whisper model id passed as the multipart `model`
+/// field to the local server. Must match the value the Docker
+/// container is configured to load (see `WHISPER_MODEL` in
+/// `docker/faster-whisper/docker-compose.yml`).
+pub const LOCAL_WHISPER_MODEL: &str = "base";
+
+/// Default language code passed as the multipart `language` field
+/// to the local faster-whisper container.
+pub const LOCAL_WHISPER_LANGUAGE: &str = "en";

@@ -1,3 +1,8 @@
 /target
 /output
 codedb.snapshot
+
+# Cached Hugging Face model weights downloaded by the local
+# faster-whisper Docker container. Mounted from ./docker/faster-whisper/hf_cache
+# in docker-compose.yml; can grow to several gigabytes, never committed.
+/docker/faster-whisper/hf_cache
