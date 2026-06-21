@@ -11,6 +11,7 @@
 //!   cargo run -- save-chunks-test -> 10 s of mic, save each 1 s chunk as output/chunks/chunk_NNN.wav
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
+//!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -38,10 +39,11 @@ fn main() -> Result<()> {
         Some("save-chunks-test") => run_save_chunks_test(),
         Some("mock-transcribe-file") => run_mock_transcribe_file(),
         Some("mock-translate") => run_mock_translate(),
+        Some("local-transcribe-file") => run_local_transcribe_file(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path>]"
             );
             std::process::exit(2);
         }
@@ -119,4 +121,72 @@ fn run_mock_translate() -> Result<()> {
         config::DEFAULT_SOURCE_LANGUAGE,
         config::DEFAULT_TARGET_LANGUAGE,
     )
+}
+
+/// Send a WAV file on disk to a
+/// [`transcription::LocalTranscriptionProvider`] selected by the
+/// `--provider` flag and print the plaintext transcript.
+///
+/// Default provider is `"local-whisper"` (the self-hosted
+/// faster-whisper Docker HTTP server). Pass `--provider mock-local`
+/// to use the deterministic offline stub instead — no Docker
+/// required, echoes `"mock transcript for <basename>"` for whatever
+/// path is given. Connection-level errors from the Docker provider
+/// still carry an explicit "is the Docker container running?"
+/// remediation hint.
+///
+/// Usage:
+///   cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>
+fn run_local_transcribe_file() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    let mut provider_name = "local-whisper".to_string();
+    let mut path: Option<String> = None;
+
+    // [0] = binary path, [1] = "local-transcribe-file" — start at [2].
+    let mut i = 2;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--provider" {
+            i += 1;
+            if i >= args.len() {
+                return Err(anyhow!(
+                    "--provider requires a value (e.g. --provider mock-local)\nUsage: cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>"
+                ));
+            }
+            provider_name = args[i].clone();
+        } else if let Some(value) = arg.strip_prefix("--provider=") {
+            provider_name = value.to_string();
+        } else {
+            // Positional argument: must be the path. Reject extras
+            // rather than silently dropping them so the user can fix
+            // the order on their side.
+            if path.is_some() {
+                return Err(anyhow!(
+                    "unexpected extra positional argument: {arg}\nUsage: cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>"
+                ));
+            }
+            path = Some(arg.clone());
+        }
+        i += 1;
+    }
+
+    let path = path.ok_or_else(|| {
+        anyhow!("Usage: cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>")
+    })?;
+
+    let provider = transcription::build_provider(&provider_name)?;
+
+    println!("file:     {}", path);
+    println!("provider: {}", provider.name());
+    println!("transcribing...\n");
+
+    match provider.transcribe(&path) {
+        Ok(text) => {
+            println!("transcript:");
+            println!("{}", text);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
