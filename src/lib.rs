@@ -12,6 +12,7 @@
 //! [`transcription::build_provider`] and the
 //! [`config::LOCAL_WHISPER_*`] constants directly.
 
+pub mod app;
 pub mod audio;
 pub mod config;
 pub mod transcription;
