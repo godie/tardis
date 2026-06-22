@@ -53,6 +53,8 @@ mirror one of these rows.
 | `transcription::mock` (`MockTranscriber`) | `tests` in `src/transcription/mock.rs` | `cargo run -- mock-transcribe`, `mock-transcribe-file output/chunks/chunk_001.wav`, `mock-translate` |
 | `transcription::file_pipeline` (i16->f32 conversion + WAV-driven mock run) | `tests` in `src/transcription/file_pipeline.rs` | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` |
 | `transcription::pipeline::run_mock_transcription_test` | n/a (CPAL driver) | `cargo run -- mock-transcribe` |
+| `transcription::live_local` (live chunk filename + should_transcribe + status message helpers) | `tests` in `src/transcription/live_local.rs` | `cargo run -- live-local-transcribe [--provider <name>]` |
+| `transcription::live_local::run_live_local_transcription_test` | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]` |
 | `transcription::transcriber` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-transcribe`, `mock-transcribe-file`, `mock-translate` |
 | `translation::mock` (`MockTranslator`) | `tests` in `src/translation/mock.rs` | `cargo run -- mock-translate` |
 | `translation::pipeline::run_mock_translate_test` | n/a (CPAL driver) | `cargo run -- mock-translate` |

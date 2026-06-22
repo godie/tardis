@@ -19,6 +19,7 @@
 //! so CLI and downstream callers stay interchangeable.
 
 pub mod file_pipeline;
+pub mod live_local;
 pub mod local_whisper;
 pub mod mock;
 pub mod mock_local;
