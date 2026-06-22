@@ -45,10 +45,18 @@ mirror one of these rows.
 | --- | --- | --- |
 | `audio::devices::print_device_info` | n/a (pure printing) | `cargo run -- devices` |
 | `audio::volume` (avg / threshold / i16 / u16) | `tests` in `src/audio/volume.rs` | `cargo run -- mic`, `mic-5s` |
+| `audio::activity` (silence vs speech-like classification) | `tests` in `src/audio/activity.rs` | `cargo run -- mic`, `mock-transcribe`, `mock-translate`, `mock-transcribe-file output/chunks/chunk_001.wav` |
 | `audio::chunker` (chunk-size + drain helpers) | `tests` in `src/audio/chunker.rs` | `cargo run -- chunk-test` |
+| `audio::chunk_recorder` (chunk filename + f32->i16 WAV helpers) | `tests` in `src/audio/chunk_recorder.rs` | `cargo run -- save-chunks-test` |
 | `audio::recorder::record_default_mic_to_wav_for_seconds` | n/a (hound + filesystem glue) | `cargo run -- record-5s` |
-| `transcription::mock::mock_transcribe_chunk` | `tests` in `src/transcription/mock.rs` | `cargo run -- mock-transcribe` |
+| `config` constants | n/a (value-only constants) | consumed by `mic-5s`, `record-5s`, `chunk-test`, `mock-transcribe`, `save-chunks-test`, `mock-transcribe-file`, `mock-translate` |
+| `transcription::mock` (`MockTranscriber`) | `tests` in `src/transcription/mock.rs` | `cargo run -- mock-transcribe`, `mock-transcribe-file output/chunks/chunk_001.wav`, `mock-translate` |
+| `transcription::file_pipeline` (i16->f32 conversion + WAV-driven mock run) | `tests` in `src/transcription/file_pipeline.rs` | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` |
 | `transcription::pipeline::run_mock_transcription_test` | n/a (CPAL driver) | `cargo run -- mock-transcribe` |
+| `transcription::transcriber` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-transcribe`, `mock-transcribe-file`, `mock-translate` |
+| `translation::mock` (`MockTranslator`) | `tests` in `src/translation/mock.rs` | `cargo run -- mock-translate` |
+| `translation::pipeline::run_mock_translate_test` | n/a (CPAL driver) | `cargo run -- mock-translate` |
+| `translation::translator` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-translate` |
 
 ## How to add a new feature
 
@@ -69,8 +77,8 @@ mirror one of these rows.
 
 The capture-loop body (open host, pick device, build F32/I16/U16 stream,
 tick-drain-drop) is currently duplicated across `audio/chunker.rs`,
-`audio/recorder.rs`, and `transcription/pipeline.rs`. The third duplication
-is the trigger to promote it to a shared helper with its own pure-logic
-tests and a single canonical manual-command runner. Until then, keep the
-duplication honest by updating all three sites whenever a new manual
-command lands.
+`audio/chunk_recorder.rs`, `audio/recorder.rs`, `transcription/pipeline.rs`,
+and `translation/pipeline.rs`. Keep that duplication honest by updating all
+affected sites whenever a new manual command or shared audio-callback rule
+lands. If the loop changes again, prefer extracting a shared helper rather
+than letting the copies drift.

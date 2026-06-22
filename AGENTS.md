@@ -9,7 +9,7 @@ commit style, working conventions, things NOT to do.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # 33 unit tests
+cargo test                                           # 70 unit tests
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -17,6 +17,10 @@ cargo run -- mic-5s                                  # capture 5 s, exit
 cargo run -- record-5s                               # write 5 s WAV to output/mic_test.wav
 cargo run -- chunk-test                              # 10 s of capture, 1 s chunks
 cargo run -- mock-transcribe                         # 10 s, mock transcript per chunk
+cargo run -- save-chunks-test                        # 10 s, save 1 s chunks to output/chunks/
+cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
+                                                     # run mock transcription over a saved WAV
+cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
 ```
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
@@ -28,17 +32,27 @@ permission, and disk I/O. Unit tests never touch these. Always run
 ```
 src/
   main.rs                  # CLI dispatcher (matches on args.nth(1))
+  config.rs                # centralized CLI/audio/pipeline constants
   audio/
-    mod.rs                 # re-exports: devices, mic, recorder, chunker, volume
+    mod.rs                 # re-exports: activity, chunk_recorder, chunker, devices, mic, recorder, volume
+    activity.rs            # pure silence/speech-like classifier, 8 tests
+    chunk_recorder.rs      # CPAL + hound chunk saver + pure WAV helpers, 10 tests
+    chunker.rs             # pure chunk-size/drain helpers + CPAL capture loop, 11 tests
     devices.rs             # print_device_info (pure print, no tests)
     mic.rs                 # CPAL driver (no tests)
-    volume.rs              # 14 tests
     recorder.rs            # CPAL + hound driver (no tests)
-    chunker.rs             # 11 tests + CPAL capture loop (no tests)
+    volume.rs              # pure volume helpers, 14 tests
   transcription/
-    mod.rs                 # re-exports: mock, pipeline
-    mock.rs                # 8 tests
-    pipeline.rs            # CPAL driver (no tests)
+    mod.rs                 # re-exports: file_pipeline, mock, pipeline, transcriber
+    file_pipeline.rs       # WAV reader + pure i16->f32 helpers, 7 tests
+    mock.rs                # mock transcriber logic, 10 tests
+    pipeline.rs            # live CPAL transcription pipeline (no tests)
+    transcriber.rs         # transcription trait + result types
+  translation/
+    mod.rs                 # re-exports: mock, pipeline, translator
+    mock.rs                # mock translator logic, 10 tests
+    pipeline.rs            # live CPAL translation pipeline (no tests)
+    translator.rs          # translation trait + result types
 ```
 
 When you add a module, mirror an existing one above:
@@ -49,6 +63,12 @@ When you add a module, mirror an existing one above:
 
 When you change file structure, update `DEVELOPMENT_RULES.md`'s
 existing-coverage table in the same commit.
+
+Real transcription backends must land behind the existing
+`transcription::transcriber::Transcriber` abstraction so the audio
+capture and file-pipeline surfaces stay unchanged. `faster-whisper`,
+`whisper.cpp`, and local OpenAI Whisper are reasonable future provider
+options, but do not implement them unless the user explicitly asks.
 
 ## CPAL 0.18 gotchas (verified during prior turns)
 
