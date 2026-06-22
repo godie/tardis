@@ -24,3 +24,4 @@ pub mod events;
 pub mod live_events;
 pub mod service;
 pub mod state;
+pub mod ui_events;

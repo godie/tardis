@@ -21,6 +21,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -75,31 +76,37 @@ pub fn live_transcription_status_message(chunk_index: usize, status: &str) -> St
 
 // ===== CPAL-driven runner ================================================
 
-/// Run a live chunk-by-chunk local transcription test.
+/// Run live chunk-by-chunk local transcription, routing each
+/// [`AppEvent`] through an external callback.
 ///
-/// Opens the default microphone, captures for `seconds`, splits the
-/// input into `chunk_duration_ms`-millisecond chunks, and routes each
-/// speech-like chunk through the selected
-/// [`crate::transcription::LocalTranscriptionProvider`].
+/// This is the shared engine behind both the CLI
+/// (`run_live_local_transcription_test`) and the Tauri shell
+/// (which passes an `AppHandle`-emitting callback).
 ///
 /// # Arguments
 ///
-/// * `provider_name` — value for the `--provider` flag (e.g.
-///   `"mock-local"` or `"local-whisper"`). Parsed by
-///   [`crate::transcription::build_provider`].
-/// * `seconds` — total capture window, in seconds.
+/// * `provider_name` — value for the `--provider` flag.
+/// * `seconds` — total capture window, in seconds. Not used
+///   when a `should_stop` signal is provided (the loop runs
+///   until the signal is set).
 /// * `chunk_duration_ms` — per-chunk interval, in milliseconds.
-///
-/// # Errors
-///
-/// Returns an error if no default input device is available, the
-/// sample format is unsupported, or the provider cannot be
-/// constructed / contacted.
-pub fn run_live_local_transcription_test(
+/// * `should_stop` — optional shared stop flag. When `Some`, the
+///   loop checks this flag each tick and exits cleanly when it
+///   becomes `true`. When `None`, the loop exits after `seconds`.
+/// * `on_event` — callback invoked for every [`AppEvent`] the
+///   runner produces (`StatusChanged`, `Transcript`,
+///   `Translation`, `Error`). Must be `Send + 'static` so it
+///   can be called from the capture thread.
+pub fn run_live_local_transcription_with_events<F>(
     provider_name: &str,
     seconds: u64,
     chunk_duration_ms: u64,
-) -> Result<()> {
+    should_stop: Option<Arc<AtomicBool>>,
+    on_event: F,
+) -> Result<()>
+where
+    F: Fn(AppEvent) + Send + 'static,
+{
     let output_dir = config::LIVE_CHUNKS_DIR;
     fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
 
@@ -129,7 +136,11 @@ pub fn run_live_local_transcription_test(
         "chunk:   {chunk_duration_ms} ms ({chunk_size} samples, {sample_rate} Hz, {channels} ch)"
     );
     println!("output:  {output_dir}/");
-    println!("duration: {seconds} s\n");
+    if should_stop.is_none() {
+        println!("duration: {seconds} s\n");
+    } else {
+        println!("duration: until stopped\n");
+    }
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = match sample_format {
@@ -142,8 +153,7 @@ pub fn run_live_local_transcription_test(
     stream.play()?;
 
     // Emit the first event: capture has started.
-    let listening_event = AppEvent::StatusChanged(AppStatus::Listening);
-    println!("{}", format_app_event_for_console(&listening_event));
+    on_event(AppEvent::StatusChanged(AppStatus::Listening));
 
     let start = Instant::now();
     let total_duration = Duration::from_secs(seconds);
@@ -153,8 +163,20 @@ pub fn run_live_local_transcription_test(
     let translator = MockTranslator::new();
     let source_lang = config::DEFAULT_SOURCE_LANGUAGE;
     let target_lang = config::DEFAULT_TARGET_LANGUAGE;
+    let has_stop_signal = should_stop.is_some();
 
-    while start.elapsed() < total_duration {
+    loop {
+        // Exit conditions: either the timer expires (CLI mode) or
+        // the stop signal was set (Tauri mode).
+        if !has_stop_signal && start.elapsed() >= total_duration {
+            break;
+        }
+        if let Some(ref flag) = should_stop {
+            if flag.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
         thread::sleep(tick);
 
         loop {
@@ -175,11 +197,17 @@ pub fn run_live_local_transcription_test(
             let avg_volume = calculate_average_volume(&samples);
 
             if !should_transcribe_chunk(avg_volume, threshold) {
-                println!(
-                    "{} detected, skipping...",
-                    live_transcription_status_message(chunk_index, "silence")
-                );
-                let _ = io::stdout().flush();
+                // Silence chunks are not events — they would spam
+                // the event stream. Print directly for CLI; skip
+                // entirely for Tauri (the UI shows the last
+                // transcript/translation, not a silence log).
+                if !has_stop_signal {
+                    println!(
+                        "{} detected, skipping...",
+                        live_transcription_status_message(chunk_index, "silence")
+                    );
+                    let _ = io::stdout().flush();
+                }
                 continue;
             }
 
@@ -190,56 +218,48 @@ pub fn run_live_local_transcription_test(
             write_chunk_wav(&wav_path, &samples, channels, sample_rate)
                 .with_context(|| format!("write live chunk WAV {}", wav_path.display()))?;
 
-            println!(
-                "{} | saved {}",
-                live_transcription_status_message(chunk_index, "speech-like"),
-                wav_path.display(),
-            );
+            if !has_stop_signal {
+                println!(
+                    "{} | saved {}",
+                    live_transcription_status_message(chunk_index, "speech-like"),
+                    wav_path.display(),
+                );
+            }
 
             // Transcribe through the selected provider.
             let wav_path_str = wav_path.to_string_lossy().to_string();
-            let events = match provider.transcribe(&wav_path_str) {
+            match provider.transcribe(&wav_path_str) {
                 Ok(text) => {
-                    let mut evts = Vec::with_capacity(2);
-
                     // Transcript event.
-                    let transcript_ev = build_transcript_event(
+                    on_event(build_transcript_event(
                         chunk_index,
                         text.clone(),
                         provider_name.to_string(),
                         true,
-                    );
-                    evts.push(transcript_ev);
+                    ));
 
                     // Optional mock translation.
                     if let Some(tr) = translator.translate_text(&text, source_lang, target_lang) {
-                        let translation_ev = build_translation_event(
+                        on_event(build_translation_event(
                             chunk_index,
                             tr.source_text,
                             tr.translated_text,
                             tr.source_language,
                             tr.target_language,
                             tr.is_final,
-                        );
-                        evts.push(translation_ev);
+                        ));
                     }
-                    evts
                 }
                 Err(e) => {
-                    vec![build_error_event(format!(
+                    on_event(build_error_event(format!(
                         "[chunk {chunk_index}] transcription error: {e}"
-                    ))]
+                    )));
                 }
-            };
-
-            // Print each event through the console formatter.
-            for event in &events {
-                println!("{}", format_app_event_for_console(event));
             }
+
             let _ = io::stdout().flush();
 
-            // Delete the temporary WAV after the chunk has been
-            // consumed.
+            // Delete the temporary WAV.
             if let Err(e) = fs::remove_file(&wav_path) {
                 eprintln!(
                     "{} warning: could not delete temp WAV {}: {e}",
@@ -253,14 +273,34 @@ pub fn run_live_local_transcription_test(
     drop(stream);
 
     // Emit the final event: capture has stopped.
-    let stopped_event = AppEvent::StatusChanged(AppStatus::Stopped);
-    println!("{}", format_app_event_for_console(&stopped_event));
+    on_event(AppEvent::StatusChanged(AppStatus::Stopped));
     println!("\nLive local transcription finished. {chunk_index} chunks processed.");
 
     // Clean up the output directory if empty.
     let _ = fs::remove_dir(output_dir);
 
     Ok(())
+}
+
+/// CLI-facing wrapper that delegates to
+/// [`run_live_local_transcription_with_events`] with a
+/// console-formatting callback and no stop signal.
+///
+/// Preserves the exact same output behaviour the CLI expects.
+pub fn run_live_local_transcription_test(
+    provider_name: &str,
+    seconds: u64,
+    chunk_duration_ms: u64,
+) -> Result<()> {
+    run_live_local_transcription_with_events(
+        provider_name,
+        seconds,
+        chunk_duration_ms,
+        None,
+        |event| {
+            println!("{}", format_app_event_for_console(&event));
+        },
+    )
 }
 
 fn build_stream<T>(

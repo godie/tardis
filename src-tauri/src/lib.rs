@@ -1,4 +1,8 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+
+use tauri::Emitter;
 
 const MOCK_TRANSCRIPT: &str = "mock transcript: speech detected";
 const MOCK_TRANSLATION: &str = "[mock es] mock transcript: speech detected";
@@ -42,12 +46,127 @@ impl MockAppState {
     }
 }
 
+/// Holds the stop signal for an active live transcription session.
+///
+/// When `stop_signal` is `Some`, a background thread is running and
+/// can be stopped by setting the flag to `true`. When `None`, no
+/// session is active.
+#[derive(Debug, Default)]
+struct LiveSessionState {
+    stop_signal: Option<Arc<AtomicBool>>,
+}
+
 fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuard<'a, MockAppState> {
     match state.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
 }
+
+fn lock_session<'a>(
+    state: &'a tauri::State<'_, Mutex<LiveSessionState>>,
+) -> MutexGuard<'a, LiveSessionState> {
+    match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+// ===== New live transcription commands ====================================
+
+/// Start a live transcription session in the background.
+///
+/// Spawns a thread that captures audio from the default microphone,
+/// routes each speech-like chunk through the selected provider, and
+/// emits `app-event` Tauri events to the frontend for every
+/// [`tardis::app::events::AppEvent`] produced.
+///
+/// Default provider is `"mock-local"` (no Docker required). Pass
+/// `"local-whisper"` to use the self-hosted faster-whisper server.
+/// Returns an error if a session is already running.
+#[tauri::command]
+fn start_live_transcription(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, Mutex<LiveSessionState>>,
+    provider: Option<String>,
+) -> Result<String, String> {
+    let mut session = lock_session(&session);
+    if session.stop_signal.is_some() {
+        return Err("A live transcription session is already running. Stop it first.".to_string());
+    }
+
+    let provider_name = provider.unwrap_or_else(|| "mock-local".to_string());
+
+    // Validate the provider name early so the user gets a clear
+    // error before the background thread starts.
+    tardis::transcription::build_provider(&provider_name)
+        .map_err(|e| e.to_string())?;
+
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop_signal);
+    let app_clone = app.clone();
+    let provider_clone = provider_name.clone();
+
+    session.stop_signal = Some(stop_signal);
+    drop(session);
+
+    thread::spawn(move || {
+        let result = tardis::transcription::live_local::run_live_local_transcription_with_events(
+            &provider_clone,
+            86400, // long duration — the loop exits via the stop signal
+            1000,
+            Some(stop_clone),
+            move |event| {
+                let ui_event =
+                    tardis::app::ui_events::app_event_to_ui_event(&event);
+                let _ = app_clone.emit("app-event", ui_event);
+            },
+        );
+        if let Err(e) = result {
+            let _ = app.emit(
+                "app-event",
+                tardis::app::ui_events::app_event_to_ui_event(
+                    &tardis::app::events::AppEvent::Error(
+                        tardis::app::events::AppErrorEvent {
+                            message: format!("Live transcription failed: {e}"),
+                        },
+                    ),
+                ),
+            );
+        }
+    });
+
+    Ok(format!("started with provider {provider_name}"))
+}
+
+/// Signal the active live transcription session to stop.
+///
+/// Returns `"stopping"` if a session was active, or an error if
+/// no session is running.
+#[tauri::command]
+fn stop_live_transcription(
+    session: tauri::State<'_, Mutex<LiveSessionState>>,
+) -> Result<String, String> {
+    let mut session = lock_session(&session);
+    match session.stop_signal.take() {
+        Some(signal) => {
+            signal.store(true, Ordering::Relaxed);
+            Ok("stopping".to_string())
+        }
+        None => Err("No live transcription session is running.".to_string()),
+    }
+}
+
+/// Return the list of supported transcription provider names.
+///
+/// Pure — no I/O, no state access. Used by the frontend to
+/// populate the provider selector.
+#[tauri::command]
+fn get_supported_providers() -> Vec<String> {
+    vec!["mock-local".to_string(), "local-whisper".to_string()]
+}
+
+// ===== Existing mock / file-transcribe commands ===========================
 
 #[tauri::command]
 fn get_app_status(state: tauri::State<'_, Mutex<MockAppState>>) -> String {
@@ -180,13 +299,17 @@ fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(MockAppState::default()))
+        .manage(Mutex::new(LiveSessionState::default()))
         .invoke_handler(tauri::generate_handler![
             get_app_status,
             start_mock_listening,
             stop_mock_listening,
             get_mock_transcript,
             get_mock_translation,
-            transcribe_wav_file_local
+            transcribe_wav_file_local,
+            start_live_transcription,
+            stop_live_transcription,
+            get_supported_providers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TARDIS UI shell");

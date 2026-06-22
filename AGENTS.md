@@ -24,6 +24,7 @@ cargo run -- mock-translate                          # 10 s, mock transcript + t
 cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
 cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription via AppEvents (default mock-local)
 cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
+cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription
 ```
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
@@ -58,10 +59,11 @@ src/
     pipeline.rs            # live CPAL translation pipeline (no tests)
     translator.rs          # translation trait + result types
   app/
-    mod.rs                 # re-exports: config, events, live_events, service, state
+    mod.rs                 # re-exports: config, events, live_events, service, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs + console formatting, 23 tests
     config.rs              # AppRuntimeConfig + validate_runtime_config, 18 tests
     live_events.rs         # pure event-construction helpers (build_transcript_event, etc.), 7 tests
+    ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 5 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```

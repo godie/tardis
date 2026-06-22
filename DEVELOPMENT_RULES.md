@@ -65,6 +65,8 @@ mirror one of these rows.
 | `app::service` (AppService — reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe` |
+| `app::ui_events` (UiAppEvent + app_event_to_ui_event) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
+| `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_supported_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 
 ## How to add a new feature
 
