@@ -15,14 +15,13 @@
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
-mod transcription;
-mod translation;
-
-mod audio;
-mod config;
-
+// Module declarations now live in `src/lib.rs` so this binary and
+// the `tardis-ui-shell` desktop crate (`src-tauri`) share the same
+// audio + transcription + translation surface through one library.
 use std::thread;
+
 use std::time::{Duration, Instant};
+use tardis::{audio, config, transcription, translation};
 
 use anyhow::{Result, anyhow};
 use cpal::traits::StreamTrait;
