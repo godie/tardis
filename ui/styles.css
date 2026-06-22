@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --paper: oklch(0.96 0.02 78);
   --paper-shadow: oklch(0.9 0.02 78);
   --ink: oklch(0.24 0.03 38);
@@ -11,6 +11,23 @@
   --shadow: 0 24px 80px color-mix(in oklch, var(--ink) 18%, transparent);
   --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  --surface: color-mix(in oklch, white 58%, var(--paper));
+  --focus-ring: oklch(0.57 0.13 48);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: oklch(0.18 0.02 78);
+    --paper-shadow: oklch(0.12 0.02 78);
+    --ink: oklch(0.88 0.02 78);
+    --ink-soft: oklch(0.64 0.02 78);
+    --signal: oklch(0.72 0.14 62);
+    --signal-deep: oklch(0.62 0.13 52);
+    --signal-faint: oklch(0.28 0.04 62);
+    --border: color-mix(in oklch, var(--ink) 14%, transparent);
+    --shadow: 0 24px 80px color-mix(in oklch, black 40%, transparent);
+    --focus-ring: oklch(0.72 0.14 62);
+  }
 }
 
 * {
@@ -26,6 +43,21 @@ body {
     radial-gradient(circle at top left, oklch(0.99 0.03 82), transparent 28%),
     radial-gradient(circle at bottom right, oklch(0.88 0.05 60), transparent 34%),
     linear-gradient(135deg, var(--paper), var(--paper-shadow));
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      radial-gradient(circle at top left, oklch(0.22 0.03 78), transparent 28%),
+      radial-gradient(circle at bottom right, oklch(0.14 0.04 62), transparent 34%),
+      linear-gradient(135deg, var(--paper), var(--paper-shadow));
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body::before {
+    opacity: 0.18;
+  }
 }
 
 body::before {
@@ -92,8 +124,16 @@ h1 {
 .panel,
 .language-field {
   border: 1px solid var(--border);
-  background: color-mix(in oklch, white 58%, var(--paper));
+  background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+@media (prefers-color-scheme: dark) {
+  .control-strip,
+  .panel,
+  .language-field {
+    background: color-mix(in oklch, black 40%, var(--paper));
+  }
 }
 
 .control-strip {
@@ -104,6 +144,21 @@ h1 {
   padding: 22px;
   border-radius: 28px;
   margin-bottom: 20px;
+}
+
+@media (max-width: 880px) {
+  .control-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .control-right {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .provider-field-inline select {
+    width: 100%;
+  }
 }
 
 .status-block {
@@ -172,7 +227,7 @@ h1 {
 
 .action:focus-visible,
 select:focus-visible {
-  outline: 2px solid color-mix(in oklch, var(--signal) 60%, white);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -208,10 +263,23 @@ select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 14px 16px;
+  padding: 14px 40px 14px 16px;
   font: inherit;
   color: var(--ink);
-  background: color-mix(in oklch, white 85%, var(--signal-faint));
+  background:
+    color-mix(in oklch, white 85%, var(--signal-faint))
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23666' stroke-width='1.5' fill='none'/%3E%3C/svg%3E")
+    no-repeat right 14px center;
+  appearance: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  select {
+    background:
+      color-mix(in oklch, black 35%, var(--paper))
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23aaa' stroke-width='1.5' fill='none'/%3E%3C/svg%3E")
+      no-repeat right 14px center;
+  }
 }
 
 .panel-grid {
@@ -253,6 +321,63 @@ h2 {
 }
 
 .muted {
+  color: var(--ink-soft);
+}
+
+/* ---- Provider selection (inline in control strip) -------------------- */
+
+.control-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  justify-content: flex-end;
+}
+
+.provider-field-inline {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-field-inline span {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+}
+
+.provider-field-inline select {
+  width: 210px;
+  max-width: 100%;
+}
+
+.live-error {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklch, oklch(0.7 0.18 28) 35%, var(--paper));
+  background: color-mix(in oklch, oklch(0.92 0.05 28) 60%, var(--paper));
+  color: color-mix(in oklch, oklch(0.45 0.18 28) 60%, var(--ink));
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-color-scheme: dark) {
+  .live-error {
+    background: color-mix(in oklch, oklch(0.45 0.18 28) 30%, var(--paper));
+    color: oklch(0.82 0.08 28);
+    border-color: color-mix(in oklch, oklch(0.7 0.18 28) 50%, var(--paper));
+  }
+}
+
+/* ---- Old provider strip (removed — now inline) ----------------------- */
+
+.language-hint {
+  margin: 0;
+  grid-column: 1 / -1;
+  font-size: 0.85rem;
+  line-height: 1.5;
   color: var(--ink-soft);
 }
 

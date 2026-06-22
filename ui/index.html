@@ -17,20 +17,33 @@
       <section class="control-strip" aria-label="Listening controls">
         <div class="status-block">
           <span class="status-label">Status</span>
-          <span id="status-indicator" class="status-pill" data-status="Idle">Idle</span>
+          <span id="status-indicator" class="status-pill" data-status="Idle" aria-label="Current status: Idle">Idle</span>
         </div>
 
-        <div class="button-row">
-          <button id="start-button" class="action action-primary" type="button">
-            Start Listening
-          </button>
-          <button id="stop-button" class="action action-secondary" type="button">
-            Stop
-          </button>
+        <div class="control-right">
+          <label class="provider-field-inline">
+            <span>Provider</span>
+            <select id="provider-select">
+              <option value="mock-local" selected>mock-local (offline)</option>
+              <option value="local-whisper">local-whisper (Docker)</option>
+            </select>
+          </label>
+
+          <div class="button-row">
+            <button id="start-button" class="action action-primary" type="button">
+              Start Listening
+            </button>
+            <button id="stop-button" class="action action-secondary" type="button">
+              Stop
+            </button>
+          </div>
         </div>
       </section>
 
       <section class="language-grid" aria-label="Language settings">
+        <p id="language-hint" class="language-hint">
+          During live transcription, translation uses en &rarr; es. The mock translator produces deterministic placeholder output.
+        </p>
         <label class="language-field">
           <span>Source language</span>
           <select id="source-language">
@@ -58,8 +71,8 @@
             <p class="panel-kicker">Transcript</p>
             <h2>Captured speech</h2>
           </div>
-          <p id="transcript-content" class="panel-copy muted">
-            Start listening to load the mock transcript.
+          <p id="transcript-content" class="panel-copy muted" aria-live="polite">
+            Click Start Listening to begin capturing audio. Transcripts appear here.
           </p>
         </article>
 
@@ -68,11 +81,13 @@
             <p class="panel-kicker">Translation</p>
             <h2>Rendered output</h2>
           </div>
-          <p id="translation-content" class="panel-copy muted">
-            Translation stays mocked until the real transcription pipeline is connected.
+          <p id="translation-content" class="panel-copy muted" aria-live="polite">
+            Mock translations (en &rarr; es) appear alongside each transcript.
           </p>
         </article>
       </section>
+
+      <p id="live-error" class="live-error" role="alert" aria-live="assertive" hidden></p>
 
       <section class="file-transcribe" aria-label="Local WAV transcription">
         <div class="file-transcribe-head">
@@ -113,7 +128,7 @@
           </p>
         </article>
 
-        <p id="file-transcribe-error" class="file-transcribe-error" hidden></p>
+        <p id="file-transcribe-error" class="file-transcribe-error" role="alert" hidden></p>
       </section>
     </main>
 
