@@ -9,7 +9,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - A real local transcription provider exists for WAV files sent to a self-hosted `faster-whisper` HTTP server.
 - A second local provider, `mock-local`, exists for deterministic offline development.
 - Translation is still mock-only.
-- The Tauri shell exposes both mock app-status commands and a file-based transcription command (`transcribe_wav_file_local`) that delegates to the same `local-whisper` provider used by `cargo run -- local-transcribe-file`. Live CPAL capture and real translation are still not wired into the UI.
+- The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription` commands. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. Provider selection is available in the UI (`mock-local` — no Docker; `local-whisper` — requires Docker). Translation is still mock-only.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. This is the future shared boundary between the CLI modes and the Tauri shell. Reaching it today requires `cargo run -- app-mock-flow` (sync, no microphone, no Docker).
 - `cargo test` runs 147 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and pure Tauri command helpers.
 
@@ -90,18 +90,16 @@ cargo run --manifest-path src-tauri/Cargo.toml
 
 What the shell does today:
 
-- Tracks a mock app status: `Idle`, `Listening`, `Stopped`
-- Returns a mock transcript string
-- Returns a mock translation string
-- Lets the frontend preview target-language label changes
-- "Local WAV Transcription" card: validate a path, call `transcribe_wav_file_local`, surface the transcript or a user-facing error. This is file-based only and assumes the local faster-whisper Docker container is running.
+- **Live transcription**: Click Start Listening to capture audio from the default microphone, chunk it, and transcribe speech-like chunks through the selected provider. Transcript and translation events flow into the window via Tauri events. Click Stop to end the session.
+- **Provider selector**: Choose `mock-local` (no Docker, deterministic) or `local-whisper` (requires Docker).
+- Mock-only controls preserved for dev reference: `start_mock_listening`, `get_mock_transcript`, `get_mock_translation`.
+- \"Local WAV Transcription\" card: validate a path, call `transcribe_wav_file_local`, surface the transcript or a user-facing error.
 
 What it does not do yet:
 
-- Open the microphone from the UI
-- Stream live chunks into the window
+- System audio capture
 - Run a real translation backend
-- Surface provider selection in the desktop UI
+- Streaming/partial transcripts
 
 More detail lives in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).
 
@@ -131,6 +129,19 @@ The `src/app/` layer is the future shared boundary: today it powers
 mock-only controls, it will host the same `AppService` API the CLI
 already exercises, end-to-end from microphone capture to UI event
 sink.
+
+## CI
+
+GitHub Actions runs on every PR and push to `main`.
+
+| Check | Command |
+|---|---|
+| Formatting | `cargo fmt --check` |
+| Compilation | `cargo check` |
+| Tauri compilation | `cargo check --manifest-path src-tauri/Cargo.toml` |
+| Unit tests | `cargo test` |
+
+CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mic`, `record-5s`, etc.) — those remain local validation only. CPAL streams, microphones, Docker providers, and Tauri runtime are not exercised in CI.
 
 ## Testing Model
 
