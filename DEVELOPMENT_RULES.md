@@ -63,6 +63,8 @@ mirror one of these rows.
 | `app::events` (AppEvent / AppStatus / payload structs / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
 | `app::service` (AppService — reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
+| `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
+| `app::live_events` (build_transcript_event + build_translation_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe` |
 
 ## How to add a new feature
 

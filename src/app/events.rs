@@ -63,6 +63,47 @@ pub fn is_terminal_status(status: AppStatus) -> bool {
     matches!(status, AppStatus::Stopped | AppStatus::Error)
 }
 
+/// Pure helper: stable kind tag for an [`AppEvent`] variant.
+///
+/// Returns one of `"status"`, `"transcript"`, `"translation"`,
+/// or `"error"`. Useful for prefixing console output without
+/// matching on every variant at every call site.
+pub fn app_event_kind(event: &AppEvent) -> &'static str {
+    match event {
+        AppEvent::StatusChanged(_) => "status",
+        AppEvent::Transcript(_) => "transcript",
+        AppEvent::Translation(_) => "translation",
+        AppEvent::Error(_) => "error",
+    }
+}
+
+/// Format an [`AppEvent`] as a single-line console string.
+///
+/// Pure — no I/O, no allocation beyond the returned `String`.
+/// Used by the CLI and eventually by the Tauri shell log sink.
+pub fn format_app_event_for_console(event: &AppEvent) -> String {
+    match event {
+        AppEvent::StatusChanged(status) => {
+            format!("[status] {}", status_label(*status).to_lowercase())
+        }
+        AppEvent::Transcript(t) => {
+            format!(
+                "[chunk {}][transcript][provider={}] {}",
+                t.chunk_index, t.provider, t.text
+            )
+        }
+        AppEvent::Translation(t) => {
+            format!(
+                "[chunk {}][translation {}->{}] {}",
+                t.chunk_index, t.source_language, t.target_language, t.translated_text
+            )
+        }
+        AppEvent::Error(e) => {
+            format!("[error] {}", e.message)
+        }
+    }
+}
+
 /// Per-chunk transcript event emitted after the active
 /// `Transcriber` produced a transcript.
 ///
@@ -267,5 +308,148 @@ mod tests {
             is_final: true,
         });
         assert_ne!(transcript, translation);
+    }
+
+    // ---- app_event_kind -----------------------------------------------
+
+    #[test]
+    fn app_event_kind_status() {
+        let e = AppEvent::StatusChanged(AppStatus::Listening);
+        assert_eq!(app_event_kind(&e), "status");
+    }
+
+    #[test]
+    fn app_event_kind_transcript() {
+        let e = AppEvent::Transcript(AppTranscriptEvent {
+            chunk_index: 1,
+            text: "hi".to_string(),
+            provider: "p".to_string(),
+            is_final: true,
+        });
+        assert_eq!(app_event_kind(&e), "transcript");
+    }
+
+    #[test]
+    fn app_event_kind_translation() {
+        let e = AppEvent::Translation(AppTranslationEvent {
+            chunk_index: 1,
+            source_text: "hi".to_string(),
+            translated_text: "hola".to_string(),
+            source_language: "en".to_string(),
+            target_language: "es".to_string(),
+            is_final: true,
+        });
+        assert_eq!(app_event_kind(&e), "translation");
+    }
+
+    #[test]
+    fn app_event_kind_error() {
+        let e = AppEvent::Error(AppErrorEvent {
+            message: "boom".to_string(),
+        });
+        assert_eq!(app_event_kind(&e), "error");
+    }
+
+    // ---- format_app_event_for_console ---------------------------------
+
+    #[test]
+    fn format_status_event_is_readable() {
+        let e = AppEvent::StatusChanged(AppStatus::Listening);
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("listening"),
+            "status event should contain 'listening', got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_transcript_event_includes_chunk_index() {
+        let e = AppEvent::Transcript(AppTranscriptEvent {
+            chunk_index: 3,
+            text: "hello".to_string(),
+            provider: "mock-local".to_string(),
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("chunk 3"),
+            "transcript event should include chunk index, got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_transcript_event_includes_provider() {
+        let e = AppEvent::Transcript(AppTranscriptEvent {
+            chunk_index: 1,
+            text: "hi".to_string(),
+            provider: "local-whisper".to_string(),
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("local-whisper"),
+            "transcript event should include provider, got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_transcript_event_includes_text() {
+        let e = AppEvent::Transcript(AppTranscriptEvent {
+            chunk_index: 1,
+            text: "hello world".to_string(),
+            provider: "p".to_string(),
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("hello world"),
+            "transcript event should include text, got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_translation_event_includes_languages() {
+        let e = AppEvent::Translation(AppTranslationEvent {
+            chunk_index: 2,
+            source_text: "hello".to_string(),
+            translated_text: "hola".to_string(),
+            source_language: "en".to_string(),
+            target_language: "es".to_string(),
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("en->es"),
+            "translation event should include language pair, got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_translation_event_includes_translated_text() {
+        let e = AppEvent::Translation(AppTranslationEvent {
+            chunk_index: 1,
+            source_text: "hello".to_string(),
+            translated_text: "[mock es] mock translation: \"hello\"".to_string(),
+            source_language: "en".to_string(),
+            target_language: "es".to_string(),
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("mock translation"),
+            "translation event should include translated text, got: {s}"
+        );
+    }
+
+    #[test]
+    fn format_error_event_includes_message() {
+        let e = AppEvent::Error(AppErrorEvent {
+            message: "connection refused".to_string(),
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("connection refused"),
+            "error event should include message, got: {s}"
+        );
     }
 }
