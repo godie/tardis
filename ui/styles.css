@@ -256,6 +256,144 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- Local WAV transcription ---------------------------------------- */
+
+.file-transcribe {
+  margin-top: 24px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 32px;
+  background:
+    linear-gradient(155deg, color-mix(in oklch, white 70%, var(--signal-faint)), white),
+    color-mix(in oklch, white 58%, var(--paper));
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 18px;
+}
+
+.file-transcribe-head {
+  display: grid;
+  gap: 8px;
+}
+
+.file-transcribe-title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(1.6rem, 2.6vw, 2.1rem);
+  line-height: 1;
+  font-weight: 600;
+}
+
+.file-transcribe-blurb {
+  margin: 0;
+  max-width: 60ch;
+  line-height: 1.6;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+.file-transcribe-blurb code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 0.85em;
+  background: color-mix(in oklch, var(--ink) 6%, white);
+  color: var(--ink);
+}
+
+.file-transcribe-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.file-transcribe-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-transcribe-field span {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+input[type="text"]#wav-file-path {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 16px;
+  font: inherit;
+  color: var(--ink);
+  background: color-mix(in oklch, white 85%, var(--signal-faint));
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+input[type="text"]#wav-file-path:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--signal) 60%, white);
+  outline-offset: 2px;
+}
+
+.file-transcribe-status {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  background: color-mix(in oklch, var(--ink) 6%, white);
+  color: var(--ink-soft);
+}
+
+.file-transcribe-status[data-state="busy"] {
+  background: color-mix(in oklch, var(--signal) 18%, white);
+  color: var(--ink);
+}
+
+.file-transcribe-status[data-state="done"] {
+  background: color-mix(in oklch, oklch(0.74 0.13 150) 28%, white);
+  color: var(--ink);
+}
+
+.file-transcribe-status[data-state="error"] {
+  background: color-mix(in oklch, oklch(0.7 0.18 28) 22%, white);
+  color: var(--ink);
+}
+
+.file-transcribe-panel {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: color-mix(in oklch, white 78%, var(--signal-faint));
+  min-height: 88px;
+}
+
+.file-transcribe-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklch, oklch(0.7 0.18 28) 35%, white);
+  background: color-mix(in oklch, oklch(0.92 0.05 28) 60%, white);
+  color: color-mix(in oklch, oklch(0.45 0.18 28) 60%, var(--ink));
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.action[data-state="busy"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 @media (max-width: 880px) {
   .control-strip,
   .language-grid,

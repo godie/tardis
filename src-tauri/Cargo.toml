@@ -8,4 +8,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-
+# Reuses the existing transcription provider + centralised config
+# constants from the CLI crate so the `transcribe_wav_file_local`
+# Tauri command does not duplicate the local faster-whisper HTTP
+# logic. AWS / registry credentials are not pulled in — this is a
+# plain filesystem path dependency.
+tardis = { path = ".." }

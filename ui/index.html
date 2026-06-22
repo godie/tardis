@@ -73,6 +73,48 @@
           </p>
         </article>
       </section>
+
+      <section class="file-transcribe" aria-label="Local WAV transcription">
+        <div class="file-transcribe-head">
+          <p class="panel-kicker">Local WAV Transcription</p>
+          <h2 class="file-transcribe-title">Transcribe a saved chunk</h2>
+          <p class="file-transcribe-blurb">
+            File-based only &mdash; no microphone capture. Requires the local
+            faster-whisper Docker container to be running. Generate chunks with
+            <code>cargo run -- save-chunks-test</code>, then point at one of them here.
+          </p>
+        </div>
+
+        <div class="file-transcribe-row">
+          <label class="file-transcribe-field">
+            <span>WAV file path</span>
+            <input
+              id="wav-file-path"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="output/chunks/chunk_001.wav"
+              value="output/chunks/chunk_001.wav"
+            />
+          </label>
+          <button id="transcribe-file-button" class="action action-primary" type="button">
+            Transcribe File
+          </button>
+        </div>
+
+        <p id="file-transcribe-status" class="file-transcribe-status" data-state="idle">
+          Idle &mdash; enter a path above and click Transcribe File.
+        </p>
+
+        <article class="file-transcribe-panel">
+          <p class="panel-kicker">Transcript</p>
+          <p id="file-transcribe-output" class="panel-copy muted">
+            The transcript returned by the local faster-whisper server will appear here.
+          </p>
+        </article>
+
+        <p id="file-transcribe-error" class="file-transcribe-error" hidden></p>
+      </section>
     </main>
 
     <script src="./app.js"></script>
