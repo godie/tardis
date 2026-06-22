@@ -13,7 +13,7 @@ Status legend: `done` = shipped, `partial` = real groundwork exists but the user
 
 ## 1. Stabilize The Backend Contract
 
-Status: `partial`
+Status: `partial` → `partial (orchestration layer shipped)`
 
 What exists:
 
@@ -21,20 +21,17 @@ What exists:
 - `transcription::transcriber::Transcriber` exists for live chunk processing.
 - `transcription::LocalTranscriptionProvider` exists for provider-swappable file transcription.
 - `translation::*` already proves the translation stage with mock implementations.
+- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockTranslator` without CPAL/Docker/fs. Pure-logic coverage (`config`, `events`, `state`, `service` modules) totals ~57 new unit tests.
 
 Gaps:
 
-- Live capture and file-based transcription use different trait boundaries today.
-- The Tauri shell cannot call a single backend service boundary that owns capture state, chunk flow, transcription, and translation.
+- `src/app/` is text-input only (`run_mock_text_flow`); connecting it to live microphone capture is the next integration step.
+- `AppEvent` consumers today are the CLI smoke command and (eventually) the Tauri shell; no event sink yet.
 
 Next:
 
-- Introduce one app-facing orchestration layer that can expose:
-  - `start_listening()`
-  - `stop_listening()`
-  - transcript events per chunk
-  - translation events per chunk
-  - provider selection
+- Wire live `audio` capture chunks into `AppService` so a real-time transcript event stream surfaces through the same `AppEvent` boundary already used by mock flows.
+- Surface provider selection through `AppRuntimeConfig` and propagate it from the UI / CLI flag to the live provider picker.
 - Keep pure decision helpers unit-tested and leave CPAL wiring on the manual CLI path.
 
 ## 2. Turn Real Transcription Into A Live Path

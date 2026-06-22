@@ -10,7 +10,8 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - A second local provider, `mock-local`, exists for deterministic offline development.
 - Translation is still mock-only.
 - The Tauri shell exposes both mock app-status commands and a file-based transcription command (`transcribe_wav_file_local`) that delegates to the same `local-whisper` provider used by `cargo run -- local-transcribe-file`. Live CPAL capture and real translation are still not wired into the UI.
-- `cargo test` currently runs 90 unit tests over pure helper logic, provider dispatch, and pure Tauri command helpers.
+- The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. This is the future shared boundary between the CLI modes and the Tauri shell. Reaching it today requires `cargo run -- app-mock-flow` (sync, no microphone, no Docker).
+- `cargo test` runs 147 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and pure Tauri command helpers.
 
 ## Stack
 
@@ -44,6 +45,7 @@ cargo run
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
+| `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 
 ## Local Transcription Providers
 
@@ -105,11 +107,22 @@ src/
   audio/                   CPAL capture, chunking, recording, pure audio helpers
   transcription/           Traits, mocks, file pipeline, local providers
   translation/             Traits, mocks, live mock translation pipeline
+  app/                     App-facing orchestration layer (CLI + Tauri shared boundary)
+    events/                AppStatus + AppEvent stream + payload structs
+    config/                AppRuntimeConfig + validate_runtime_config
+    state/                 AppState (status + config + last_transcript/translation)
+    service/               AppService orchestrator (start_listening_mock, stop_listening, run_mock_text_flow)
 src-tauri/                 Tauri shell crate (mock commands + transcribe_wav_file_local)
 ui/                        Static frontend assets for the shell
 docker/faster-whisper/     Local Docker transcription stack
 docs/                      Supplemental project notes
 ```
+
+The `src/app/` layer is the future shared boundary: today it powers
+`cargo run -- app-mock-flow`; once the Tauri shell moves past
+mock-only controls, it will host the same `AppService` API the CLI
+already exercises, end-to-end from microphone capture to UI event
+sink.
 
 ## Testing Model
 
@@ -129,8 +142,13 @@ Microphone or WAV file
   -> activity classification
   -> transcription trait boundary
   -> optional translation trait boundary
-  -> console output today, Tauri shell later
+  -> console output today, AppEvent stream tomorrow
 ```
+
+The `AppEvent` stream is the typed event surface emitted by
+`AppService` (the new `src/app/` orchestration layer). Today the
+CLI's `app-mock-flow` mode prints it directly; the Tauri shell will
+relay each event into the webview once it stops being mock-only.
 
 Design constraints that shape the codebase:
 

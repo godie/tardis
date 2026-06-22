@@ -9,7 +9,7 @@ commit style, working conventions, things NOT to do.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # 70 unit tests
+cargo test                                           # 147 unit tests
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -21,6 +21,7 @@ cargo run -- save-chunks-test                        # 10 s, save 1 s chunks to 
 cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
                                                      # run mock transcription over a saved WAV
 cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
+cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
 ```
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
@@ -53,7 +54,18 @@ src/
     mock.rs                # mock translator logic, 10 tests
     pipeline.rs            # live CPAL translation pipeline (no tests)
     translator.rs          # translation trait + result types
+  app/
+    mod.rs                 # re-exports: config, events, service, state
+    events.rs              # AppStatus + AppEvent stream + payload structs, 12 tests
+    config.rs              # AppRuntimeConfig + validate_runtime_config, 18 tests
+    state.rs               # AppState mutators + Default, 12 tests
+    service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```
+
+The `app/` layer is the future shared boundary between CLI modes and
+the Tauri shell. It never opens CPAL/Docker/HTTP/filesystem handles
+on its own; real captures will be wired into it from outside the
+layer.
 
 When you add a module, mirror an existing one above:
 - **Pure helpers** live in their own file with `#[cfg(test)] mod tests`
