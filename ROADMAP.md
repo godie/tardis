@@ -36,29 +36,24 @@ Next:
 
 ## 2. Turn Real Transcription Into A Live Path
 
-Status: `partial`
+Status: `partial` → `partial (live chunk-by-chunk path shipped)`
 
 What exists:
 
 - `local-transcribe-file` can already send a WAV file to a local `faster-whisper` server.
 - `mock-local` already proves provider swapping without Docker.
+- `live-local-transcribe` captures from the default microphone, splits audio into chunks, and sends each speech-like chunk through a selected provider via a temporary WAV file. Default provider is `mock-local` so the command works without Docker.
 
 Gaps:
 
-- The only real transcription path is file-based.
-- Live `mock-transcribe` still uses the mock transcriber instead of a real provider.
-- There is no streamed or chunk-by-chunk provider bridge from microphone capture to the local backend.
+- The live path is chunk-by-chunk via temporary WAV files, not true streaming — the audio callback delivers samples but the provider interface is still file-based.
+- There is no streamed or true-streaming provider bridge from microphone capture to the local backend.
 
 Next:
 
-- Add a live transcription mode that records each chunk into a transient WAV buffer or file and sends it through the selected provider.
 - Keep `mock-transcribe` as the zero-dependency validation path.
 - Preserve the current `--provider` selection model so adding `whisper.cpp` later does not change the CLI shape.
-
-Later:
-
-- Add more local providers such as `whisper.cpp`.
-- Consider optional cloud providers only if the user explicitly wants them.
+- Consider a true streaming provider interface (bytes/chunks instead of files) once the file-based chunk path is validated.
 
 ## 3. Replace Mock Translation With A Real Translation Boundary
 

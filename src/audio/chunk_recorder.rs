@@ -171,7 +171,9 @@ where
     Ok(stream)
 }
 
-fn write_chunk_wav(
+/// Write a slice of f32 samples to a 16-bit Int PCM WAV file at `path`.
+/// Reused by chunk recorders and live-transcription pipelines.
+pub fn write_chunk_wav(
     path: &Path,
     samples_f32: &[f32],
     channels: u16,

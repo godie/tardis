@@ -42,6 +42,11 @@ pub const DEFAULT_MIC_RECORDING_PATH: &str = "output/mic_test.wav";
 /// captured chunk.
 pub const DEFAULT_CHUNKS_DIR: &str = "output/chunks";
 
+/// Default directory used by `live-local-transcribe` to write one WAV
+/// per speech-like chunk before sending it to a
+/// [`crate::transcription::LocalTranscriptionProvider`].
+pub const LIVE_CHUNKS_DIR: &str = "output/live_chunks";
+
 /// Default source language code passed to translation pipelines
 /// (BCP-47-ish, lowercase).
 pub const DEFAULT_SOURCE_LANGUAGE: &str = "en";

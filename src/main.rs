@@ -12,6 +12,7 @@
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
+//!   cargo run -- live-local-transcribe [--provider <name>] -> chunk-by-chunk live transcription (default mock-local)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -46,11 +47,12 @@ fn main() -> Result<()> {
         Some("mock-transcribe-file") => run_mock_transcribe_file(),
         Some("mock-translate") => run_mock_translate(),
         Some("local-transcribe-file") => run_local_transcribe_file(),
+        Some("live-local-transcribe") => run_live_local_transcribe(),
         Some("app-mock-flow") => run_app_mock_flow(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- app-mock-flow]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow]"
             );
             std::process::exit(2);
         }
@@ -224,6 +226,53 @@ fn run_mock_translate() -> Result<()> {
 ///
 /// Usage:
 ///   cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>
+/// Live chunk-by-chunk local transcription from the default
+/// microphone. Default provider is `"mock-local"` (no Docker
+/// required); pass `--provider local-whisper` to use the
+/// self-hosted faster-whisper server instead.
+///
+/// This is **not** true streaming — each speech-like chunk is
+/// written to a temporary WAV file in `output/live_chunks/`,
+/// sent through the selected
+/// [`transcription::LocalTranscriptionProvider`], and deleted
+/// after transcription. Silence chunks are skipped.
+///
+/// Usage:
+///   cargo run -- live-local-transcribe [--provider <name>]
+fn run_live_local_transcribe() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    let mut provider_name = "mock-local".to_string();
+
+    // [0] = binary path, [1] = "live-local-transcribe" — start at [2].
+    let mut i = 2;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--provider" {
+            i += 1;
+            if i >= args.len() {
+                return Err(anyhow!(
+                    "--provider requires a value (e.g. --provider mock-local)\nUsage: cargo run -- live-local-transcribe [--provider <name>]"
+                ));
+            }
+            provider_name = args[i].clone();
+        } else if let Some(value) = arg.strip_prefix("--provider=") {
+            provider_name = value.to_string();
+        } else {
+            return Err(anyhow!(
+                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>]"
+            ));
+        }
+        i += 1;
+    }
+
+    transcription::live_local::run_live_local_transcription_test(
+        &provider_name,
+        config::DEFAULT_PIPELINE_TEST_SECONDS,
+        config::DEFAULT_CHUNK_DURATION_MS,
+    )
+}
+
 fn run_local_transcribe_file() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 

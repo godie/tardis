@@ -45,6 +45,7 @@ cargo run
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Default provider is `mock-local` (no Docker required); pass `--provider local-whisper` for the self-hosted faster-whisper server. Each speech-like chunk is written to a temporary WAV file in `output/live_chunks/`, sent through the selected provider, and deleted after transcription. Silence chunks are skipped. This is **not** true streaming. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 
 ## Local Transcription Providers
@@ -53,8 +54,8 @@ The provider selected by `local-transcribe-file` implements the shared `transcri
 
 | Provider | Selector | What it does |
 | --- | --- | --- |
-| Local faster-whisper HTTP server | `--provider local-whisper` or omit the flag | Sends a WAV file to `http://localhost:8000/v1/audio/transcriptions` and prints the `text` field from the OpenAI-style JSON response. |
-| Deterministic offline stub | `--provider mock-local` | Returns `mock transcript for <basename>` without using the network. |
+| Local faster-whisper HTTP server | `--provider local-whisper` or omit the flag (for `local-transcribe-file`) | Sends a WAV file to `http://localhost:8000/v1/audio/transcriptions` and prints the `text` field from the OpenAI-style JSON response. |
+| Deterministic offline stub | `--provider mock-local` (default for `live-local-transcribe`) | Returns `mock transcript for <basename>` without using the network. |
 
 Start the Docker-backed provider with:
 
@@ -66,6 +67,13 @@ Then transcribe a saved chunk:
 
 ```bash
 cargo run -- local-transcribe-file output/chunks/chunk_001.wav
+```
+
+Or run chunk-by-chunk live transcription (no Docker needed with the default `mock-local` provider):
+
+```bash
+cargo run -- live-local-transcribe
+cargo run -- live-local-transcribe --provider local-whisper
 ```
 
 Operator details for that container live in [docker/faster-whisper/README.md](docker/faster-whisper/README.md).
@@ -105,7 +113,7 @@ src/
   lib.rs                   Library surface shared by the CLI binary and src-tauri
   config.rs                Centralized constants
   audio/                   CPAL capture, chunking, recording, pure audio helpers
-  transcription/           Traits, mocks, file pipeline, local providers
+  transcription/           Traits, mocks, file pipeline, local providers, live-local pipeline
   translation/             Traits, mocks, live mock translation pipeline
   app/                     App-facing orchestration layer (CLI + Tauri shared boundary)
     events/                AppStatus + AppEvent stream + payload structs

@@ -22,6 +22,8 @@ cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
                                                      # run mock transcription over a saved WAV
 cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
 cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
+cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription (default mock-local)
+cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
 ```
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
@@ -44,8 +46,9 @@ src/
     recorder.rs            # CPAL + hound driver (no tests)
     volume.rs              # pure volume helpers, 14 tests
   transcription/
-    mod.rs                 # re-exports: file_pipeline, mock, pipeline, transcriber
+    mod.rs                 # re-exports: file_pipeline, live_local, mock, pipeline, transcriber
     file_pipeline.rs       # WAV reader + pure i16->f32 helpers, 7 tests
+    live_local.rs          # pure helpers + CPAL live local transcription runner, 9 tests
     mock.rs                # mock transcriber logic, 10 tests
     pipeline.rs            # live CPAL transcription pipeline (no tests)
     transcriber.rs         # transcription trait + result types
