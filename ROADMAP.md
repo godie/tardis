@@ -82,27 +82,28 @@ Later:
 
 ## 4. Connect The Tauri Shell To The Real Backend
 
-Status: `partial`
+Status: `partial` → `partial (live transcription + events wired)`
 
 What exists:
 
-- `src-tauri/` opens a desktop window and exposes mock commands for app status, transcript text, and translation text.
-- `ui/` already gives the project a concrete desktop interaction model.
-- `src-tauri` depends on `tardis` as a path dependency so the shell and the CLI binary share one source tree.
-- File-based UI transcription is wired: the `transcribe_wav_file_local` Tauri command delegates to `tardis::transcription::build_provider("local-whisper")` and the frontend exposes a "Local WAV Transcription" card with path input, button, status pill, transcript panel, and error display. Pure helpers (`validate_wav_path_input`, `normalize_local_transcription_error`) are unit-tested.
+- `start_live_transcription` spawns a background thread that captures audio,
+  transcribes chunks, and emits `app-event` Tauri events to the frontend.
+- `stop_live_transcription` signals the session to stop cleanly.
+- Provider selector in the UI: `mock-local` (no Docker) or `local-whisper`
+  (requires Docker).
+- `UiAppEvent` — serializable event payloads converted from backend `AppEvent`s.
+- File-based UI transcription still wired (`transcribe_wav_file_local`).
 
 Gaps:
 
-- The shell does not open CPAL streams.
-- No transcript or translation events flow from Rust into the window.
-- Provider selection is hard-coded to `local-whisper` in the UI; selecting `mock-local` from the desktop still requires the CLI.
+- Translation is still mock-only.
+- No system audio capture.
+- No streaming/partial transcripts.
 
 Next:
 
-- The `live-local-transcribe` runner now emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) formatted through `format_app_event_for_console` — the same event stream the Tauri shell will consume.
-- Replace the mock start/stop commands with calls into the shared backend orchestration layer.
-- Emit transcript and translation updates as Tauri events instead of pulling static strings.
-- Surface provider selection in the Local WAV Transcription card so the desktop can swap between `local-whisper` and `mock-local` without a CLI fallback.
+- Add a real translation provider behind the `Translator` trait.
+- Surface real translation events through the Tauri event stream.
 - Keep the frontend shell thin; the backend remains the source of truth.
 
 Later:
@@ -112,23 +113,25 @@ Later:
 
 ## 5. Improve Operability And Contributor Workflow
 
-Status: `partial`
+Status: `partial` → `partial (CI added)`
 
 What exists:
 
 - `README.md`, `AGENTS.md`, and `DEVELOPMENT_RULES.md` document the testing split and command surfaces.
 - The Docker provider has its own operational README.
 - The repo follows Conventional Commits.
+- GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every PR and push to `main`.
 
 Gaps:
 
-- No CI workflow is visible in the repo.
-- There is no single contributor checklist beyond the handbook documents.
+- No release workflow (packaging, versioning, binaries).
+- No Docker CI for the faster-whisper provider.
+- `cargo clippy -- -D warnings` has 4 pre-existing warnings (unnecessary cast, collapsible ifs) that need fixing before clippy can be added to CI.
 
 Next:
 
-- Add CI for `cargo check` and `cargo test`.
 - Keep documentation aligned with real commands and shipped modules whenever structure changes.
+- Add a release workflow only when the Tauri shell reaches a shippable milestone.
 
 Later:
 
