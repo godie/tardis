@@ -29,13 +29,16 @@ use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
-use crate::app::events::AppTranscriptEvent;
+use crate::app::events::{AppEvent, AppStatus, format_app_event_for_console};
+use crate::app::live_events::{build_error_event, build_transcript_event, build_translation_event};
 use crate::audio::activity;
 use crate::audio::chunk_recorder::write_chunk_wav;
 use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::transcription;
+use crate::translation::mock::MockTranslator;
+use crate::translation::translator::Translator;
 
 // ===== Pure helpers (unit-tested) ========================================
 
@@ -111,10 +114,10 @@ pub fn run_live_local_transcription_test(
 
     let supported = device.default_input_config()?;
     println!("config:  {supported:?}");
-    let config: StreamConfig = supported.into();
+    let stream_config: StreamConfig = supported.into();
     let sample_format = supported.sample_format();
-    let sample_rate = config.sample_rate;
-    let channels = config.channels;
+    let sample_rate = stream_config.sample_rate;
+    let channels = stream_config.channels;
     let chunk_size = calculate_chunk_size_samples(sample_rate, channels, chunk_duration_ms);
     if chunk_size == 0 {
         return Err(anyhow!(
@@ -130,19 +133,26 @@ pub fn run_live_local_transcription_test(
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = match sample_format {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &config, Arc::clone(&buffer))?,
+        SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, Arc::clone(&buffer))?,
+        SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, Arc::clone(&buffer))?,
+        SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, Arc::clone(&buffer))?,
         other => return Err(anyhow!("Unsupported sample format: {other:?}")),
     };
 
     stream.play()?;
+
+    // Emit the first event: capture has started.
+    let listening_event = AppEvent::StatusChanged(AppStatus::Listening);
+    println!("{}", format_app_event_for_console(&listening_event));
 
     let start = Instant::now();
     let total_duration = Duration::from_secs(seconds);
     let tick = Duration::from_millis(chunk_duration_ms);
     let mut chunk_index: usize = 0;
     let threshold = config::DEFAULT_VOLUME_THRESHOLD;
+    let translator = MockTranslator::new();
+    let source_lang = config::DEFAULT_SOURCE_LANGUAGE;
+    let target_lang = config::DEFAULT_TARGET_LANGUAGE;
 
     while start.elapsed() < total_duration {
         thread::sleep(tick);
@@ -173,9 +183,7 @@ pub fn run_live_local_transcription_test(
                 continue;
             }
 
-            // Speech-like: write chunk to a temporary WAV, send to
-            // the selected provider, print the result, then delete
-            // the WAV.
+            // Write speech-like chunk to a temporary WAV.
             let filename = format_live_chunk_filename(chunk_index);
             let wav_path = Path::new(output_dir).join(&filename);
 
@@ -188,36 +196,50 @@ pub fn run_live_local_transcription_test(
                 wav_path.display(),
             );
 
+            // Transcribe through the selected provider.
             let wav_path_str = wav_path.to_string_lossy().to_string();
-            match provider.transcribe(&wav_path_str) {
+            let events = match provider.transcribe(&wav_path_str) {
                 Ok(text) => {
-                    // Build a transcript event to demonstrate the future
-                    // Tauri event shape — same fields the app layer will
-                    // emit once the Tauri shell wires into live capture.
-                    let _event = AppTranscriptEvent {
+                    let mut evts = Vec::with_capacity(2);
+
+                    // Transcript event.
+                    let transcript_ev = build_transcript_event(
                         chunk_index,
-                        text: text.clone(),
-                        provider: provider_name.to_string(),
-                        is_final: true,
-                    };
-                    println!(
-                        "{}provider={} transcript=\"{}\"",
-                        live_transcription_status_message(chunk_index, ""),
-                        provider_name,
-                        text,
+                        text.clone(),
+                        provider_name.to_string(),
+                        true,
                     );
+                    evts.push(transcript_ev);
+
+                    // Optional mock translation.
+                    if let Some(tr) = translator.translate_text(&text, source_lang, target_lang) {
+                        let translation_ev = build_translation_event(
+                            chunk_index,
+                            tr.source_text,
+                            tr.translated_text,
+                            tr.source_language,
+                            tr.target_language,
+                            tr.is_final,
+                        );
+                        evts.push(translation_ev);
+                    }
+                    evts
                 }
                 Err(e) => {
-                    eprintln!(
-                        "{} transcription error: {e}",
-                        live_transcription_status_message(chunk_index, "error"),
-                    );
+                    vec![build_error_event(format!(
+                        "[chunk {chunk_index}] transcription error: {e}"
+                    ))]
                 }
+            };
+
+            // Print each event through the console formatter.
+            for event in &events {
+                println!("{}", format_app_event_for_console(event));
             }
             let _ = io::stdout().flush();
 
-            // Delete the temporary WAV after successful or failed
-            // transcription — the chunk has been consumed.
+            // Delete the temporary WAV after the chunk has been
+            // consumed.
             if let Err(e) = fs::remove_file(&wav_path) {
                 eprintln!(
                     "{} warning: could not delete temp WAV {}: {e}",
@@ -229,6 +251,10 @@ pub fn run_live_local_transcription_test(
     }
 
     drop(stream);
+
+    // Emit the final event: capture has stopped.
+    let stopped_event = AppEvent::StatusChanged(AppStatus::Stopped);
+    println!("{}", format_app_event_for_console(&stopped_event));
     println!("\nLive local transcription finished. {chunk_index} chunks processed.");
 
     // Clean up the output directory if empty.

@@ -22,7 +22,7 @@ cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
                                                      # run mock transcription over a saved WAV
 cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
 cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
-cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription (default mock-local)
+cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription via AppEvents (default mock-local)
 cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
 ```
 
@@ -58,9 +58,10 @@ src/
     pipeline.rs            # live CPAL translation pipeline (no tests)
     translator.rs          # translation trait + result types
   app/
-    mod.rs                 # re-exports: config, events, service, state
-    events.rs              # AppStatus + AppEvent stream + payload structs, 12 tests
+    mod.rs                 # re-exports: config, events, live_events, service, state
+    events.rs              # AppStatus + AppEvent stream + payload structs + console formatting, 23 tests
     config.rs              # AppRuntimeConfig + validate_runtime_config, 18 tests
+    live_events.rs         # pure event-construction helpers (build_transcript_event, etc.), 7 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```

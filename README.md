@@ -45,7 +45,7 @@ cargo run
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Default provider is `mock-local` (no Docker required); pass `--provider local-whisper` for the self-hosted faster-whisper server. Each speech-like chunk is written to a temporary WAV file in `output/live_chunks/`, sent through the selected provider, and deleted after transcription. Silence chunks are skipped. This is **not** true streaming. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console` — the same event stream the Tauri shell will consume. Default provider is `mock-local` (no Docker). Silence chunks are skipped. This is **not** true streaming. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 
 ## Local Transcription Providers

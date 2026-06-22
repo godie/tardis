@@ -21,5 +21,6 @@
 
 pub mod config;
 pub mod events;
+pub mod live_events;
 pub mod service;
 pub mod state;

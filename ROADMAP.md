@@ -99,6 +99,7 @@ Gaps:
 
 Next:
 
+- The `live-local-transcribe` runner now emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) formatted through `format_app_event_for_console` — the same event stream the Tauri shell will consume.
 - Replace the mock start/stop commands with calls into the shared backend orchestration layer.
 - Emit transcript and translation updates as Tauri events instead of pulling static strings.
 - Surface provider selection in the Local WAV Transcription card so the desktop can swap between `local-whisper` and `mock-local` without a CLI fallback.
