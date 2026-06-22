@@ -15,17 +15,32 @@ existing CLI audio or transcription pipeline.
 
 - `src-tauri/` — isolated Tauri Rust crate for the desktop shell.
 - `ui/` — static HTML/CSS/JS frontend loaded by the Tauri window.
-- Mock-only controls:
+- Mock-only controls (preserved for dev convenience):
   - `get_app_status() -> String`
   - `start_mock_listening() -> String`
   - `stop_mock_listening() -> String`
   - `get_mock_transcript() -> String`
   - `get_mock_translation() -> String`
+- Live transcription commands:
+  - `start_live_transcription(provider: Option<String>) -> Result<String, String>`
+    Spawns a background thread that captures audio, transcribes
+    chunks, and emits `app-event` Tauri events (kind: `status`,
+    `transcript`, `translation`, `error`) to the frontend.
+  - `stop_live_transcription() -> Result<String, String>`
+    Signals the active session to stop; the backend emits a
+    final `status: stopped` event and the thread exits.
+  - `get_supported_providers() -> Vec<String>`
+    Returns `["mock-local", "local-whisper"]`.
 - File-based local transcription:
   - `transcribe_wav_file_local(file_path: String) -> Result<String, String>`
     Delegates to `tardis::transcription::build_provider("local-whisper")`
     so the same client served by `cargo run -- local-transcribe-file`
     is reachable from the UI without duplicating the HTTP layer.
+- UI event payloads (serializable):
+  - `tardis::app::ui_events::UiAppEvent` — flat struct emitted as
+    `app-event` to the frontend.
+  - `tardis::app::ui_events::app_event_to_ui_event` — pure converter
+    from backend `AppEvent` to `UiAppEvent`.
 - Pure helpers (unit-testable):
   - `validate_wav_path_input(path: &str) -> Result<String, String>`
     Rejects empty/whitespace inputs; returns the trimmed path on
@@ -64,6 +79,33 @@ cargo tauri dev
 
 This follows Tauri's standard `frontendDist` development flow.
 
+## Manual flow — live transcription from the UI
+
+1. **Open the Tauri UI** (Option 1 or 2 above).
+
+2. **Select a provider** in the "Transcription provider" dropdown.
+   - `mock-local` works without Docker (default, deterministic).
+   - `local-whisper` requires the Docker container running.
+
+3. **Click Start Listening**. The status pill changes to
+   `Listening`. Speak into the default microphone.
+
+4. **Watch the transcript panel** — each speech-like chunk is
+   transcribed via the selected provider and the result appears
+   as a Tauri event. The translation panel updates with mock
+   translations.
+
+5. **Click Stop**. The status pill changes to `Stopped` and the
+   session ends cleanly.
+
+Expected behavior with `mock-local`:
+- Transcript: `mock transcript for live_chunk_NNN.wav`
+- Translation: `[mock es] mock translation: "..."`
+
+Expected behavior with `local-whisper`:
+- Transcript: real faster-whisper output for each chunk.
+- If Docker is not running, an error event is emitted.
+
 ## Manual flow — transcribe a WAV from the UI
 
 This flow reuses the existing
@@ -76,29 +118,17 @@ stack; the UI is a thin caller of the same Rust provider.
    docker compose -f docker/faster-whisper/docker-compose.yml up
    ```
 
-   The first run pulls the image **and** downloads the `base` Whisper
-   model (~150 MB). Subsequent runs reuse the cached model under
-   `docker/faster-whisper/hf_cache/`. The container exposes
-   `POST http://localhost:8000/v1/audio/transcriptions` — exactly the
-   endpoint the Rust client targets. See `docker/faster-whisper/README.md`
-   for full operator docs (health checks, model sizes, GPU opt-in,
-   privacy).
-
 2. **Generate WAV chunks** from the default microphone:
 
    ```bash
    cargo run -- save-chunks-test
-   # writes output/chunks/chunk_001.wav ... chunk_010.wav
    ```
 
 3. **Open the Tauri UI** (Option 1 or 2 above).
 
 4. **Transcribe a chunk from the UI**:
-   - Path input already pre-filled with `output/chunks/chunk_001.wav`.
-   - Click `Transcribe File`. Status pill shows `Transcribing…`, the
-     transcript appears below in the panel, and any provider error is
-     surfaced with a user-facing message that still names the original
-     error (URL, HTTP status, Docker hint).
+   - Path input pre-filled with `output/chunks/chunk_001.wav`.
+   - Click `Transcribe File`.
 
 5. **Same path via the CLI** for verification:
 
@@ -106,18 +136,23 @@ stack; the UI is a thin caller of the same Rust provider.
    cargo run -- local-transcribe-file output/chunks/chunk_001.wav
    ```
 
-The UI command calls the same `LocalWhisperClient` constructor as the
-CLI; only the entry point differs.
+## What is live (connected)
 
-## What is mocked
+- `Start Listening` spawns a background thread that captures audio
+  from the default microphone, chunks it, and transcribes speech-like
+  chunks through the selected provider.
+- `Stop` signals the background thread to stop; the session exits
+  cleanly.
+- Backend `AppEvent`s are converted to serializable `UiAppEvent`
+  payloads and emitted as Tauri `app-event` events to the frontend.
 
-- `Start Listening` only flips the in-app status to `Listening`.
-- `Stop` only flips the in-app status to `Stopped`.
-- Transcript panel shows:
-  - `mock transcript: speech detected`
-- Translation panel shows:
-  - `[mock es] mock transcript: speech detected`
-  - or the same shape with the selected target code in the frontend preview.
+## What is mocked (preserved for dev reference)
+
+- The original `start_mock_listening` / `get_mock_transcript` /
+  `get_mock_translation` commands still exist for smoke-testing the
+  UI without a microphone.
+- Transcript panel (mock flow): `mock transcript: speech detected`
+- Translation panel (mock flow): `[mock es] mock transcript: speech detected`
 
 ## What is connected (file-based only)
 
@@ -131,17 +166,15 @@ CLI; only the entry point differs.
 
 ## What is not connected yet
 
-- No live microphone capture from the UI (CPAL untouched from the Tauri shell).
-- No system audio capture.
-- No live chunking or streaming updates.
-- No translation from the UI (only the transcription step is wired).
-- No real cloud or remote transcription providers — `local-whisper`
-  is the only reachable provider today; `--provider mock-local` is
-  reserved for CLI offline mode.
+- No system audio capture from the UI.
+- Translation is still mock-only (the backend uses `MockTranslator`).
+- No real cloud or remote transcription providers.
+- No streaming/partial transcripts — each chunk is transcribed as a
+  whole via a temporary WAV file.
 
 ## Next integration points
 
-1. Replace the mock start/stop commands with a thin UI-facing app state that can call the existing Rust capture pipeline without moving audio logic into the frontend crate.
-2. Expose transcript and translation updates as events or channels from Rust to the webview once live chunk processing is connected.
-3. Route provider selection through the existing transcription abstraction instead of binding the UI directly to one backend — a future "Provider" dropdown in the Local WAV Transcription card would enumerate `ProviderKind` variants instead of hard-coding `local-whisper`.
-4. Keep CLI verification in place so `cargo run -- <mode>` remains the hardware test surface while the UI stays a shell over the same backend logic.
+1. Add a real translation provider behind the `Translator` trait.
+2. Add system audio capture support.
+3. Add session controls and persisted settings.
+4. Add explicit permission and recording-state UX.
