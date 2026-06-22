@@ -21,7 +21,14 @@
 use std::thread;
 
 use std::time::{Duration, Instant};
-use tardis::{audio, config, transcription, translation};
+use tardis::{
+    app::{
+        config::AppRuntimeConfig,
+        events::{AppEvent, status_label},
+        service::AppService,
+    },
+    audio, config, transcription, translation,
+};
 
 use anyhow::{Result, anyhow};
 use cpal::traits::StreamTrait;
@@ -39,10 +46,11 @@ fn main() -> Result<()> {
         Some("mock-transcribe-file") => run_mock_transcribe_file(),
         Some("mock-translate") => run_mock_translate(),
         Some("local-transcribe-file") => run_local_transcribe_file(),
+        Some("app-mock-flow") => run_app_mock_flow(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path>]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- app-mock-flow]"
             );
             std::process::exit(2);
         }
@@ -75,6 +83,86 @@ fn run_mic_for(duration: Duration) -> Result<()> {
     }
     println!("Capture finished.");
     Ok(())
+}
+
+/// Manual smoke test for the [`tardis::app`] orchestration
+/// layer.
+///
+/// What it does:
+/// 1. Builds an [`AppService`] from the default
+///    [`AppRuntimeConfig`] (provider `mock-local`, languages
+///    `en -> es`).
+/// 2. Calls `start_listening_mock`, prints the resulting event.
+/// 3. Runs `run_mock_text_flow` with the
+///    `"mock transcript: speech detected"` string used by the
+///    existing mock UI surface, prints the emitted transcript
+///    + translation events.
+/// 4. Calls `stop_listening`, prints the resulting event.
+/// 5. Prints the final state summary.
+///
+/// What it deliberately does **not** do (despite the word
+/// "listening" in the helper names):
+/// - Open the microphone or start a CPAL stream.
+/// - Reach the faster-whisper Docker container.
+/// - Bind to a Tauri runtime.
+/// - Persist anything to disk.
+///
+/// This command exists for the developer to validate that the
+/// `app` module + `MockTranslator` are wired together end-to-end
+/// in one short synchronous run.
+fn run_app_mock_flow() -> Result<()> {
+    println!("=== app-mock-flow (sync smoke for AppService) ===\n");
+
+    let mut service = AppService::new(AppRuntimeConfig::default())
+        .map_err(|e| anyhow!("AppService::new with default config failed: {e}"))?;
+
+    // 1. Start listening (one StatusChanged(Listening) event).
+    print_step("start_listening_mock");
+    print_events(&service.start_listening_mock());
+
+    // 2. Run mock text flow with the canonical UI mock phrase.
+    print_step("run_mock_text_flow(\"mock transcript: speech detected\")");
+    print_events(&service.run_mock_text_flow("mock transcript: speech detected"));
+
+    // 3. Stop listening (one StatusChanged(Stopped) event).
+    print_step("stop_listening");
+    print_events(&service.stop_listening());
+
+    // 4. Demonstrate the silent-skip path. `run_mock_text_flow`
+    //    returns an empty `Vec<AppEvent>` for empty / whitespace
+    //    input so `print_events` shows "(no events)" — the future
+    //    UI shell must not render an "empty transcript" toast on
+    //    every capture tick and the CLI follows the same
+    //    philosophy.
+    print_step("run_mock_text_flow(\"\")  // silent-skip demo");
+    print_events(&service.run_mock_text_flow(""));
+
+    // 5. Final summary so the operator can sanity-check the
+    //    resulting state without re-reading the event log.
+    println!("\n=== summary ===");
+    let state = service.state();
+    println!("final status:     {}", status_label(state.status));
+    println!("last_transcript:  {:?}", state.last_transcript);
+    println!("last_translation: {:?}", state.last_translation);
+    println!("\n=== done ===");
+    Ok(())
+}
+
+fn print_step(name: &str) {
+    println!("\n[step] {name}");
+}
+
+fn print_events(events: &[AppEvent]) {
+    if events.is_empty() {
+        println!("  (no events)");
+        return;
+    }
+    for (i, event) in events.iter().enumerate() {
+        // `{:#?}` prints each event on its own block with field
+        // labels so the operator can scan transcript vs
+        // translation shapes at a glance.
+        println!("  [event {i}] {event:#?}");
+    }
 }
 
 fn run_record_5s() -> Result<()> {
