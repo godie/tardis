@@ -57,6 +57,10 @@ mirror one of these rows.
 | `translation::mock` (`MockTranslator`) | `tests` in `src/translation/mock.rs` | `cargo run -- mock-translate` |
 | `translation::pipeline::run_mock_translate_test` | n/a (CPAL driver) | `cargo run -- mock-translate` |
 | `translation::translator` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-translate` |
+| `app::config` (defaults + `validate_runtime_config`) | `tests` in `src/app/config.rs` | consumed by `app-mock-flow` |
+| `app::events` (AppEvent / AppStatus / payload structs / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow` |
+| `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
+| `app::service` (AppService — reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
 
 ## How to add a new feature
 
