@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TARDIS v1</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Prototype Shell</p>
+        <h1>TARDIS v1</h1>
+        <p class="subtitle">Real-time transcription and translation prototype</p>
+      </section>
+
+      <section class="control-strip" aria-label="Listening controls">
+        <div class="status-block">
+          <span class="status-label">Status</span>
+          <span id="status-indicator" class="status-pill" data-status="Idle">Idle</span>
+        </div>
+
+        <div class="button-row">
+          <button id="start-button" class="action action-primary" type="button">
+            Start Listening
+          </button>
+          <button id="stop-button" class="action action-secondary" type="button">
+            Stop
+          </button>
+        </div>
+      </section>
+
+      <section class="language-grid" aria-label="Language settings">
+        <label class="language-field">
+          <span>Source language</span>
+          <select id="source-language">
+            <option value="en" selected>English</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="pt">Portuguese</option>
+          </select>
+        </label>
+
+        <label class="language-field">
+          <span>Target language</span>
+          <select id="target-language">
+            <option value="es" selected>Spanish</option>
+            <option value="it">Italian</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <p class="panel-kicker">Transcript</p>
+            <h2>Captured speech</h2>
+          </div>
+          <p id="transcript-content" class="panel-copy muted">
+            Start listening to load the mock transcript.
+          </p>
+        </article>
+
+        <article class="panel panel-accent">
+          <div class="panel-header">
+            <p class="panel-kicker">Translation</p>
+            <h2>Rendered output</h2>
+          </div>
+          <p id="translation-content" class="panel-copy muted">
+            Translation stays mocked until the real transcription pipeline is connected.
+          </p>
+        </article>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+

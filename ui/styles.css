@@ -1,0 +1,280 @@
+:root {
+  color-scheme: light;
+  --paper: oklch(0.96 0.02 78);
+  --paper-shadow: oklch(0.9 0.02 78);
+  --ink: oklch(0.24 0.03 38);
+  --ink-soft: oklch(0.42 0.03 42);
+  --signal: oklch(0.69 0.16 56);
+  --signal-deep: oklch(0.57 0.13 48);
+  --signal-faint: oklch(0.91 0.04 65);
+  --border: color-mix(in oklch, var(--ink) 12%, transparent);
+  --shadow: 0 24px 80px color-mix(in oklch, var(--ink) 18%, transparent);
+  --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--body);
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, oklch(0.99 0.03 82), transparent 28%),
+    radial-gradient(circle at bottom right, oklch(0.88 0.05 60), transparent 34%),
+    linear-gradient(135deg, var(--paper), var(--paper-shadow));
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(color-mix(in oklch, var(--signal) 10%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--signal) 10%, transparent) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 85%);
+  opacity: 0.5;
+}
+
+.shell {
+  width: min(1100px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: clamp(32px, 4vw, 56px) 0 48px;
+}
+
+.hero {
+  display: grid;
+  gap: 10px;
+  margin-bottom: clamp(28px, 4vw, 40px);
+}
+
+.eyebrow,
+.status-label,
+.panel-kicker,
+.language-field span {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+h1,
+h2,
+.status-pill,
+.action {
+  text-wrap: balance;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(3rem, 7vw, 5.8rem);
+  line-height: 0.95;
+  font-weight: 700;
+  max-width: 8ch;
+}
+
+.subtitle {
+  margin: 0;
+  max-width: 42rem;
+  font-size: clamp(1.02rem, 1.5vw, 1.2rem);
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.control-strip,
+.panel,
+.language-field {
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, white 58%, var(--paper));
+  box-shadow: var(--shadow);
+}
+
+.control-strip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: end;
+  padding: 22px;
+  border-radius: 28px;
+  margin-bottom: 20px;
+}
+
+.status-block {
+  display: grid;
+  gap: 10px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-weight: 700;
+  background: color-mix(in oklch, var(--signal-faint) 82%, white);
+}
+
+.status-pill::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--signal-deep);
+}
+
+.status-pill[data-status="Listening"] {
+  background: color-mix(in oklch, var(--signal) 20%, white);
+}
+
+.status-pill[data-status="Listening"]::before {
+  background: var(--signal);
+  box-shadow: 0 0 0 8px color-mix(in oklch, var(--signal) 18%, transparent);
+}
+
+.status-pill[data-status="Stopped"] {
+  background: color-mix(in oklch, var(--ink) 8%, white);
+}
+
+.status-pill[data-status="Stopped"]::before {
+  background: var(--ink-soft);
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.action {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 22px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+}
+
+.action:hover,
+.action:focus-visible {
+  transform: translateY(-1px);
+}
+
+.action:focus-visible,
+select:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--signal) 60%, white);
+  outline-offset: 2px;
+}
+
+.action-primary {
+  color: white;
+  background: linear-gradient(135deg, var(--signal), var(--signal-deep));
+}
+
+.action-secondary {
+  color: var(--ink);
+  background: color-mix(in oklch, var(--ink) 6%, white);
+}
+
+.language-grid,
+.panel-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.language-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.language-field {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 24px;
+}
+
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 16px;
+  font: inherit;
+  color: var(--ink);
+  background: color-mix(in oklch, white 85%, var(--signal-faint));
+}
+
+.panel-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-height: 280px;
+  padding: 24px;
+  border-radius: 32px;
+}
+
+.panel-accent {
+  background:
+    linear-gradient(155deg, color-mix(in oklch, white 72%, var(--signal-faint)), white),
+    white;
+}
+
+.panel-header {
+  display: grid;
+  gap: 10px;
+}
+
+h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  line-height: 1;
+  font-weight: 600;
+}
+
+.panel-copy {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.8;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+@media (max-width: 880px) {
+  .control-strip,
+  .language-grid,
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .button-row {
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    transition: none !important;
+    animation: none !important;
+  }
+}
+

@@ -1,4 +1,6 @@
 /target
+/src-tauri/target
+/src-tauri/gen
 /output
 codedb.snapshot
 
