@@ -9,7 +9,7 @@ commit style, working conventions, things NOT to do.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # 179 unit tests on the CLI workspace
+cargo test                                           # ~219+ unit tests on the CLI workspace (179 baseline + ~17 in app::config + ~23 in app::settings_store)
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -24,7 +24,7 @@ cargo run -- mock-translate                          # 10 s, mock transcript + t
 cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
 cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription via AppEvents (default mock-local)
 cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
-cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription
+cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription + runtime settings
 cargo test --manifest-path src-tauri/Cargo.toml       # 28 Tauri shell unit tests (pure helpers + LiveSessionState + SessionCleanupGuard)
 ```
 
@@ -60,11 +60,12 @@ src/
     pipeline.rs            # live CPAL translation pipeline (no tests)
     translator.rs          # translation trait + result types
   app/
-    mod.rs                 # re-exports: config, events, live_events, service, state, ui_events
+    mod.rs                 # re-exports: config, events, live_events, service, settings_store, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs + console formatting, 23 tests
-    config.rs              # AppRuntimeConfig + validate_runtime_config, 18 tests
+    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 18 tests
     live_events.rs         # pure event-construction helpers (build_transcript_event, etc.), 7 tests
     ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 5 tests
+    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, ~14 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```
@@ -204,6 +205,12 @@ the user explicitly asks.
 - Adding a new module? Mirror an existing row in
   `DEVELOPMENT_RULES.md`'s table in the same commit. Stale tables are
   a bug.
+- Adding a settings file format? Reuse `src/app/settings_store::settings_file_path`
+  and the `SettingsStoreError` enum so failures surface the same way
+  across CLI and Tauri callers. New fields on `AppRuntimeConfig`
+  should land in one commit alongside a `padded_*` / `legacy_*` /
+  `corrupt_*` test in `src/app/settings_store.rs` so the load path
+  can never silently accept a forward-incompatible file.
 
 ## Things NOT to do
 

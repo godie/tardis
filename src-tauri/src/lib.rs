@@ -1,11 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
-const LONG_SESSION_SECONDS: u64 = 86400; // 24 h — loop exits via stop signal
-const DEFAULT_PROVIDER: &str = "mock-local";
-const LOCAL_WHISPER_PROVIDER: &str = "local-whisper";
 const SESSION_ALREADY_RUNNING_ERR: &str =
     "A live transcription session is already running. Stop it first.";
 const NO_SESSION_RUNNING_ERR: &str = "No live transcription session is running.";
@@ -225,18 +222,20 @@ impl Drop for SessionCleanupGuard {
 fn start_live_transcription(
     app: tauri::AppHandle,
     session: tauri::State<'_, Arc<LiveSessionState>>,
-    provider: Option<String>,
+    config: Option<tardis::app::config::AppRuntimeConfig>,
 ) -> Result<String, String> {
     let session: Arc<LiveSessionState> = session.inner().clone();
 
-    let provider_name = provider.unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
-
-    // 1. Validate the provider name BEFORE touching state. If the
-    //    name is unknown, return early and leave `is_running`
-    //    untouched. This avoids the previous bug where a bad name
-    //    could strand the app in an "already running" state.
-    tardis::transcription::build_provider(&provider_name)
-        .map_err(|e| e.to_string())?;
+    // 1. Build + normalize + validate the config BEFORE touching
+    //    any state. If validation fails, return early and leave
+    //    `is_running` untouched. The UI sends a config it built
+    //    from the settings panel; on `None` we fall back to
+    //    `AppRuntimeConfig::default()` so old frontends (or CLI
+    //    smoke tests calling the same command) keep working.
+    let config = tardis::app::config::normalize_runtime_config(
+        config.unwrap_or_else(tardis::app::config::AppRuntimeConfig::default),
+    );
+    tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
 
     // 2. Try to mark the session as running.
     if session.try_mark_running().is_err() {
@@ -251,7 +250,8 @@ fn start_live_transcription(
     // 4. Spawn the worker. The cleanup guard resets state when
     //    the closure (or anything it awaits) returns OR panics.
     let app_clone = app.clone();
-    let provider_clone = provider_name.clone();
+    let provider_label = config.transcription_provider.clone();
+    let config_clone = config.clone();
     let session_for_cleanup = Arc::clone(&session);
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
@@ -274,10 +274,9 @@ fn start_live_transcription(
             // call is not blocked.
             let _cleanup = SessionCleanupGuard(session_for_cleanup);
 
-            let result = tardis::transcription::live_local::run_live_local_transcription_with_events(
-                &provider_clone,
-                LONG_SESSION_SECONDS,
-                1000,
+            let result = tardis::transcription::live_local::run_live_local_transcription_with_config_and_events(
+                config_clone,
+                None, // None => run until stop signal is set
                 Some(stop_clone),
                 move |event| {
                     let ui_event =
@@ -290,9 +289,8 @@ fn start_live_transcription(
                 // Surface the runner's top-level error to the UI as a
                 // `kind = "error"` event so the user sees something
                 // even if the per-chunk provider path swallowed its
-                // own errors. Note: per-chunk errors are already
-                // surfaced via `build_error_event` inside
-                // `run_live_local_transcription_with_events`.
+                // own errors. Note: per-chunk errors are already                //    surfaced via `build_error_event` inside
+                //    `run_live_local_transcription_with_config_and_events`.
                 let _ = app.emit(
                     "app-event",
                     tardis::app::ui_events::app_event_to_ui_event(
@@ -318,7 +316,7 @@ fn start_live_transcription(
     // so the UI / CLI logs can tell at a glance which provider was
     // loaded. The frontend only logs this string; no contract
     // depends on the exact wording.
-    Ok(format!("started with provider {provider_name}"))
+    Ok(format!("started with provider {provider_label}"))
 }
 
 /// Signal the active live transcription session to stop.
@@ -352,14 +350,92 @@ fn stop_live_transcription(
 /// Return the list of supported transcription provider names.
 ///
 /// Pure — no I/O, no state access. Used by the frontend to
-/// populate the provider selector. Strings are sourced from the
-/// [`DEFAULT_PROVIDER`] / [`LOCAL_WHISPER_PROVIDER`] constants
-/// (kept in lockstep with `start_live_transcription`'s default
-/// validation) so adding a new provider requires editing exactly
+/// populate the provider selector. Strings are sourced from
+/// [`tardis::app::config::supported_transcription_providers`]
+/// (kept in lockstep with `start_live_transcription`'s
+/// validator) so adding a new provider requires editing exactly
 /// one place.
 #[tauri::command]
-fn get_supported_providers() -> Vec<String> {
-    vec![DEFAULT_PROVIDER.to_string(), LOCAL_WHISPER_PROVIDER.to_string()]
+fn get_supported_transcription_providers() -> Vec<String> {
+    tardis::app::config::supported_transcription_providers()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Return the default [`tardis::app::config::AppRuntimeConfig`]
+/// the UI should pre-populate the settings panel with on first
+/// load.
+///
+/// Pure — no I/O, no state access. The defaults are sourced from
+/// centralised [`tardis::config`] constants so the frontend and
+/// the Tauri command agree on the same starting point without
+/// the UI duplicating constant values. The frontend is expected
+/// to clone + mutate this for the session; the backend
+/// re-validates any field the user changes before starting a
+/// session.
+#[tauri::command]
+fn get_default_runtime_config() -> tardis::app::config::AppRuntimeConfig {
+    tardis::app::config::AppRuntimeConfig::default()
+}
+
+/// Load the persisted [`tardis::app::config::AppRuntimeConfig`]
+/// from `<OS config dir>/<tardis::runtime.json>`.
+///
+/// Resolution paths per platform (handled by Tauri's
+/// [`tauri::Manager::path`]):
+/// - **Linux**: `$XDG_CONFIG_HOME/tardis/runtime.json` (or
+///   `~/.config/tardis/runtime.json`).
+/// - **macOS**: `~/Library/Application Support/tardis/runtime.json`.
+/// - **Windows**: `%APPDATA%\tardis\runtime.json`.
+///
+/// **First-run behavior:** if the file does not exist, returns
+/// [`AppRuntimeConfig::default`] so the UI falls back to the
+/// same defaults [`get_default_runtime_config`] returns. A
+/// corrupt or out-of-bounds file surfaces the underlying
+/// [`tardis::app::settings_store::SettingsStoreError`] as a
+/// user-facing string. The command does **not** delete a corrupt
+/// file — the next `save_runtime_settings` call overwrites it.
+#[tauri::command]
+fn load_runtime_settings(
+    app: tauri::AppHandle,
+) -> Result<tardis::app::config::AppRuntimeConfig, String> {
+    let base_dir = app
+        .path()
+        .config_dir()
+        .map_err(|e| format!("Could not resolve OS config dir: {e}"))?;
+    let path = tardis::app::settings_store::settings_file_path(&base_dir);
+    tardis::app::settings_store::load_from_path_or_default(&path)
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the [`tardis::app::config::AppRuntimeConfig`] to
+/// `<OS config dir>/<tardis>/runtime.json`. Normalizes and
+/// validates the input before writing; an invalid config is
+/// returned as `Err` **without** touching the disk.
+///
+/// The write is **atomic** (write-then-rename via
+/// [`tardis::app::settings_store::save_to_path`]) so a crash
+/// mid-write either leaves the previous file untouched or
+/// replaces it cleanly. The parent `<OS config dir>/<tardis>/`
+/// directory is auto-created on first save.
+///
+/// Called by the frontend on every settings-input change so the
+/// user's selections survive Tauri shell restarts.
+#[tauri::command]
+fn save_runtime_settings(
+    app: tauri::AppHandle,
+    config: tardis::app::config::AppRuntimeConfig,
+) -> Result<(), String> {
+    let config = tardis::app::config::normalize_runtime_config(config);
+    tardis::app::config::validate_runtime_config(&config).map_err(|e| e)?;
+    let base_dir = app
+        .path()
+        .config_dir()
+        .map_err(|e| format!("Could not resolve OS config dir: {e}"))?;
+    let path = tardis::app::settings_store::settings_file_path(&base_dir);
+    tardis::app::settings_store::save_to_path(&path, &config)
+        .map_err(|e| e.to_string())
 }
 
 // ===== Existing mock / file-transcribe commands ===========================
@@ -519,7 +595,10 @@ pub fn run() {
             transcribe_wav_file_local,
             start_live_transcription,
             stop_live_transcription,
-            get_supported_providers,
+            get_supported_transcription_providers,
+            get_default_runtime_config,
+            load_runtime_settings,
+            save_runtime_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TARDIS UI shell");
