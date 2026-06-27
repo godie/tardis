@@ -13,6 +13,8 @@
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
 //!   cargo run -- live-local-transcribe [--provider <name>] -> chunk-by-chunk live transcription (default mock-local)
+//!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
+//!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -27,6 +29,7 @@ use tardis::{
         config::AppRuntimeConfig,
         events::{AppEvent, status_label},
         service::AppService,
+        settings_store,
     },
     audio, config, transcription, translation,
 };
@@ -49,10 +52,12 @@ fn main() -> Result<()> {
         Some("local-transcribe-file") => run_local_transcribe_file(),
         Some("live-local-transcribe") => run_live_local_transcribe(),
         Some("app-mock-flow") => run_app_mock_flow(),
+        Some("settings-default") => run_settings_default(),
+        Some("settings-validate") => run_settings_validate(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -85,6 +90,76 @@ fn run_mic_for(duration: Duration) -> Result<()> {
     }
     println!("Capture finished.");
     Ok(())
+}
+
+/// Print the default [`AppRuntimeConfig`] as pretty JSON.
+///
+/// Mirrors the file the Tauri shell's `save_runtime_settings`
+/// command would write for the same default. Useful for:
+///
+/// - Sanity-checking what the live backend starts with.
+/// - Bootstrapping a fresh `runtime.json` (pipe into the
+///   `<OS config dir>/tardis/runtime.json` path the
+///   `settings-validate` command understands).
+/// - Cross-checking the CLI defaults match the UI defaults
+///   the Tauri shell pre-populates the settings panel with.
+///
+/// Pure — no FS, no microphone, no Docker. The output is
+/// `serde_json::to_string_pretty` of the normalized default
+/// config so it is directly pipe-able into a `runtime.json`
+/// file.
+fn run_settings_default() -> Result<()> {
+    let json = settings_store::serialize_runtime_config(&AppRuntimeConfig::default())?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Load + validate a settings JSON file at `<path>` and print
+/// whether it is valid.
+///
+/// Exit codes:
+/// - `0` — file loaded and validated successfully. The
+///   resolved values are printed so the operator can confirm
+///   which provider / language pair the file pins.
+/// - `1` — any error (invalid JSON, validation failure, FS
+///   I/O other than "file not found"). The original
+///   `SettingsStoreError` is preserved in the error output so
+///   the operator can tell parse errors from out-of-bounds
+///   threshold errors without re-running the command.
+///
+/// Mirrors the validation the Tauri shell's
+/// `load_runtime_settings` command runs, so a config that
+/// passes here will also be accepted by the UI on next
+/// launch.
+fn run_settings_validate() -> Result<()> {
+    let path = std::env::args().nth(2).ok_or_else(|| {
+        anyhow!(
+            "settings-validate requires a path argument.\n\
+             Usage: cargo run -- settings-validate <path-to-runtime.json>"
+        )
+    })?;
+    let path_buf = std::path::PathBuf::from(&path);
+    match settings_store::load_from_path_or_default(&path_buf) {
+        Ok(cfg) => {
+            println!("valid: {path}");
+            println!("transcription_provider: {}", cfg.transcription_provider);
+            println!("source_language:        {}", cfg.source_language);
+            println!("target_language:        {}", cfg.target_language);
+            println!("chunk_duration_ms:      {}", cfg.chunk_duration_ms);
+            println!("volume_threshold:       {}", cfg.volume_threshold);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("invalid: {path}");
+            // `{e:#}` prints the full anyhow error chain (Display
+            // alone only shows the top-level message), so the
+            // underlying `serde_json` parse error's line/column
+            // and the validator's first-violation message both
+            // surface in the operator's terminal.
+            eprintln!("reason: {e:#}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Manual smoke test for the [`tardis::app`] orchestration
