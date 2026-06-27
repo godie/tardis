@@ -82,7 +82,7 @@ Later:
 
 ## 4. Connect The Tauri Shell To The Real Backend
 
-Status: `partial` → `partial (UI wired to backend AppEvents, panic-safe cleanup)`
+Status: `partial (UI wired to backend AppEvents, panic-safe cleanup)` → `partial (runtime settings panel live in UI + persisted across sessions)`
 
 What exists:
 
@@ -90,26 +90,34 @@ What exists:
   pure [`app_event_to_ui_event`] mapping (`app::ui_events` — 5 unit tests).
 - `start_live_transcription` spawns a background thread that captures audio,
   transcribes chunks, and emits `app-event` Tauri events to the frontend.
-  Default provider: `mock-local` (no Docker).
+  Accepts a full `AppRuntimeConfig` from the UI; providers / language
+  pair / chunk size / threshold all flow from the settings panel.
 - `stop_live_transcription` signals the session to stop cleanly.
-- `get_supported_providers` populates the UI selector with
-  `["mock-local", "local-whisper"]`.
+- `get_supported_transcription_providers` + `get_default_runtime_config`
+  populate the UI on load (no hard-coded provider list in HTML).
+- Runtime settings **persist across sessions** to
+  `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store`
+  pure helpers (atomic write-then-rename, load-returns-default-on-missing,
+  normalize-and-validate round trip). New Tauri commands
+  `load_runtime_settings` / `save_runtime_settings` resolve the canonical
+  OS path through `tauri::Manager::path()`; the UI calls them on init
+  and on every committed settings change respectively.
 - Session lifecycle is RAII-cleaned: `LiveSessionState` is registered as
   `Arc<...>` with Tauri and a [`SessionCleanupGuard`] resets `is_running`
   and `stop_signal` on worker exit (success, error, **or panic**) — so a
   fast Start→Stop→Start cycle is unblocked even if the worker crashed.
   12 unit tests cover the pure `LiveSessionState` helpers and the
-  panic-safety path via `std::panic::catch_unwind` (CLI workspace: 179
-  tests total; Tauri shell: 28 tests).
-- Provider selector in the UI: `mock-local` (no Docker) or `local-whisper`
-  (requires Docker).
-- File-based UI transcription still wired (`transcribe_wav_file_local`).
-- Tauri runtime + cross-thread session ownership is locked down by
-  typed signatures but verified manually; see [`docs/tauri-ui-shell.md`]
-  for the manual Start/Stop + Docker flow.
+  panic-safety path via `std::panic::catch_unwind`.
+- `[`src/transcription/live_local::run_live_local_transcription_with_config_and_events`]`
+  is the canonical live runner; translation uses
+  `config.source_language` / `config.target_language` (no hardcoded en/es).
 
 Gaps:
 
+- Settings persistence is **runtime-only**: each user-level OS config
+  dir gets one entry, but there is no first-run "remember my last
+  session?" prompt, no import/export, and no schema-version field for
+  future migrations.
 - Translation is still mock-only.
 - No system audio capture.
 - No streaming/partial transcripts.
@@ -121,11 +129,12 @@ Next:
 - Add a real translation provider behind the `Translator` trait.
 - Surface real translation events through the Tauri event stream.
 - Add a multithreaded Start/Stop race test to harden the cleanup.
-- Keep the frontend shell thin; the backend remains the source of truth.
+- Add a top-level `schema_version` to the persisted file so future
+  `AppRuntimeConfig` field additions can migrate cleanly without
+  silently deserializing corrupt data.
 
 Later:
 
-- Add session controls and persisted settings.
 - Add explicit permission and recording-state UX before any release candidate.
 
 ## 5. Improve Operability And Contributor Workflow

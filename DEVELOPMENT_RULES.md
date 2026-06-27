@@ -59,7 +59,12 @@ mirror one of these rows.
 | `translation::mock` (`MockTranslator`) | `tests` in `src/translation/mock.rs` | `cargo run -- mock-translate` |
 | `translation::pipeline::run_mock_translate_test` | n/a (CPAL driver) | `cargo run -- mock-translate` |
 | `translation::translator` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-translate` |
-| `app::config` (defaults + `validate_runtime_config`) | `tests` in `src/app/config.rs` | consumed by `app-mock-flow` |
+| `app::config` (`AppRuntimeConfig` serde derives + `validate_runtime_config` + `normalize_runtime_config` + `supported_transcription_providers` / `is_supported_transcription_provider` + chunk-duration / threshold bounds) | `tests` in `src/app/config.rs` | consumed by `app-mock-flow`, `live-local-transcribe`, Tauri `start_live_transcription` and `get_default_runtime_config` |
+| `app::settings_store` (`settings_file_path` + atomic `save_to_path` + load-returns-default-on-missing + `SettingsStoreError`) | `tests` in `src/app/settings_store.rs` (round trip in tempdir, corrupt JSON, out-of-bounds on disk, parent-dir create, no temp leftover) | consumed by Tauri `load_runtime_settings` / `save_runtime_settings` |
+| `transcription::live_local::run_live_local_transcription_with_config_and_events` (canonical live runner) | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]` (via the back-compat wrapper) |
+| `src-tauri::start_live_transcription` (`Option<AppRuntimeConfig>` arg + session lifecycle) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
+| `src-tauri::get_default_runtime_config` / `get_supported_transcription_providers` (UI populators) | n/a (pure, exercised via the running shell) | `cargo run --manifest-path src-tauri/Cargo.toml` |
+| `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `app::events` (AppEvent / AppStatus / payload structs / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
 | `app::service` (AppService — reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |

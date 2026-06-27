@@ -139,12 +139,106 @@ stack; the UI is a thin caller of the same Rust provider.
 ## What is live (connected)
 
 - `Start Listening` spawns a background thread that captures audio
-  from the default microphone, chunks it, and transcribes speech-like
-  chunks through the selected provider.
+  from the default microphone, chunks it using the requested chunk
+  size, classifies each chunk with the requested threshold, and
+  transcribes speech-like chunks through the selected provider.
+- Settings panel: provider / source language / target language /
+  chunk duration / volume threshold are populated from
+  `tardis::app::config::AppRuntimeConfig::default()` on first load
+  **or** from the previously-saved
+  `<OS config dir>/tardis/runtime.json` (via
+  `load_runtime_settings`), and the provider dropdown is rebuilt
+  from the backend's `get_supported_transcription_providers` list
+  so a future provider shows up without touching the HTML. Backend
+  re-validates any field the user changes, and the UI calls
+  `save_runtime_settings` on every committed change so a Tauri
+  restart returns the user's last selection.
 - `Stop` signals the background thread to stop; the session exits
-  cleanly.
+  cleanly. Settings re-enable when the worker emits `Stopped`.
 - Backend `AppEvent`s are converted to serializable `UiAppEvent`
   payloads and emitted as Tauri `app-event` events to the frontend.
+
+## Runtime settings — what each field does
+
+The settings panel sends a full `AppRuntimeConfig` to the Tauri
+command `start_live_transcription { config: {...} }`. The same JSON
+shape is validated by `tardis::app::config::validate_runtime_config`
+and consumed by `tardis::transcription::live_local::run_live_local_transcription_with_config_and_events`.
+
+| Field | Default | Bounds | Behaviour |
+| --- | --- | --- | --- |
+| `transcription_provider` | `"mock-local"` | one of [`tardis::app::config::supported_transcription_providers`] | selects the file-based transcription backend |
+| `source_language` | `"en"` | non-empty | BCP-47-ish source code piped to the translator |
+| `target_language` | `"es"` | non-empty | BCP-47-ish target code piped to the translator |
+| `chunk_duration_ms` | `1000` | `[250, 5000]` | per-chunk window for the live pipeline |
+| `volume_threshold` | `0.01` | `[0.0, 1.0]` | silence/speech threshold (same scale as `audio::volume::calculate_average_volume`) |
+
+### Manual test: `mock-local` provider (default, no Docker)
+
+1. Open the Tauri UI (`cargo run --manifest-path src-tauri/Cargo.toml`).
+2. Leave `transcription_provider` at `mock-local`.
+3. Pick `transcript_provider` = `mock-local`, `source_language` = `en`, `target_language` = `es`.
+4. Click **Start Listening** — status pill flips to `Listening`.
+5. Speak into the default microphone. The transcript panel shows
+   `mock transcript for live_chunk_NNN.wav` per chunk; the
+   translation panel shows the deterministic mock translation.
+6. Click **Stop** — status pill flips to `Stopped`, the next
+   Start works without re-launching the shell.
+
+### Manual test: Docker `local-whisper` provider
+
+1. Start Docker:
+   ```bash
+   docker compose -f docker/faster-whisper/docker-compose.yml up
+   ```
+2. Re-open the Tauri UI and pick `transcription_provider` =
+   `local-whisper`.
+3. Click **Start Listening** and speak. Real transcripts replace
+   the mock ones in the record panel, and translations use the
+   selected target language.
+4. If Docker is not running, the backend emits an error event
+   via `app-event` with the user-facing message produced by
+   `normalize_local_transcription_error`.
+
+### Manual test: changing the target language
+
+1. Pick `transcription_provider` = `mock-local`,
+   `source_language` = `en`, `target_language` = `fr`.
+2. Click **Start Listening**, speak. Each translation event uses
+   `[mock fr]` (instead of `[mock es]`) — proves the language
+   pair from the settings panel is reaching the translator.
+
+### Manual test: changing the volume threshold
+
+1. Set `volume_threshold` = `0.5` (only loud chunks become
+   "speech-like" and reach the provider).
+2. Speak very softly. Most chunks are filtered out as silence,
+   so the transcript / translation panels stay quiet.
+3. Drop to `0.0` to force "always speech" for the same window
+   — every captured chunk now reaches the provider.
+
+### Manual test: invalid config (server-side rejection)
+
+The backend re-validates any field the UI submits. To surface
+that path, edit the HTML `min` / `max` attributes down to 0
+in the inspector and click **Start Listening**. The start
+button handler catches the returned error, sets the status
+pill to `Error`, and shows the validator's first violation
+message in the live-error panel ("`chunk_duration_ms (0) is
+below the minimum of 250 ms`").
+
+Settings are **persisted across sessions** to
+`<OS config dir>/tardis/runtime.json` (Linux:
+`~/.config/tardis/runtime.json`, macOS:
+`~/Library/Application Support/tardis/runtime.json`, Windows:
+`%APPDATA%\tardis\runtime.json`). The first save creates the
+parent `tardis/` subdirectory automatically; subsequent saves
+overwrite atomically (write-then-rename with `<file>.tmp`),
+so a crash mid-write either leaves the previous file untouched or
+replaces it cleanly. A corrupt or out-of-bounds file is surfaced
+on the next launch — the UI falls back to the canonical defaults
+from `get_default_runtime_config` so first-run UX matches the
+getting-started docs exactly.
 
 ## What is mocked (preserved for dev reference)
 
@@ -176,5 +270,4 @@ stack; the UI is a thin caller of the same Rust provider.
 
 1. Add a real translation provider behind the `Translator` trait.
 2. Add system audio capture support.
-3. Add session controls and persisted settings.
-4. Add explicit permission and recording-state UX.
+3. Add explicit permission and recording-state UX.
