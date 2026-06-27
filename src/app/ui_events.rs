@@ -15,7 +15,7 @@ use crate::app::events::AppEvent;
 /// Every field is `Option` because different event kinds populate
 /// different subsets. The frontend inspects `kind` (always
 /// present) to decide which optional fields to render.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct UiAppEvent {
     /// Always present: `"status"`, `"transcript"`,
     /// `"translation"`, or `"error"`.

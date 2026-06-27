@@ -82,28 +82,45 @@ Later:
 
 ## 4. Connect The Tauri Shell To The Real Backend
 
-Status: `partial` → `partial (live transcription + events wired)`
+Status: `partial` → `partial (UI wired to backend AppEvents, panic-safe cleanup)`
 
 What exists:
 
+- `UiAppEvent` — serializable frontend-safe payloads with a
+  pure [`app_event_to_ui_event`] mapping (`app::ui_events` — 5 unit tests).
 - `start_live_transcription` spawns a background thread that captures audio,
   transcribes chunks, and emits `app-event` Tauri events to the frontend.
+  Default provider: `mock-local` (no Docker).
 - `stop_live_transcription` signals the session to stop cleanly.
+- `get_supported_providers` populates the UI selector with
+  `["mock-local", "local-whisper"]`.
+- Session lifecycle is RAII-cleaned: `LiveSessionState` is registered as
+  `Arc<...>` with Tauri and a [`SessionCleanupGuard`] resets `is_running`
+  and `stop_signal` on worker exit (success, error, **or panic**) — so a
+  fast Start→Stop→Start cycle is unblocked even if the worker crashed.
+  12 unit tests cover the pure `LiveSessionState` helpers and the
+  panic-safety path via `std::panic::catch_unwind` (CLI workspace: 179
+  tests total; Tauri shell: 28 tests).
 - Provider selector in the UI: `mock-local` (no Docker) or `local-whisper`
   (requires Docker).
-- `UiAppEvent` — serializable event payloads converted from backend `AppEvent`s.
 - File-based UI transcription still wired (`transcribe_wav_file_local`).
+- Tauri runtime + cross-thread session ownership is locked down by
+  typed signatures but verified manually; see [`docs/tauri-ui-shell.md`]
+  for the manual Start/Stop + Docker flow.
 
 Gaps:
 
 - Translation is still mock-only.
 - No system audio capture.
 - No streaming/partial transcripts.
+- The multithreaded race test for Start/Stop + CleanupGuard is not
+  present yet — the panic-safety test is single-threaded only.
 
 Next:
 
 - Add a real translation provider behind the `Translator` trait.
 - Surface real translation events through the Tauri event stream.
+- Add a multithreaded Start/Stop race test to harden the cleanup.
 - Keep the frontend shell thin; the backend remains the source of truth.
 
 Later:

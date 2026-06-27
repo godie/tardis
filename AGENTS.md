@@ -9,7 +9,7 @@ commit style, working conventions, things NOT to do.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # 147 unit tests
+cargo test                                           # 179 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -25,6 +25,7 @@ cargo run -- app-mock-flow                           # sync smoke for AppService
 cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription via AppEvents (default mock-local)
 cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
 cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription
+cargo test --manifest-path src-tauri/Cargo.toml       # 28 Tauri shell unit tests (pure helpers + LiveSessionState + SessionCleanupGuard)
 ```
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
@@ -87,6 +88,55 @@ Real transcription backends must land behind the existing
 capture and file-pipeline surfaces stay unchanged. `faster-whisper`,
 `whisper.cpp`, and local OpenAI Whisper are reasonable future provider
 options, but do not implement them unless the user explicitly asks.
+
+## UI event bridge — Tauri ↔ backend
+
+The backend `AppEvent` stream is the canonical floor; the Tauri
+shell and the CLI both consume it. The bridge between them is:
+
+```
+CLI / Tauri command
+  -> audio/transcription/translation modules
+  -> AppEvent (instantiated in src/app/events.rs)
+       // CLI prints via format_app_event_for_console
+       // Tauri converts via app_event_to_ui_event
+  -> UiAppEvent (src/app/ui_events.rs, serde-serializable)
+  -> Tauri emit("app-event", payload)
+  -> Frontend listener in ui/app.js (switch on payload.kind)
+```
+
+- **Pure mapping, fully unit-tested.** `UiAppEvent` and
+  `app_event_to_ui_event` live in `src/app/ui_events.rs` with
+  five unit tests covering each `AppEvent` variant. Any
+  future Tauri-frontend protocol change is a serialisation
+  tweak on this struct, **not** a redesign of the backend
+  event surface.
+- **Provider selection is backend-side.** The Tauri command
+  `start_live_transcription(provider: Option<String>)` validates
+  `provider` against `transcription::build_provider` before
+  touching any shared state, defaults to `"mock-local"` when
+  `None`, and emits a typed error event back to the frontend if
+  the name is unknown. The frontend's `<select id="provider-select">`
+  mirrors the `get_supported_providers` vector.
+- **Session lifecycle is worker-owned.** The worker thread
+  spawned by `start_live_transcription` holds a clone of the
+  `Arc<LiveSessionState>` managed state and resets both
+  `is_running` and `stop_signal` in a `SessionCleanupGuard`
+  RAII guard. `Drop` covers normal return, `Err`, and panic —
+  the next `start_live_transcription` call is unblocked even
+  if the worker crashed mid-loop.
+- **Tauri runtime + session behavior is manual-tested.** No
+  unit test exercises the bound to Tauri's command runtime,
+  `AppHandle::emit`, or the cross-thread `Arc<LiveSessionState>`
+  ownership pattern. The two invariants are *contractually*
+  enforced by the typed signatures (the
+  `tauri::State<'_, Arc<LiveSessionState>>` argument forces
+  consumers to clone — the cleaner could not leak) and by the
+  `SessionCleanupGuard` Drop semantics, both of which are
+  unit-tested in isolation. The cross-process wiring itself
+  is verified locally by
+  `cargo run --manifest-path src-tauri/Cargo.toml` and the
+  manual flow described in `docs/tauri-ui-shell.md`.
 
 ## CPAL 0.18 gotchas (verified during prior turns)
 
