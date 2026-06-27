@@ -35,6 +35,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result as AnyhowResult};
+
 use crate::app::config::{AppRuntimeConfig, normalize_runtime_config, validate_runtime_config};
 
 /// Top-level subdirectory under the OS config dir. Namespaced so
@@ -183,6 +185,87 @@ fn tmp_path(path: &Path) -> PathBuf {
     let mut s: OsString = path.as_os_str().to_owned();
     s.push(".tmp");
     PathBuf::from(s)
+}
+
+// ===== Spec-aligned pure helpers ===========================================
+//
+// The two serialization helpers below mirror the
+// `serialize_runtime_config` / `deserialize_runtime_config` API
+// the user-facing plan asks for: pure (no FS), `anyhow`-typed,
+// pretty JSON. The file-bound `save_to_path` /
+// `load_from_path_or_default` are the actual production path
+// (atomic write + load-returns-default-on-missing) — these thin
+// helpers are the building blocks those wrap, and the entry
+// points CLI smoke commands and unit tests use to exercise
+// normalization + validation in isolation.
+//
+// `default_settings_file_name` is the canonical source of truth
+// for the on-disk filename so neither the CLI nor the
+// documentation (or a future second-purpose file under the same
+// `tardis/` subdir) has to hard-code the basename.
+
+/// Serialize an [`AppRuntimeConfig`] to pretty JSON.
+///
+/// Contract: **normalize, not validate**. Trims string fields
+/// (provider, source/target language) before writing so a
+/// config with padded values round-trips through
+/// [`deserialize_runtime_config`] to the same canonical form
+/// the load path returns — but does **not** run the
+/// post-parse validator. Callers wanting the "validate then
+/// save" combined contract should use [`save_to_path`]
+/// (which is the production write path and rejects invalid
+/// configs before they reach disk).
+///
+/// Pure — no disk I/O, no CPAL, no HTTP. Uses
+/// `serde_json::to_string_pretty` so the on-disk file is
+/// human-readable for operator debugging.
+///
+/// Returns an `anyhow::Error` only if serialization fails. The
+/// current [`AppRuntimeConfig`] shape (only `String` / `u64` /
+/// `f32`) round-trips unconditionally, so in practice this
+/// surfaces programmer errors (e.g. adding a non-serializable
+/// field type) rather than user-supplied data.
+pub fn serialize_runtime_config(config: &AppRuntimeConfig) -> AnyhowResult<String> {
+    let normalized = normalize_runtime_config(config.clone());
+    let json = serde_json::to_string_pretty(&normalized)
+        .context("failed to serialize AppRuntimeConfig to pretty JSON")?;
+    Ok(json)
+}
+
+/// Parse JSON into an [`AppRuntimeConfig`], then normalize and
+/// validate the result.
+///
+/// Returns an `anyhow::Error` on:
+/// - Invalid JSON (parse failure).
+/// - A config that passes parsing but fails the post-parse
+///   [`validate_runtime_config`] check (empty string, unsupported
+///   provider, out-of-bounds threshold, etc.).
+///
+/// Pure — no I/O, no FS, no CPAL. Round-trips cleanly with
+/// [`serialize_runtime_config`].
+pub fn deserialize_runtime_config(json: &str) -> AnyhowResult<AppRuntimeConfig> {
+    let parsed: AppRuntimeConfig = serde_json::from_str(json)
+        .context("settings JSON did not deserialize into AppRuntimeConfig")?;
+    let normalized = normalize_runtime_config(parsed);
+    validate_runtime_config(&normalized)
+        .map_err(|msg| anyhow::anyhow!("settings JSON failed validation: {msg}"))?;
+    Ok(normalized)
+}
+
+/// Canonical basename of the persisted settings file. The
+/// Tauri shell, CLI smoke commands, and documentation all read
+/// this name from the same constant — never hard-code the
+/// string at a call site, or a future rename (e.g. adding a
+/// `schema_version` and switching to `runtime.v2.json`) will
+/// silently desync.
+///
+/// Currently `"runtime.json"` — the Tauri commands,
+/// `load_from_path_or_default` / `save_to_path`, the README,
+/// ROADMAP, and the docs all reference that name. A future
+/// rename must touch this constant **and** every CLI / docs
+/// reference, in one commit.
+pub fn default_settings_file_name() -> &'static str {
+    SETTINGS_FILE_NAME
 }
 
 // ===== Unit tests ========================================================
@@ -420,6 +503,185 @@ mod tests {
         assert!(
             s.contains("validation") && s.contains("bad threshold"),
             "display must include the validation message, got: {s}"
+        );
+    }
+
+    // ---- serialize_runtime_config / deserialize_runtime_config --------
+    //
+    // Spec-mandated coverage for the pure JSON helpers exposed
+    // to CLI smoke commands and unit tests. The round-trip
+    // tests above already exercise the same paths through the
+    // file I/O surface, but these assert the contract of the
+    // standalone helpers in isolation — the file I/O path
+    // could change its normalization order without breaking
+    // these.
+
+    #[test]
+    fn serialize_default_config_produces_json_containing_provider() {
+        // The spec asks for a test that "serialize default
+        // config produces JSON containing provider". Pretty
+        // JSON, so the key is on its own line, and the default
+        // value is `"mock-local"`.
+        let json = serialize_runtime_config(&AppRuntimeConfig::default())
+            .expect("serialize must succeed on the default config");
+        assert!(
+            json.contains("\"transcription_provider\""),
+            "serialized JSON must include the provider key, got: {json}"
+        );
+        assert!(
+            json.contains("mock-local"),
+            "serialized JSON must include the default provider value, got: {json}"
+        );
+        // Sanity: pretty JSON, so there is a newline somewhere.
+        assert!(json.contains('\n'), "expected pretty-printed JSON");
+    }
+
+    #[test]
+    fn deserialize_valid_json_returns_expected_config() {
+        let json = r#"{
+  "transcription_provider": "local-whisper",
+  "source_language": "fr",
+  "target_language": "it",
+  "chunk_duration_ms": 1500,
+  "volume_threshold": 0.05
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("deserialize must succeed");
+        assert_eq!(cfg.transcription_provider, "local-whisper");
+        assert_eq!(cfg.source_language, "fr");
+        assert_eq!(cfg.target_language, "it");
+        assert_eq!(cfg.chunk_duration_ms, 1500);
+        assert_eq!(cfg.volume_threshold, 0.05);
+    }
+
+    #[test]
+    fn deserialize_normalizes_whitespace_fields() {
+        // The spec asks for "deserialize normalizes whitespace
+        // fields". Trim is applied to the three string fields
+        // (provider, source language, target language) before
+        // validation, so a padded file from a hand-edited
+        // `runtime.json` still round-trips.
+        let json = r#"{
+  "transcription_provider": "  mock-local  ",
+  "source_language": " en ",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("deserialize must succeed");
+        assert_eq!(cfg.transcription_provider, "mock-local");
+        assert_eq!(cfg.source_language, "en");
+        assert_eq!(cfg.target_language, "es");
+    }
+
+    #[test]
+    fn deserialize_invalid_json_returns_error() {
+        let json = "{ this is not json";
+        let err =
+            deserialize_runtime_config(json).expect_err("must reject syntactically invalid JSON");
+        // The anyhow context chain mentions JSON.
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("json"),
+            "error must mention JSON, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn deserialize_unsupported_provider_returns_error() {
+        let json = r#"{
+  "transcription_provider": "openai-cloud",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01
+}"#;
+        let err =
+            deserialize_runtime_config(json).expect_err("must reject unsupported provider name");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not supported") || msg.contains("transcription_provider"),
+            "error must mention the rejected provider, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn deserialize_empty_source_language_returns_error() {
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01
+}"#;
+        let err = deserialize_runtime_config(json).expect_err("must reject empty source language");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("source_language"),
+            "error must name the offending field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn deserialize_ignores_unknown_fields() {
+        // Lock-in: serde's default deny-unknown-fields posture
+        // is *off* for `AppRuntimeConfig` (the struct has no
+        // `#[serde(deny_unknown_fields)]`), so a typo'd key is
+        // silently dropped. This test pins that behavior so a
+        // future change to deny unknown fields is a deliberate
+        // decision, not a regression. The test exists in the
+        // spec-aligned block so a reviewer who touches the
+        // serde attributes has to update it.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "totally_made_up_field": "ignored"
+}"#;
+        let cfg = deserialize_runtime_config(json)
+            .expect("unknown fields are currently ignored (no deny_unknown_fields)");
+        assert_eq!(cfg.transcription_provider, "mock-local");
+    }
+
+    // ---- default_settings_file_name / settings_file_path -------------
+
+    #[test]
+    fn default_settings_file_name_is_runtime_json() {
+        // The spec sketch proposed `tardis-settings.json`, but
+        // the existing implementation chose `runtime.json`
+        // (Tauri commands, README, ROADMAP, and docs all
+        // reference that name). This test pins the chosen
+        // filename so a future rename is a deliberate
+        // single-commit change that touches this assertion in
+        // lockstep.
+        assert_eq!(default_settings_file_name(), "runtime.json");
+        assert_eq!(
+            default_settings_file_name(),
+            SETTINGS_FILE_NAME,
+            "default_settings_file_name must return the canonical constant"
+        );
+    }
+
+    #[test]
+    fn settings_file_path_appends_filename_correctly() {
+        // Spec-mandated test. The result must end with the
+        // default filename (whatever that currently is) and
+        // start with the base directory the caller passed in,
+        // so callers can build arbitrary parent directories
+        // (OS config dir, tempdir in tests, etc.) without
+        // caring about the basename.
+        let base = PathBuf::from("/opt/example");
+        let p = settings_file_path(&base);
+        assert!(
+            p.ends_with(default_settings_file_name()),
+            "settings_file_path must end with the default filename, got: {}",
+            p.display()
+        );
+        assert!(
+            p.starts_with(&base),
+            "settings_file_path must start with the base directory, got: {}",
+            p.display()
         );
     }
 }
