@@ -40,9 +40,9 @@
         </div>
       </section>
 
-      <section class="language-grid" aria-label="Language settings">
+      <section class="language-grid" aria-label="Session settings">
         <p id="language-hint" class="language-hint">
-          During live transcription, translation uses en &rarr; es. The mock translator produces deterministic placeholder output.
+          Adjust the session before pressing <strong>Start Listening</strong>. Provider, languages, chunk size, and silence threshold all flow into the live backend run. Settings lock while a session is in progress.
         </p>
         <label class="language-field">
           <span>Source language</span>
@@ -62,6 +62,16 @@
             <option value="ja">Japanese</option>
             <option value="ko">Korean</option>
           </select>
+        </label>
+
+        <label class="language-field">
+          <span>Chunk duration (ms)</span>
+          <input id="chunk-duration-ms" type="number" min="250" max="5000" step="50" value="1000" inputmode="numeric" />
+        </label>
+
+        <label class="language-field">
+          <span>Volume threshold</span>
+          <input id="volume-threshold" type="number" min="0" max="1" step="0.01" value="0.01" inputmode="decimal" />
         </label>
       </section>
 
