@@ -1,8 +1,14 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 
 use tauri::Emitter;
+
+const LONG_SESSION_SECONDS: u64 = 86400; // 24 h — loop exits via stop signal
+const DEFAULT_PROVIDER: &str = "mock-local";
+const LOCAL_WHISPER_PROVIDER: &str = "local-whisper";
+const SESSION_ALREADY_RUNNING_ERR: &str =
+    "A live transcription session is already running. Stop it first.";
+const NO_SESSION_RUNNING_ERR: &str = "No live transcription session is running.";
 
 const MOCK_TRANSCRIPT: &str = "mock transcript: speech detected";
 const MOCK_TRANSLATION: &str = "[mock es] mock transcript: speech detected";
@@ -46,14 +52,120 @@ impl MockAppState {
     }
 }
 
-/// Holds the stop signal for an active live transcription session.
+/// Shared state for the active live transcription session.
 ///
-/// When `stop_signal` is `Some`, a background thread is running and
-/// can be stopped by setting the flag to `true`. When `None`, no
-/// session is active.
+/// Managed by Tauri as an [`Arc`] so the background worker thread
+/// can hold its own clone and reset both fields on exit (success,
+/// error, or panic) without needing to round-trip through the
+/// command handler.
+///
+/// **Lock-order contract:** callers must never hold both
+/// `stop_signal` and `is_running` simultaneously. If both must be
+/// mutated from the same scope, lock `is_running` first, release,
+/// then lock `stop_signal`. The accompanying
+/// [`SessionCleanupGuard`]`::drop` impl follows the same order
+/// so the worker-thread cleanup path cannot deadlock with a
+/// concurrent `stop_live_transcription` call.
+///
+/// Field-level rationale:
+/// - `stop_signal: Mutex<Option<Arc<AtomicBool>>>` — the worker
+///   polls this `AtomicBool` each tick. Holding the `Arc` (vs a
+///   raw `bool`) lets the UI thread reach the same atomic from
+///   `stop_live_transcription` while the worker reads it.
+///   `Option` + clearing it on cleanup avoids stale-flag
+///   confusion between sequential sessions.
+/// - `is_running: Mutex<bool>` — coarse-grained “is a session
+///   active”. Kept as a separate field (rather than derived from
+///   `stop_signal.is_some()`) so a future `Status` UI indicator
+///   can read it independently of the stop-signal lifecycle, and
+///   so the contract is explicit at the call site.
 #[derive(Debug, Default)]
-struct LiveSessionState {
-    stop_signal: Option<Arc<AtomicBool>>,
+pub struct LiveSessionState {
+    pub stop_signal: Mutex<Option<Arc<AtomicBool>>>,
+    pub is_running: Mutex<bool>,
+}
+
+impl LiveSessionState {
+    /// Returns `true` if a session is currently running.
+    /// Pure with respect to internal locking; tolerates a poisoned
+    /// mutex by recovering the inner value (which is itself a
+    /// bool — no inconsistent partial state is reachable).
+    pub fn is_session_running(&self) -> bool {
+        match self.is_running.lock() {
+            Ok(guard) => *guard,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    /// Try to mark a session as running. Returns `Err` with the
+    /// previous state if one is already in progress.
+    pub fn try_mark_running(&self) -> Result<(), bool> {
+        match self.is_running.lock() {
+            Ok(mut guard) => {
+                if *guard {
+                    Err(true)
+                } else {
+                    *guard = true;
+                    Ok(())
+                }
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                if *guard {
+                    Err(true)
+                } else {
+                    *guard = true;
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Store the worker's `Arc<AtomicBool>` so the
+    /// `stop_live_transcription` command can reach it.
+    pub fn store_stop_signal(&self, signal: Arc<AtomicBool>) {
+        match self.stop_signal.lock() {
+            Ok(mut guard) => {
+                *guard = Some(signal);
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = Some(signal);
+            }
+        }
+    }
+
+    /// Take the `Arc<AtomicBool>` (if any), leaving `None` in its
+    /// place. Returned so the caller can flip it.
+    pub fn take_stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        match self.stop_signal.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+
+    /// Reset both fields — invoked by [`SessionCleanupGuard`] when
+    /// the worker thread exits for any reason (return, error, or
+    /// panic). Tolerates poison by recovering the inner value.
+    pub fn reset_session(&self) {
+        // Lock order: is_running first, then stop_signal. Matches
+        // the worker-side `Drop` path; never hold both at once.
+        match self.is_running.lock() {
+            Ok(mut guard) => {
+                *guard = false;
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = false;
+            }
+        }
+        match self.stop_signal.lock() {
+            Ok(mut guard) => {
+                *guard = None;
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = None;
+            }
+        }
+    }
 }
 
 fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuard<'a, MockAppState> {
@@ -63,16 +175,29 @@ fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuar
     }
 }
 
-fn lock_session<'a>(
-    state: &'a tauri::State<'_, Mutex<LiveSessionState>>,
-) -> MutexGuard<'a, LiveSessionState> {
-    match state.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+// ===== New live transcription commands ====================================
+
+/// RAII guard that resets a [`LiveSessionState`] to “idle” when
+/// the worker thread exits, **including via panic**.
+///
+/// The guard holds an [`Arc<LiveSessionState>`] (cloned from the
+/// Tauri managed state) and runs [`LiveSessionState::reset_session`]
+/// in its [`Drop`] impl. Because [`Drop`] always runs on scope exit
+/// (normal return, `Err`, or unwind), the session state cannot be
+/// left in a stuck “running” state even if the worker panics
+/// inside the capture loop or the provider closure.
+///
+/// Lock order matches [`LiveSessionState::reset_session`]:
+/// `is_running` first, then `stop_signal`. As long as no other
+/// call site locks both fields simultaneously (the documented
+/// contract), the two paths cannot deadlock.
+struct SessionCleanupGuard(Arc<LiveSessionState>);
+
+impl Drop for SessionCleanupGuard {
+    fn drop(&mut self) {
+        self.0.reset_session();
     }
 }
-
-// ===== New live transcription commands ====================================
 
 /// Start a live transcription session in the background.
 ///
@@ -81,89 +206,160 @@ fn lock_session<'a>(
 /// emits `app-event` Tauri events to the frontend for every
 /// [`tardis::app::events::AppEvent`] produced.
 ///
-/// Default provider is `"mock-local"` (no Docker required). Pass
+/// **Default provider is `"mock-local"` (no Docker required).** Pass
 /// `"local-whisper"` to use the self-hosted faster-whisper server.
-/// Returns an error if a session is already running.
+///
+/// **Re-entry safety:** if a session is already running this command
+/// returns [`SESSION_ALREADY_RUNNING_ERR`]. The state is registered
+/// with Tauri as `Arc<LiveSessionState>` so the worker thread holds
+/// its own clone and resets `is_running`/`stop_signal` on exit
+/// (success, error, or panic) via [`SessionCleanupGuard`]. Once the
+/// guard fires, the user can call `start_live_transcription` again
+/// without first calling `stop_live_transcription`.
+///
+/// **Validation order:** the provider name is validated **before**
+/// any state mutation, so an unknown provider does **not** flip
+/// `is_running` to `true` and strand the app in an unrecoverable
+/// state.
 #[tauri::command]
 fn start_live_transcription(
     app: tauri::AppHandle,
-    session: tauri::State<'_, Mutex<LiveSessionState>>,
+    session: tauri::State<'_, Arc<LiveSessionState>>,
     provider: Option<String>,
 ) -> Result<String, String> {
-    let mut session = lock_session(&session);
-    if session.stop_signal.is_some() {
-        return Err("A live transcription session is already running. Stop it first.".to_string());
-    }
+    let session: Arc<LiveSessionState> = session.inner().clone();
 
-    let provider_name = provider.unwrap_or_else(|| "mock-local".to_string());
+    let provider_name = provider.unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
-    // Validate the provider name early so the user gets a clear
-    // error before the background thread starts.
+    // 1. Validate the provider name BEFORE touching state. If the
+    //    name is unknown, return early and leave `is_running`
+    //    untouched. This avoids the previous bug where a bad name
+    //    could strand the app in an "already running" state.
     tardis::transcription::build_provider(&provider_name)
         .map_err(|e| e.to_string())?;
 
+    // 2. Try to mark the session as running.
+    if session.try_mark_running().is_err() {
+        return Err(SESSION_ALREADY_RUNNING_ERR.to_string());
+    }
+
+    // 3. Allocate a fresh stop signal and store it.
     let stop_signal = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop_signal);
+    session.store_stop_signal(Arc::clone(&stop_signal));
+
+    // 4. Spawn the worker. The cleanup guard resets state when
+    //    the closure (or anything it awaits) returns OR panics.
     let app_clone = app.clone();
     let provider_clone = provider_name.clone();
+    let session_for_cleanup = Arc::clone(&session);
 
-    session.stop_signal = Some(stop_signal);
-    drop(session);
+    // We use `Builder::spawn` (rather than `std::thread::spawn`)
+    // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
+    // which lets us roll back the `is_running` flag and
+    // `stop_signal` if the OS refuses to create the thread
+    // (resource limits, etc.). Plain `std::thread::spawn` would
+    // instead panic in the parent thread on the same condition —
+    // leaving `is_running = true` set forever and stranding every
+    // subsequent Start behind a stuck guard.
+    //
+    // `.name(...)` lets crash dumps and `ps -L` listings show a
+    // recognisable thread identity; cheap insurance.
+    std::thread::Builder::new()
+        .name("tardis-live-transcription-worker".to_string())
+        .spawn(move || {
+            // Held for the entire worker lifetime. When this scope
+            // exits (normally or via panic), `Drop` resets the shared
+            // session state so the next `start_live_transcription`
+            // call is not blocked.
+            let _cleanup = SessionCleanupGuard(session_for_cleanup);
 
-    thread::spawn(move || {
-        let result = tardis::transcription::live_local::run_live_local_transcription_with_events(
-            &provider_clone,
-            86400, // long duration — the loop exits via the stop signal
-            1000,
-            Some(stop_clone),
-            move |event| {
-                let ui_event =
-                    tardis::app::ui_events::app_event_to_ui_event(&event);
-                let _ = app_clone.emit("app-event", ui_event);
-            },
-        );
-        if let Err(e) = result {
-            let _ = app.emit(
-                "app-event",
-                tardis::app::ui_events::app_event_to_ui_event(
-                    &tardis::app::events::AppEvent::Error(
-                        tardis::app::events::AppErrorEvent {
-                            message: format!("Live transcription failed: {e}"),
-                        },
-                    ),
-                ),
+            let result = tardis::transcription::live_local::run_live_local_transcription_with_events(
+                &provider_clone,
+                LONG_SESSION_SECONDS,
+                1000,
+                Some(stop_clone),
+                move |event| {
+                    let ui_event =
+                        tardis::app::ui_events::app_event_to_ui_event(&event);
+                    let _ = app_clone.emit("app-event", ui_event);
+                },
             );
-        }
-    });
 
+            if let Err(e) = result {
+                // Surface the runner's top-level error to the UI as a
+                // `kind = "error"` event so the user sees something
+                // even if the per-chunk provider path swallowed its
+                // own errors. Note: per-chunk errors are already
+                // surfaced via `build_error_event` inside
+                // `run_live_local_transcription_with_events`.
+                let _ = app.emit(
+                    "app-event",
+                    tardis::app::ui_events::app_event_to_ui_event(
+                        &tardis::app::events::AppEvent::Error(
+                            tardis::app::events::AppErrorEvent {
+                                message: format!("Live transcription failed: {e}"),
+                            },
+                        ),
+                    ),
+                );
+            }
+        })
+        // Spawn-failure rollback: if thread creation fails the
+        // cleanup-guard never gets to fire (the closure never
+        // started), so we must reset `is_running` / `stop_signal`
+        // ourselves before returning the error to the frontend.
+        .map_err(|e| {
+            session.reset_session();
+            format!("Failed to spawn live transcription worker thread: {e}")
+        })?;
+
+    // Slightly more informative than the spec's literal "started"
+    // so the UI / CLI logs can tell at a glance which provider was
+    // loaded. The frontend only logs this string; no contract
+    // depends on the exact wording.
     Ok(format!("started with provider {provider_name}"))
 }
 
 /// Signal the active live transcription session to stop.
 ///
-/// Returns `"stopping"` if a session was active, or an error if
-/// no session is running.
+/// Takes the `Arc<AtomicBool>` from [`LiveSessionState`], flips it
+/// to `true`, and returns `"stopping"`. The worker polls the flag
+/// each tick; on noticing it, the runner returns and the
+/// [`SessionCleanupGuard`] then clears `is_running` and
+/// `stop_signal` so a subsequent `start_live_transcription` can
+/// succeed.
+///
+/// **Intentionally does not clear `is_running`.** The worker is
+/// still tearing down CPAL resources when `stop` returns. Forcing
+/// `is_running = false` here would race a fast Start→Stop→Start
+/// cycle, where the new worker could grab the microphone while
+/// the old one is still releasing it.
 #[tauri::command]
 fn stop_live_transcription(
-    session: tauri::State<'_, Mutex<LiveSessionState>>,
+    session: tauri::State<'_, Arc<LiveSessionState>>,
 ) -> Result<String, String> {
-    let mut session = lock_session(&session);
-    match session.stop_signal.take() {
+    let session: Arc<LiveSessionState> = session.inner().clone();
+    match session.take_stop_signal() {
         Some(signal) => {
             signal.store(true, Ordering::Relaxed);
             Ok("stopping".to_string())
         }
-        None => Err("No live transcription session is running.".to_string()),
+        None => Err(NO_SESSION_RUNNING_ERR.to_string()),
     }
 }
 
 /// Return the list of supported transcription provider names.
 ///
 /// Pure — no I/O, no state access. Used by the frontend to
-/// populate the provider selector.
+/// populate the provider selector. Strings are sourced from the
+/// [`DEFAULT_PROVIDER`] / [`LOCAL_WHISPER_PROVIDER`] constants
+/// (kept in lockstep with `start_live_transcription`'s default
+/// validation) so adding a new provider requires editing exactly
+/// one place.
 #[tauri::command]
 fn get_supported_providers() -> Vec<String> {
-    vec!["mock-local".to_string(), "local-whisper".to_string()]
+    vec![DEFAULT_PROVIDER.to_string(), LOCAL_WHISPER_PROVIDER.to_string()]
 }
 
 // ===== Existing mock / file-transcribe commands ===========================
@@ -299,7 +495,21 @@ fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(MockAppState::default()))
-        .manage(Mutex::new(LiveSessionState::default()))
+        // LiveSessionState is registered as `Arc<...>` (not
+        // `Mutex<...>`) so the worker thread spawned by
+        // `start_live_transcription` can hold its own clone of the
+        // `Arc` and reset the inner mutex fields on exit (success,
+        // error, or panic) via the `SessionCleanupGuard`
+        // RAII guard. Each field already has its own `Mutex`, so
+        // an outer lock is not needed.
+        //
+        // Intentionally nested Arc: Tauri wraps managed state in
+        // an internal `Arc<T>` already; explicitly wrapping in
+        // another `Arc` here lets the worker thread hold a clone
+        // that outlives the command's `tauri::State` borrow. The
+        // clone count is also cheaper than threading `&self`
+        // through a long-lived worker closure.
+        .manage(Arc::new(LiveSessionState::default()))
         .invoke_handler(tauri::generate_handler![
             get_app_status,
             start_mock_listening,
@@ -505,6 +715,156 @@ mod tests {
         let raw = "upstream said: \u{1F4E9}";
         let out = normalize_local_transcription_error(raw);
         assert!(out.contains('\u{1F4E9}'), "expected unicode preserved, got: {out}");
+    }
+
+    // ---- LiveSessionState: defaults / status flags --------------------
+
+    #[test]
+    fn live_session_state_default_is_not_running() {
+        let s = LiveSessionState::default();
+        assert!(!s.is_session_running(), "default state must not be running");
+    }
+
+    #[test]
+    fn live_session_state_default_has_no_stop_signal() {
+        let s = LiveSessionState::default();
+        assert!(
+            s.take_stop_signal().is_none(),
+            "default state must have no stop signal"
+        );
+    }
+
+    // ---- LiveSessionState: try_mark_running ----------------------------
+
+    #[test]
+    fn try_mark_running_returns_ok_on_fresh_state() {
+        let s = LiveSessionState::default();
+        assert!(s.try_mark_running().is_ok());
+        assert!(s.is_session_running());
+    }
+
+    #[test]
+    fn try_mark_running_returns_err_when_already_running() {
+        let s = LiveSessionState::default();
+        s.try_mark_running().expect("first mark must succeed");
+        let result = s.try_mark_running();
+        assert!(
+            result.is_err(),
+            "second mark_running must fail with Err"
+        );
+    }
+
+    #[test]
+    fn try_mark_running_can_be_called_again_after_reset() {
+        // Mirrors the Start → worker-exit → Start lifecycle:
+        // after `reset_session`, the next try_mark_running must
+        // succeed.
+        let s = LiveSessionState::default();
+        s.try_mark_running().unwrap();
+        s.reset_session();
+        assert!(s.try_mark_running().is_ok());
+    }
+
+    // ---- LiveSessionState: store / take stop_signal --------------------
+
+    #[test]
+    fn store_then_take_stop_signal_round_trip() {
+        let s = LiveSessionState::default();
+        let signal = Arc::new(AtomicBool::new(false));
+        s.store_stop_signal(Arc::clone(&signal));
+
+        let taken = s
+            .take_stop_signal()
+            .expect("signal must be present after store");
+        assert!(Arc::ptr_eq(&taken, &signal));
+    }
+
+    #[test]
+    fn take_stop_signal_clears_the_field() {
+        // After take, the field must be None — otherwise a fast
+        // Stop→Start could read a stale signal.
+        let s = LiveSessionState::default();
+        s.store_stop_signal(Arc::new(AtomicBool::new(false)));
+        let _ = s.take_stop_signal();
+        assert!(
+            s.take_stop_signal().is_none(),
+            "take must clear the field"
+        );
+    }
+
+    #[test]
+    fn take_stop_signal_returns_none_when_empty() {
+        let s = LiveSessionState::default();
+        assert!(s.take_stop_signal().is_none());
+    }
+
+    // ---- LiveSessionState: reset_session ------------------------------
+
+    #[test]
+    fn reset_session_clears_is_running() {
+        let s = LiveSessionState::default();
+        s.try_mark_running().unwrap();
+        s.reset_session();
+        assert!(!s.is_session_running(), "reset must clear is_running");
+    }
+
+    #[test]
+    fn reset_session_clears_stop_signal() {
+        let s = LiveSessionState::default();
+        s.store_stop_signal(Arc::new(AtomicBool::new(false)));
+        s.reset_session();
+        assert!(s.take_stop_signal().is_none(), "reset must clear stop_signal");
+    }
+
+    // ---- SessionCleanupGuard: Drop semantics --------------------------
+
+    #[test]
+    fn cleanup_guard_resets_state_on_drop() {
+        // Mirrors the live worker-thread path: allocate state,
+        // mark running, store a stop signal, drop the guard —
+        // state must be back to defaults.
+        let state = Arc::new(LiveSessionState::default());
+        state.try_mark_running().unwrap();
+        state.store_stop_signal(Arc::new(AtomicBool::new(true)));
+        assert!(state.is_session_running());
+        assert!(state.take_stop_signal().is_some());
+
+        {
+            let _guard = SessionCleanupGuard(Arc::clone(&state));
+            // While the guard is alive, state is still running.
+            assert!(state.is_session_running());
+        }
+
+        // After drop, both fields are back to defaults.
+        assert!(!state.is_session_running());
+        assert!(state.take_stop_signal().is_none());
+    }
+
+    #[test]
+    fn cleanup_guard_runs_even_on_panic() {
+        // Panic-safety guarantee: unwinding through the guard
+        // must also reset the state. `std::panic::catch_unwind`
+        // runs the closure, captures the panic payload, and lets
+        // us inspect post-unwind state.
+        let state = Arc::new(LiveSessionState::default());
+        state.try_mark_running().unwrap();
+        state.store_stop_signal(Arc::new(AtomicBool::new(false)));
+
+        let state_for_panic = Arc::clone(&state);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = SessionCleanupGuard(state_for_panic);
+            panic!("simulated worker panic");
+        }));
+
+        assert!(result.is_err(), "panic must propagate as Err payload");
+        assert!(
+            !state.is_session_running(),
+            "guard's Drop must have reset is_running"
+        );
+        assert!(
+            state.take_stop_signal().is_none(),
+            "guard's Drop must have reset stop_signal"
+        );
     }
 }
 
