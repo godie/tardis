@@ -10,6 +10,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - A second local provider, `mock-local`, exists for deterministic offline development.
 - Translation is still mock-only.
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription` commands. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. Provider selection is available in the UI (`mock-local` — no Docker; `local-whisper` — requires Docker). Translation is still mock-only.
+- **Session export**: during a live Tauri session the backend accumulates transcript + translation events into a `TranscriptSession` ([`src/app/session.rs`](src/app/session.rs)). After pressing **Stop**, the user can click **Export JSON** / **Export Text** in the UI to write the session to a path (`output/sessions/session_current.json` / `.txt` by default). No audio or WAV chunks are persisted — only the recognised text and session metadata. Two formats: pretty JSON (round-trippable through `serde_json`) and human-readable plain text.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. This is the future shared boundary between the CLI modes and the Tauri shell. Reaching it today requires `cargo run -- app-mock-flow` (sync, no microphone, no Docker).
 - The runtime settings selected in the UI (provider, language pair, chunk duration, volume threshold) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
 - `cargo test` runs ~219+ unit tests over pure helper logic, provider dispatch, the `src/app/` layer, the `settings_store` persistence layer, and pure Tauri command helpers.
@@ -24,6 +25,8 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 
 ## Quick Start
 
+Prerequisites: Node 24 (pinned in `.nvmrc` — `nvm install`), and a stable Rust toolchain ≥ 1.85 (required for the `edition = "2024"` workspace).
+
 ```bash
 cargo check
 cargo test
@@ -31,6 +34,14 @@ cargo run
 ```
 
 `cargo run` defaults to `devices`.
+
+On Linux, the live-mic modes (`mic`, `mic-5s`, `record-5s`, `chunk-test`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe`) also need `libasound2-dev` at build time via the `cpal` ALSA backend. The [`apt-get` block under Tauri UI Shell Setup](#tauri-ui-shell-setup) installs it alongside the Tauri GUI deps.
+
+```bash
+npm ci && npx playwright install --with-deps chromium
+```
+
+> **Note**: the two commands mirror the bootstrap pair in `.github/workflows/ci.yml`'s `ui-tests` job (joined locally into one command; CI executes them separately). Run them once per fresh checkout and `npm run test:e2e` reproduces locally.
 
 ## CLI Modes
 
@@ -50,6 +61,7 @@ cargo run
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
 | `cargo run -- settings-validate <path>` | Load + validate a settings JSON file at `<path>`. Prints the resolved values and exits `0` on success or `1` with the underlying `SettingsStoreError` on parse / validation / I/O failure. Mirrors the `load_runtime_settings` Tauri command. | Yes |
+| `cargo run -- session-export-demo` | Create a fixture `TranscriptSession` (one transcript + one translation event), then export it as pretty JSON and plain text to `output/sessions/session_demo.{json,txt}`. No microphone, no Docker, no Tauri shell — reusable as a quick smoke test for the entire session/export/file-store pipeline. | Yes |
 
 ## Local Transcription Providers
 
@@ -81,6 +93,23 @@ cargo run -- live-local-transcribe --provider local-whisper
 
 Operator details for that container live in [docker/faster-whisper/README.md](docker/faster-whisper/README.md).
 
+## Tauri UI Shell Setup
+
+The CLI commands in [Quick Start](#quick-start) and [CLI Modes](#cli-modes) compile against `cpal` and `hound` with no GUI dependencies. The Tauri shell additionally pulls in the WebKit / GTK / appindicator toolchain, which Debian / Ubuntu systems do not ship by default. Before the first `cargo run --manifest-path src-tauri/Cargo.toml`, install the system deps that CI installs (the bash block below is verbatim from `.github/workflows/ci.yml` lines 19–28):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  libasound2-dev \
+  libwebkit2gtk-4.1-dev \
+  libgtk-3-dev \
+  libappindicator3-dev \
+  librsvg2-dev \
+  patchelf
+```
+
+macOS, Windows, and non-Debian / Ubuntu Linux distributions do not need this block — the WebKit / GTK surface is only required for the Tauri webview to render on Debian / Ubuntu.
+
 ## Tauri UI Shell
 
 The repo now includes a desktop shell in `src-tauri/` plus static frontend assets in `ui/`.
@@ -99,6 +128,7 @@ What the shell does today:
 - Default `transcription_provider` is `mock-local`; `local-whisper` requires the Docker container to be running.
 - Mock-only controls preserved for dev reference: `start_mock_listening`, `get_mock_transcript`, `get_mock_translation`.
 - "Local WAV Transcription" card: validate a path, call `transcribe_wav_file_local`, surface the transcript or a user-facing error.
+- "Session Export" card: after a Stop, write the accumulated session to a JSON or plain-text path via `export_current_session_json` / `export_current_session_text` (powered by [`src/app/session_export.rs`](src/app/session_export.rs) + [`src/app/session_store.rs`](src/app/session_store.rs)). A "Show current JSON" button calls `get_current_session_json` for a peek.
 
 What it does not do yet:
 
