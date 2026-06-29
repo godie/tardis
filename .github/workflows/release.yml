@@ -17,10 +17,11 @@ on:
     tags:
       # GitHub Actions tag patterns are fnmatch GLOB (not regex): `*` matches any
       # sequence of characters, `[0-9]` is a one-character class, `+` is a literal
-      # char. The patterns below match `tardis-vX.Y.Z` (canonical form) and
-      # `vX.Y.Z` (legacy form per the pre-existing `v0.1.0` tag at `da97097...`).
+      # char. The canonical pattern is `tardis-vX.Y.Z`. The legacy `v*.*.*` form
+      # was removed once the pre-existing `v0.1.0` tag at `da97097...` was
+      # deprecated — see `## Tagging convention` in RELEASES.md for the
+      # namespace rationale.
       - 'tardis-v*.*.*'
-      - 'v*.*.*'
 
 # Only `contents: write` is needed for uploading release assets. No
 # package-registry pushes, no OIDC / signing-key secrets in this cut.

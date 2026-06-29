@@ -1,10 +1,16 @@
 # Releases
 
-TARDIS releases are cut from annotated tags (convention: `tardis-vX.Y.Z`; legacy `vX.Y.Z` is accepted by [`.github/workflows/release.yml`](.github/workflows/release.yml) for compatibility with the pre-existing `v0.1.0` tag). Each release publishes a `SHA256SUMS.txt` alongside the per-platform bundles so end-users can verify a download before installing.
+TARDIS releases are cut from annotated tags (convention: `tardis-vX.Y.Z`). Each release publishes a `SHA256SUMS.txt` alongside the per-platform bundles so end-users can verify a download before installing.
 
 > **Posture for first-cut releases.** Bundles are **not** code-signed. macOS Gatekeeper will require `Right-click → Open` on the first launch; Windows SmartScreen will warn about an unknown publisher; Linux GPG sidecars are not produced. Real code signing + notarisation is a separate task (the **Code signing + notarisation** checkbox in the [`## Generating a release`](README.md#generating-a-release) section of `README.md`).
 
 > **Filename note.** Tauri uses the `productName` from `src-tauri/tauri.conf.json` verbatim in installer filenames — and `productName` is `"TARDIS v1"` (with a literal space). The space shows up in the on-disk filename (`TARDIS v1_0.2.0_amd64.deb`) but must be URL-encoded as `%20` in `curl` commands (`TARDIS%20v1_0.2.0_amd64.deb`).
+
+## Tagging convention
+
+TARDIS releases are strictly cut from **annotated** tags matching the canonical `tardis-vX.Y.Z` SemVer format (e.g., `tardis-v0.2.0`).
+
+> **Historical note:** A legacy bare-prefix `v0.1.0` tag (pointing at the early-prototype commit `da97097...`) was deprecated and removed prior to the first stable release on `tardis-v*` to ensure predictable, unambiguous CI/CD triggers. The release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)) only triggers on the canonical `tardis-v*.*.*` pattern.
 
 ## Download
 
