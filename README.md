@@ -274,10 +274,10 @@ The desktop shell is **per-OS bundle-ready**: `src-tauri/Cargo.toml` + `src-taur
   - Windows: `signtool sign /fd SHA256 /tr http://timestamp.digicert.com` + Authenticode timestamp authority.
   - Linux: GPG `.sig` artifacts sidecar to `.deb` / `.rpm` (`.AppImage` is unsigned by convention; document that).
   - Tauri's `tauri.conf.json` `bundle.macOS.signingIdentity`, `bundle.windows.certificateThumbprint`, and `bundle.beforeBundleCommand` are where these hooks live.
-- [ ] **GitHub Release workflow** (`.github/workflows/release.yml`): triggers on `tardis-v*.*` (or plain `v*.*`) tags, runs the build matrix above, uploads `.deb`, `.dmg`, `.msi`, `.AppImage`, plus checksums (`SHA256SUMS.txt`) to a GitHub Release with auto-generated notes from commits since the prior tag.
+- [x] **GitHub Release workflow** (`.github/workflows/release.yml`): triggers on `tardis-v*.*.*` (or plain `v*.*.*`) tag patterns, runs the build matrix above, uploads `.deb`, `.dmg`, `.msi`, `.AppImage`, plus checksums (`SHA256SUMS.txt`) to a GitHub Release with auto-generated notes from commits since the prior tag.
 - [ ] **Lockfile reproducibility.** `Cargo.lock` commits prevent supply-chain drift across builds; bump it on every release-prep with `cargo update --workspace` and review the diff in the same commit that bumps version strings.
 - [ ] **First-run UX + privacy.** Per the [Privacy Note](#privacy-note): visible recording-state indicator, microphone-permission prompt honouring the OS convention, and a "Stop" button reachable in one click — all required before any external distribution.
-- [ ] **Install / update docs.** A `RELEASES.md` (or a `## Releases` section heading) linking to the GitHub Releases page plus per-platform install walkthrough (`apt install ./tardis.deb`, `brew install --cask tardis`, `winget install tardis`/next-next-finish on Windows) ships next to the binary in the same release commit.
+- [x] **Install / update docs.** A `RELEASES.md` (or a `## Releases` section heading) linking to the GitHub Releases page plus per-platform install walkthrough (`apt install ./tardis.deb`, `brew install --cask tardis`, `winget install tardis`/next-next-finish on Windows) ships next to the binary in the same release commit.
 
 Tracks the bigger goal in ROADMAP §5 "Later" — once a release workflow exists, TARDIS stops being a local-only spike.
 

@@ -152,7 +152,7 @@ Later:
 
 ## 5. Improve Operability And Contributor Workflow
 
-Status: `partial` → `partial (CI added)`
+Status: `partial` → `partial (release workflow added)`
 
 What exists:
 
@@ -161,10 +161,10 @@ What exists:
 - The repo follows Conventional Commits.
 - GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every PR and push to `main`.
 - `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step — Node pin, `npm ci`, Playwright install, `npm run test:e2e` — with each step cross-referencing its CI equivalent.
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) is a tag-driven release workflow that publishes `.deb` / `.AppImage` / `.dmg` / `.msi` / `.exe` plus a canonical `SHA256SUMS.txt` to a GitHub Release on every `tardis-vX.Y.Z` (or `vX.Y.Z`) SemVer tag, with auto-generated notes from commits since the prior tag. [`RELEASES.md`](RELEASES.md) at the repo root documents the per-platform install walkthrough (`apt install ./<deb>`, `brew install --cask tardis` *projected*, `winget install tardis` *projected*, plus the WiX Next → Next → Finish flow on Windows).
 
 Gaps:
 
-- No release workflow (packaging, versioning, binaries).
 - No Docker CI for the faster-whisper provider.
 - `cargo clippy -- -D warnings` has 4 pre-existing warnings (unnecessary cast, collapsible ifs) that need fixing before clippy can be added to CI.
 

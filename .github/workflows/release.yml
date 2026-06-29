@@ -1,0 +1,162 @@
+# .github/workflows/release.yml
+#
+# Tag-driven release workflow for the TARDIS Tauri 2 desktop shell + CLI.
+#
+# Triggers on SemVer tags `tardis-vX.Y.Z` (canonical form) and `vX.Y.Z`
+# (legacy form accepted for compatibility with the older `v0.1.0` tag at
+# commit `da97097...`). Publishes per-platform Tauri bundles plus a
+# SHA256SUMS.txt to a GitHub Release with auto-generated notes from
+# commits since the prior tag. Code signing is intentionally NOT
+# performed here — it is a separate unchecked item in the README's
+# `## Generating a release` section.
+
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub Actions tag patterns are fnmatch GLOB (not regex): `*` matches any
+      # sequence of characters, `[0-9]` is a one-character class, `+` is a literal
+      # char. The patterns below match `tardis-vX.Y.Z` (canonical form) and
+      # `vX.Y.Z` (legacy form per the pre-existing `v0.1.0` tag at `da97097...`).
+      - 'tardis-v*.*.*'
+      - 'v*.*.*'
+
+# Only `contents: write` is needed for uploading release assets. No
+# package-registry pushes, no OIDC / signing-key secrets in this cut.
+permissions:
+  contents: write
+
+# Re-pushing the same tag (common during pre-release iteration) cancels
+# the in-flight build, so a new push starts a fresh clean build instead
+# of running two parallel jobs that would race to mutate the same
+# Release draft.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            bundles: deb,appimage
+          - runner: macos-latest
+            bundles: dmg
+          - runner: windows-latest
+            bundles: msi,nsis
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: install system deps (ubuntu)
+        if: matrix.runner == 'ubuntu-latest'
+        # Tauri 2 on Debian / Ubuntu needs the same WebKit / GTK /
+        # appindicator / patchelf toolchain as `cargo run --manifest-path
+        # src-tauri/Cargo.toml` does locally (also called out in the
+        # `## Tauri UI Shell Setup` block of README.md).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: install tauri-cli
+        # `^2.0` keeps the door open for `cargo install` upgrades that
+        # land between Tauri minor releases. `Swatinem/rust-cache@v2`
+        # caches `~/.cargo/registry` so dep downloads are shared.
+        run: cargo install tauri-cli --version "^2.0"
+
+      - name: cargo tauri build
+        # `--bundles <list>` is REQUIRED because `src-tauri/tauri.conf.json`
+        # sets `bundle.active: false`. Without this flag the build
+        # exits 0 with zero installer artefacts uploaded.
+        working-directory: src-tauri
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      - name: collect bundles
+        working-directory: src-tauri
+        run: |
+          mkdir -p bundles
+          find target/release/bundle -type f \
+            \( -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \
+               -o -iname '*.dmg' -o -iname '*.msi' -o -iname '*.exe' \) \
+            -exec cp {} bundles/ \;
+          ls -la bundles/
+
+      - name: per-runner SHA256SUMS
+        # Per-runner checksum is for auditability during the upload step (the
+        # final release job below re-hashes everything from scratch into the
+        # canonical SHA256SUMS.txt). Naming the file with the matrix.runner
+        # suffix avoids collisions when `merge-multiple: true` combines
+        # artefacts from all three runners into a single `dist/` directory.
+        working-directory: src-tauri/bundles
+        shell: bash
+        run: sha256sum * > "SHA256SUMS-${{ matrix.runner }}.txt"
+
+      - name: upload runner artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.runner }}
+          path: src-tauri/bundles/
+          retention-days: 7
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    # `permissions: contents: write` is inherited from the workflow scope above;
+    # no need for a redundant inner block here.
+    steps:
+      - name: download all runner artefacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/
+          merge-multiple: true
+
+      - name: unified SHA256SUMS
+        # Re-hash everything from scratch for an auditable single source
+        # of truth. The `find` form below SKIPS any per-runner
+        # `SHA256SUMS-*.txt` files so we never hash the hash file, and
+        # writes a deterministic order via `sort -z` so two runs of the
+        # same release produce identical SHA256SUMS bytes.
+        # `xargs -r` skips running `sha256sum` when `find` yields zero
+        # matching files (a `set -e`-style guard at the bottom then
+        # fails the job loudly rather than uploading an empty
+        # `SHA256SUMS.txt` artefact).
+        working-directory: dist
+        run: |
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -print0 \
+            | sort -z \
+            | xargs -r -0 sha256sum \
+            > SHA256SUMS.txt
+          if [ ! -s SHA256SUMS.txt ]; then
+            echo "::error::SHA256SUMS.txt is empty — no bundle files matched. Check the build matrix output for missing installers." >&2
+            exit 1
+          fi
+          echo "SHA256SUMS.txt contents:"
+          cat SHA256SUMS.txt
+
+      - name: publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            dist/*
