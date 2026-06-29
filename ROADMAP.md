@@ -160,6 +160,7 @@ What exists:
 - The Docker provider has its own operational README.
 - The repo follows Conventional Commits.
 - GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every PR and push to `main`.
+- `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step — Node pin, `npm ci`, Playwright install, `npm run test:e2e` — with each step cross-referencing its CI equivalent.
 
 Gaps:
 
@@ -171,11 +172,10 @@ Next:
 
 - Keep documentation aligned with real commands and shipped modules whenever structure changes.
 - Add a release workflow only when the Tauri shell reaches a shippable milestone.
-- Expand the README Quickstart into a fuller mirror of the `ui-tests` CI workflow structure (the current quickstart collapses the two-step bootstrap into one bash line; the followup doc-only PR will document the full job sequence).
 
 Later:
 
-- Add release notes or milestone tracking once the live backend and Tauri integration start moving together.
+- Generate release artifacts — see [Generating a release](#generating-a-release) for the TODO list. Once the workflow exists, TARDIS stops being a local-only spike.
 
 ## Recommended Execution Order
 
