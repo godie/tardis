@@ -27,6 +27,8 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 
 Prerequisites: Node 24 (pinned in `.nvmrc` — `nvm install`), and a stable Rust toolchain ≥ 1.85 (required for the `edition = "2024"` workspace).
 
+### Backend
+
 ```bash
 cargo check
 cargo test
@@ -37,11 +39,37 @@ cargo run
 
 On Linux, the live-mic modes (`mic`, `mic-5s`, `record-5s`, `chunk-test`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe`) also need `libasound2-dev` at build time via the `cpal` ALSA backend. The [`apt-get` block under Tauri UI Shell Setup](#tauri-ui-shell-setup) installs it alongside the Tauri GUI deps.
 
-```bash
-npm ci && npx playwright install --with-deps chromium
-```
+### End-to-end UI tests (Playwright)
 
-> **Note**: the two commands mirror the bootstrap pair in `.github/workflows/ci.yml`'s `ui-tests` job (joined locally into one command; CI executes them separately). Run them once per fresh checkout and `npm run test:e2e` reproduces locally.
+This block mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step. The CI job has four steps after `actions/checkout@v4`: `actions/setup-node@v4` (with `node-version: '24'` plus `cache: 'npm'`), `actions/cache@v4` of `~/.cache/ms-playwright`, `install playwright + chromium` (runs `npm ci && npx playwright install --with-deps chromium`), and `run playwright tests`. Locally the browser cache is implicit (Playwright writes to `~/.cache/ms-playwright` by default) and the npm cache is implicit (npm caches in the user-level cache).
+
+Run once per fresh checkout.
+
+1. **Node version** — switch to the pinned Node. Equivalent to the `setup-node` step (`node-version: '24'`, `cache: 'npm'`):
+
+   ```bash
+   nvm use 24
+   ```
+
+2. **JS dependencies** — clean install from the lockfile. Equivalent to the `npm ci` half of the `install playwright + chromium` step:
+
+   ```bash
+   npm ci
+   ```
+
+3. **Playwright browser + Linux system deps** — equivalent to the `npx playwright install --with-deps chromium` half of the same step. On Linux the `--with-deps` half requires `sudo` (the `apt-get` libs are shared with the Tauri shell's GUI deps listed in [Tauri UI Shell Setup](#tauri-ui-shell-setup)):
+
+   ```bash
+   npx playwright install --with-deps chromium
+   ```
+
+4. **Run the e2e suite** — equivalent to the `run playwright tests` step:
+
+   ```bash
+   npm run test:e2e
+   ```
+
+> **Note**: until real specs ship (in the upcoming session-export feature PR), step 4 exits 0 thanks to the `--pass-with-no-tests` flag the `test:e2e` script carries; drop the flag — or move it into a future `playwright.config.js` as `passWithNoTests: true` — on the first PR that lands specs.
 
 ## CLI Modes
 
