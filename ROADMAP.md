@@ -175,7 +175,7 @@ Next:
 
 Later:
 
-- Add release notes or milestone tracking once the live backend and Tauri integration start moving together.
+- Generate release artifacts — see [Generating a release](#generating-a-release) for the TODO list. Once the workflow exists, TARDIS stops being a local-only spike.
 
 ## Recommended Execution Order
 
