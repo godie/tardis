@@ -38,3 +38,28 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+  ui-tests:
+    name: playwright ui tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: install playwright + chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: run playwright tests
+        run: npm run test:e2e

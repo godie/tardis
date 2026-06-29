@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "test:e2e": "playwright test --pass-with-no-tests"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

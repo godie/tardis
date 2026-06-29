@@ -82,7 +82,7 @@ Later:
 
 ## 4. Connect The Tauri Shell To The Real Backend
 
-Status: `partial (UI wired to backend AppEvents, panic-safe cleanup)` → `partial (runtime settings panel live in UI + persisted across sessions)`
+Status: `partial (UI wired to backend AppEvents, panic-safe cleanup)` → `partial (runtime settings panel live in UI + persisted across sessions + session transcript export)`
 
 What exists:
 
@@ -123,6 +123,19 @@ Gaps:
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
   present yet — the panic-safety test is single-threaded only.
+- **Session transcript export** is shipped: the backend accumulates
+  transcript + translation events into a [`TranscriptSession`]
+  ([`tardis::app::session`]) inside `LiveSessionState::current_session`,
+  and the UI exposes JSON / plain-text export via
+  `export_current_session_json` / `export_current_session_text`.
+  Pure helpers in [`tardis::app::session_export`] (JSON / text /
+  filename) and file-bound writers in [`tardis::app::session_store`]
+  are unit-tested in isolation; the file I/O is manually verified via
+  `cargo run -- session-export-demo`, which writes
+  `output/sessions/session_demo.{json,txt}`.
+  No audio is persisted — only the recognised text, the per-chunk
+  provider + language metadata, and the session id / start / end
+  stamps.
 
 Next:
 
@@ -158,6 +171,7 @@ Next:
 
 - Keep documentation aligned with real commands and shipped modules whenever structure changes.
 - Add a release workflow only when the Tauri shell reaches a shippable milestone.
+- Expand the README Quickstart into a fuller mirror of the `ui-tests` CI workflow structure (the current quickstart collapses the two-step bootstrap into one bash line; the followup doc-only PR will document the full job sequence).
 
 Later:
 
