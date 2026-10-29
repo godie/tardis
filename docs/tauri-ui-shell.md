@@ -1,20 +1,19 @@
 # TARDIS v1 Tauri UI Shell
 
-This document covers the Tauri desktop shell for `tardisv1`. The
-shell hosts both a **mock UI** (status pill / transcript / translation
-panels driven by zero-side-effect Rust commands) and a **file-based
-local transcription flow** that reuses the existing
+This document covers the Tauri desktop shell. The shell runs live
+microphone transcription, a runtime settings panel, and a file-based
+local transcription flow that reuses the existing
 `transcription::local_whisper::LocalWhisperClient` against
-`docker/faster-whisper/`.
+`docker/faster-whisper/`. It also keeps a set of zero-side-effect mock
+commands for UI development.
 
-It does **not** start CPAL microphone capture from the UI, does
-**not** call any real translation provider, and does **not** alter the
-existing CLI audio or transcription pipeline.
+It does **not** call a real translation provider yet, and it does
+**not** alter the existing CLI audio or transcription pipeline.
 
 ## What was added
 
-- `src-tauri/` — isolated Tauri Rust crate for the desktop shell.
-- `ui/` — static HTML/CSS/JS frontend loaded by the Tauri window.
+- `src-tauri/`: isolated Tauri Rust crate for the desktop shell.
+- `ui/`: static HTML/CSS/JS frontend loaded by the Tauri window.
 - Mock-only controls (preserved for dev convenience):
   - `get_app_status() -> String`
   - `start_mock_listening() -> String`
@@ -22,14 +21,14 @@ existing CLI audio or transcription pipeline.
   - `get_mock_transcript() -> String`
   - `get_mock_translation() -> String`
 - Live transcription commands:
-  - `start_live_transcription(provider: Option<String>) -> Result<String, String>`
+  - `start_live_transcription(config: Option<AppRuntimeConfig>) -> Result<String, String>`
     Spawns a background thread that captures audio, transcribes
     chunks, and emits `app-event` Tauri events (kind: `status`,
     `transcript`, `translation`, `error`) to the frontend.
   - `stop_live_transcription() -> Result<String, String>`
     Signals the active session to stop; the backend emits a
     final `status: stopped` event and the thread exits.
-  - `get_supported_providers() -> Vec<String>`
+  - `get_supported_transcription_providers() -> Vec<String>`
     Returns `["mock-local", "local-whisper"]`.
 - File-based local transcription:
   - `transcribe_wav_file_local(file_path: String) -> Result<String, String>`
@@ -37,9 +36,9 @@ existing CLI audio or transcription pipeline.
     so the same client served by `cargo run -- local-transcribe-file`
     is reachable from the UI without duplicating the HTTP layer.
 - UI event payloads (serializable):
-  - `tardis::app::ui_events::UiAppEvent` — flat struct emitted as
+  - `tardis::app::ui_events::UiAppEvent`: flat struct emitted as
     `app-event` to the frontend.
-  - `tardis::app::ui_events::app_event_to_ui_event` — pure converter
+  - `tardis::app::ui_events::app_event_to_ui_event`: pure converter
     from backend `AppEvent` to `UiAppEvent`.
 - Pure helpers (unit-testable):
   - `validate_wav_path_input(path: &str) -> Result<String, String>`
@@ -79,7 +78,7 @@ cargo tauri dev
 
 This follows Tauri's standard `frontendDist` development flow.
 
-## Manual flow — live transcription from the UI
+## Manual flow: live transcription from the UI
 
 1. **Open the Tauri UI** (Option 1 or 2 above).
 
@@ -90,7 +89,7 @@ This follows Tauri's standard `frontendDist` development flow.
 3. **Click Start Listening**. The status pill changes to
    `Listening`. Speak into the default microphone.
 
-4. **Watch the transcript panel** — each speech-like chunk is
+4. **Watch the transcript panel**: each speech-like chunk is
    transcribed via the selected provider and the result appears
    as a Tauri event. The translation panel updates with mock
    translations.
@@ -106,7 +105,7 @@ Expected behavior with `local-whisper`:
 - Transcript: real faster-whisper output for each chunk.
 - If Docker is not running, an error event is emitted.
 
-## Manual flow — transcribe a WAV from the UI
+## Manual flow: transcribe a WAV from the UI
 
 This flow reuses the existing
 `cargo run -- save-chunks-test` + `cargo run -- local-transcribe-file`
@@ -158,7 +157,7 @@ stack; the UI is a thin caller of the same Rust provider.
 - Backend `AppEvent`s are converted to serializable `UiAppEvent`
   payloads and emitted as Tauri `app-event` events to the frontend.
 
-## Runtime settings — what each field does
+## Runtime settings: what each field does
 
 The settings panel sends a full `AppRuntimeConfig` to the Tauri
 command `start_live_transcription { config: {...} }`. The same JSON
@@ -178,11 +177,11 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
 1. Open the Tauri UI (`cargo run --manifest-path src-tauri/Cargo.toml`).
 2. Leave `transcription_provider` at `mock-local`.
 3. Pick `transcript_provider` = `mock-local`, `source_language` = `en`, `target_language` = `es`.
-4. Click **Start Listening** — status pill flips to `Listening`.
+4. Click **Start Listening**. The status pill flips to `Listening`.
 5. Speak into the default microphone. The transcript panel shows
    `mock transcript for live_chunk_NNN.wav` per chunk; the
    translation panel shows the deterministic mock translation.
-6. Click **Stop** — status pill flips to `Stopped`, the next
+6. Click **Stop**. The status pill flips to `Stopped`, and the next
    Start works without re-launching the shell.
 
 ### Manual test: Docker `local-whisper` provider
@@ -205,8 +204,8 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
 1. Pick `transcription_provider` = `mock-local`,
    `source_language` = `en`, `target_language` = `fr`.
 2. Click **Start Listening**, speak. Each translation event uses
-   `[mock fr]` (instead of `[mock es]`) — proves the language
-   pair from the settings panel is reaching the translator.
+   `[mock fr]` (instead of `[mock es]`), which proves the language
+   pair from the settings panel reaches the translator.
 
 ### Manual test: changing the volume threshold
 
@@ -214,8 +213,8 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
    "speech-like" and reach the provider).
 2. Speak very softly. Most chunks are filtered out as silence,
    so the transcript / translation panels stay quiet.
-3. Drop to `0.0` to force "always speech" for the same window
-   — every captured chunk now reaches the provider.
+3. Drop to `0.0` to force "always speech" for the same window,
+   so every captured chunk reaches the provider.
 
 ### Manual test: invalid config (server-side rejection)
 
@@ -236,7 +235,7 @@ parent `tardis/` subdirectory automatically; subsequent saves
 overwrite atomically (write-then-rename with `<file>.tmp`),
 so a crash mid-write either leaves the previous file untouched or
 replaces it cleanly. A corrupt or out-of-bounds file is surfaced
-on the next launch — the UI falls back to the canonical defaults
+on the next launch; the UI falls back to the canonical defaults
 from `get_default_runtime_config` so first-run UX matches the
 getting-started docs exactly.
 
@@ -255,7 +254,7 @@ getting-started docs exactly.
   user-facing error.
 - No microphone capture from the UI.
 - No system audio capture from the UI.
-- No async runtime — the command runs synchronously on Tauri's IPC
+- No async runtime: the command runs synchronously on Tauri's IPC
   thread and returns `Result<String, String>`.
 
 ## What is not connected yet
@@ -263,7 +262,7 @@ getting-started docs exactly.
 - No system audio capture from the UI.
 - Translation is still mock-only (the backend uses `MockTranslator`).
 - No real cloud or remote transcription providers.
-- No streaming/partial transcripts — each chunk is transcribed as a
+- No streaming/partial transcripts: each chunk is transcribed as a
   whole via a temporary WAV file.
 
 ## Next integration points

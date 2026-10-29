@@ -2,22 +2,22 @@
 
 This directory runs a self-hosted, **OpenAI-compatible** HTTP transcription
 service based on [`fedirz/faster-whisper-server`]. The Rust CLI calls this
-local server from the `local-transcribe-file` command — no data leaves
-the machine while audio stays inside the container.
+server from the `local-transcribe-file` command. The port binds to
+loopback, so audio stays on the machine.
 
 [`fedirz/faster-whisper-server`]: https://github.com/fedirz/faster-whisper-server
 
 ## 1. What this service is for
 
-* **Real local speech-to-text** — the first non-mock transcription
-  provider in `tardisv1`. OpenAI-API-compatible:
+* **Real local speech-to-text**: the first non-mock transcription
+  provider. OpenAI-API-compatible:
   `POST http://localhost:8000/v1/audio/transcriptions`, the same shape
   `whisper.cpp --openai-api` and OpenAI's own cloud API expose.
-* **File-based only for now** — pass a WAV path on disk, get text
+* **File-based only for now**: pass a WAV path on disk, get text
   back. Future providers (`whisper.cpp` binary, cloud APIs) implement
   the same `transcription::LocalTranscriptionProvider` trait so the
   CLI doesn't change.
-* **CPU-first by default** — the `:latest-cpu` image works on any
+* **CPU-first by default**: the `:latest-cpu` image works on any
   machine with Docker; GPU is an opt-in tag swap.
 
 ## 2. How to start it
@@ -55,7 +55,7 @@ but the model is still loading for the first ~10–30 s on CPU. Probe
 with:
 
 ```bash
-# Port reachability — OpenAI list-models endpoint is faster to respond.
+# Port reachability: the OpenAI list-models endpoint responds faster.
 curl -fsS http://localhost:8000/v1/models
 
 # Health endpoint (older image tags may not expose it).
@@ -109,7 +109,7 @@ in [`docker-compose.yml`](./docker-compose.yml).
 > **Note:** `WHISPER_MODEL` in `docker-compose.yml` is read at
 > container start and determines which model is loaded into memory.
 > The `model` form field the Rust client sends is informational only
-> on this particular image — the **server-side env wins**. If you
+> on this image: the **server-side env wins**. If you
 > change the compose env to `small`, also update
 > `LOCAL_WHISPER_MODEL` in [`src/config.rs`](../../src/config.rs)
 > so they stay in sync, otherwise the README's model diagnostics
@@ -129,17 +129,17 @@ The compose file ships the `:latest-cpu` tag by default:
   `large-v3`.
 
 CPU is the right starting point for a developer laptop; GPU is for
-production throughput. Both use the **same API contract** — switching
+production throughput. Both use the **same API contract**: switching
 tags is the only change needed; no client code changes.
 
 ## 8. Privacy
 
-* Audio is uploaded to `http://localhost:8000` — bound to the loopback
+* Audio is uploaded to `http://localhost:8000`, bound to the loopback
   interface of the host (`127.0.0.1:8000` in `docker-compose.yml`).
   Nothing leaves your machine unless you change the port mapping.
 * The `tardisv1` Rust CLI only ever connects to `http://localhost:8000`
   (see `LOCAL_WHISPER_BASE_URL` in [`src/config.rs`](../../src/config.rs)).
-* The container has **no network egress to any cloud** — the model
+* The container has **no network egress to any cloud**: the model
   weights are downloaded once into `./hf_cache` and stay local.
 
 ## 9. Post-install sanity check

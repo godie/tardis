@@ -2,15 +2,15 @@
 //!
 //! Captures ~`seconds` from the default mic, splits the buffer into
 //! `chunk_duration_ms` chunks via the shared `audio::chunker` helpers,
-//! routes each chunk through a [`Transcriber`] (mock today), and —
-//! when speech is detected — forwards the resulting text through a
+//! routes each chunk through a [`Transcriber`] (mock today), and,
+//! when speech is detected, forwards the resulting text through a
 //! [`Translator`] (mock today). Prints a transcript line + translation
 //! line per chunk, or a silence-skip line if no speech was detected.
 //!
 //! Both the `Transcriber` and `Translator` traits stay audio-agnostic;
 //! only this file imports CPAL. To swap in real impls, change only the
 //! `MockTranscriber::new(...)` / `MockTranslator::new()` constructions
-//! at the top of `run_mock_translate_test` — the capture loop, drain
+//! at the top of `run_mock_translate_test`. The capture loop, drain
 //! loop, and print format stay the same.
 
 use std::io::{self, Write};
@@ -110,7 +110,7 @@ pub fn run_mock_translate_test(
                 Some(result) => {
                     // MockTranscriber guarantees non-empty text and
                     // MockTranslator only returns None for empty /
-                    // whitespace input — so a translation must exist.
+                    // whitespace input, so a translation must exist.
                     // If a future transcriber yields "", the panic
                     // message names the trait contract that broke.
                     let translation = translator

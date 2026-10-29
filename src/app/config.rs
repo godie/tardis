@@ -85,7 +85,7 @@ pub fn supported_transcription_providers() -> Vec<&'static str> {
 ///
 /// Returns `true` only when `provider` is exactly one of the
 /// supported names. Empty, whitespace-only, or unknown names
-/// all return `false`. Comparison is case-sensitive — the live
+/// all return `false`. Comparison is case-sensitive: the live
 /// runner validates against the same predicate, and the CLI's
 /// `--provider` flag expects the exact string, so anything else
 /// is a typo a user-friendly error should surface.
@@ -100,7 +100,7 @@ pub fn is_supported_transcription_provider(provider: &str) -> bool {
 /// is a fresh value so callers that need to keep the original
 /// (eg UI bindings) can do so without aliasing.
 ///
-/// Pure — no I/O, no validation. Run this *before*
+/// Pure: no I/O, no validation. Run this *before*
 /// [`validate_runtime_config`] so a `"  "` provider becomes
 /// `""` and is caught by the empty-string check rather than
 /// silently passing the supported-provider check via a
@@ -154,7 +154,7 @@ impl Default for AppRuntimeConfig {
 /// list so the UI can correct typo'd providers without grepping
 /// the source.
 ///
-/// Pure — no FS, no HTTP, no CPAL.
+/// Pure: no FS, no HTTP, no CPAL.
 pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> {
     let trimmed_provider = config.transcription_provider.trim();
     if trimmed_provider.is_empty() {
@@ -360,7 +360,7 @@ mod tests {
 
     /// Failing fast: the first violation in field order is the
     /// one surfaced. We assert it here so the contract is locked
-    /// in — if validator order is ever reshuffled, this test
+    /// in. If validator order is ever reshuffled, this test
     /// will flag the drift.
     #[test]
     fn validator_fails_fast_on_first_violation() {
@@ -507,7 +507,7 @@ mod tests {
         // Lock-in: confirm the validator's defensive trim
         // makes the unnormalized path forgiving too. A padded
         // "  mock-local  " is identical to the canonical
-        // normalized input — both must validate.
+        // normalized input; both must validate.
         let cfg = AppRuntimeConfig {
             transcription_provider: "  mock-local  ".to_string(),
             ..AppRuntimeConfig::default()

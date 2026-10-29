@@ -51,7 +51,7 @@ pub const SETTINGS_FILE_NAME: &str = "runtime.json";
 /// Construct the canonical settings file path inside `base_dir`:
 /// `<base_dir>/<SETTINGS_SUBDIR>/<SETTINGS_FILE_NAME>`.
 ///
-/// Pure — does not touch the filesystem. Callers are free to use
+/// Pure: it does not touch the filesystem. Callers are free to use
 /// `tauri::app::path::PathResolver::config_dir()`,
 /// `std::env::var("HOME")`, or a tempdir in tests.
 pub fn settings_file_path(base_dir: &Path) -> PathBuf {
@@ -72,7 +72,7 @@ pub enum SettingsStoreError {
     /// The file existed but could not be parsed (eg. corrupted
     /// JSON or partial write from a prior crash).
     Parse(serde_json::Error),
-    /// Serializing the in-memory config failed — defensive,
+    /// Serializing the in-memory config failed. This is defensive,
     /// because `AppRuntimeConfig` only contains
     /// `String` / `u64` / `f32` fields, all of which `serde_json`
     /// round-trips unconditionally.
@@ -124,8 +124,8 @@ impl From<io::Error> for SettingsStoreError {
 ///    file is in place) or fails (the original is untouched and
 ///    the temp file is best-effort cleaned up).
 ///
-/// Failures leave neither a corrupted file nor — under normal
-/// failure modes — a stray temp file behind.
+/// Failures leave neither a corrupted file nor, under normal
+/// failure modes, a stray temp file behind.
 pub fn save_to_path(path: &Path, config: &AppRuntimeConfig) -> Result<(), SettingsStoreError> {
     validate_runtime_config(config).map_err(SettingsStoreError::Validation)?;
     let normalized = normalize_runtime_config(config.clone());
@@ -156,7 +156,7 @@ pub fn save_to_path(path: &Path, config: &AppRuntimeConfig) -> Result<(), Settin
 }
 
 /// Read [`AppRuntimeConfig`] from `path`. If the file does not
-/// exist, returns `Ok(AppRuntimeConfig::default())` — the
+/// exist, returns `Ok(AppRuntimeConfig::default())`; the
 /// "first run" case is **not** an error.
 ///
 /// The parsed config is normalized and validated before being
@@ -179,7 +179,7 @@ pub fn load_from_path_or_default(path: &Path) -> Result<AppRuntimeConfig, Settin
     Ok(normalized)
 }
 
-/// `<path>.tmp` — a stable suffix for the staged write so a
+/// `<path>.tmp`: a stable suffix for the staged write, so a
 /// process crash leaves a recognizable file behind.
 fn tmp_path(path: &Path) -> PathBuf {
     let mut s: OsString = path.as_os_str().to_owned();
@@ -194,7 +194,7 @@ fn tmp_path(path: &Path) -> PathBuf {
 // the user-facing plan asks for: pure (no FS), `anyhow`-typed,
 // pretty JSON. The file-bound `save_to_path` /
 // `load_from_path_or_default` are the actual production path
-// (atomic write + load-returns-default-on-missing) — these thin
+// (atomic write + load-returns-default-on-missing). These thin
 // helpers are the building blocks those wrap, and the entry
 // points CLI smoke commands and unit tests use to exercise
 // normalization + validation in isolation.
@@ -210,13 +210,13 @@ fn tmp_path(path: &Path) -> PathBuf {
 /// (provider, source/target language) before writing so a
 /// config with padded values round-trips through
 /// [`deserialize_runtime_config`] to the same canonical form
-/// the load path returns — but does **not** run the
+/// the load path returns, but does **not** run the
 /// post-parse validator. Callers wanting the "validate then
 /// save" combined contract should use [`save_to_path`]
 /// (which is the production write path and rejects invalid
 /// configs before they reach disk).
 ///
-/// Pure — no disk I/O, no CPAL, no HTTP. Uses
+/// Pure: no disk I/O, no CPAL, no HTTP. Uses
 /// `serde_json::to_string_pretty` so the on-disk file is
 /// human-readable for operator debugging.
 ///
@@ -241,7 +241,7 @@ pub fn serialize_runtime_config(config: &AppRuntimeConfig) -> AnyhowResult<Strin
 ///   [`validate_runtime_config`] check (empty string, unsupported
 ///   provider, out-of-bounds threshold, etc.).
 ///
-/// Pure — no I/O, no FS, no CPAL. Round-trips cleanly with
+/// Pure: no I/O, no FS, no CPAL. Round-trips cleanly with
 /// [`serialize_runtime_config`].
 pub fn deserialize_runtime_config(json: &str) -> AnyhowResult<AppRuntimeConfig> {
     let parsed: AppRuntimeConfig = serde_json::from_str(json)
@@ -254,12 +254,12 @@ pub fn deserialize_runtime_config(json: &str) -> AnyhowResult<AppRuntimeConfig> 
 
 /// Canonical basename of the persisted settings file. The
 /// Tauri shell, CLI smoke commands, and documentation all read
-/// this name from the same constant — never hard-code the
+/// this name from the same constant. Never hard-code the
 /// string at a call site, or a future rename (e.g. adding a
 /// `schema_version` and switching to `runtime.v2.json`) will
 /// silently desync.
 ///
-/// Currently `"runtime.json"` — the Tauri commands,
+/// Currently `"runtime.json"`; the Tauri commands,
 /// `load_from_path_or_default` / `save_to_path`, the README,
 /// ROADMAP, and the docs all reference that name. A future
 /// rename must touch this constant **and** every CLI / docs
@@ -412,7 +412,7 @@ mod tests {
         let dir = fresh_temp_dir("corrupt");
         let path = settings_file_path(&dir);
         // Do not bypass save_to_path (which would trigger
-        // validation) — write directly so the helper sees raw
+        // validation), write directly so the helper sees raw
         // bytes it cannot parse.
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{ this is not json").unwrap();
@@ -431,7 +431,7 @@ mod tests {
         // (eg. left over from an older build that allowed higher
         // values). The post-load validator must surface this as
         // an error rather than silently returning broken
-        // defaults — the calling Tauri command can decide
+        // defaults; the calling Tauri command can decide
         // whether to fall back to `AppRuntimeConfig::default()`.
         let dir = fresh_temp_dir("invalid_values_on_disk");
         let path = settings_file_path(&dir);
@@ -512,7 +512,7 @@ mod tests {
     // to CLI smoke commands and unit tests. The round-trip
     // tests above already exercise the same paths through the
     // file I/O surface, but these assert the contract of the
-    // standalone helpers in isolation — the file I/O path
+    // standalone helpers in isolation; the file I/O path
     // could change its normalization order without breaking
     // these.
 

@@ -86,7 +86,7 @@ impl LiveSessionState {
     /// Returns `true` if a session is currently running.
     /// Pure with respect to internal locking; tolerates a poisoned
     /// mutex by recovering the inner value (which is itself a
-    /// bool — no inconsistent partial state is reachable).
+    /// bool, so no inconsistent partial state is reachable).
     pub fn is_session_running(&self) -> bool {
         match self.is_running.lock() {
             Ok(guard) => *guard,
@@ -140,7 +140,7 @@ impl LiveSessionState {
         }
     }
 
-    /// Reset both fields — invoked by [`SessionCleanupGuard`] when
+    /// Reset both fields. Invoked by [`SessionCleanupGuard`] when
     /// the worker thread exits for any reason (return, error, or
     /// panic). Tolerates poison by recovering the inner value.
     pub fn reset_session(&self) {
@@ -259,7 +259,7 @@ fn start_live_transcription(
     // which lets us roll back the `is_running` flag and
     // `stop_signal` if the OS refuses to create the thread
     // (resource limits, etc.). Plain `std::thread::spawn` would
-    // instead panic in the parent thread on the same condition —
+    // instead panic in the parent thread on the same condition,
     // leaving `is_running = true` set forever and stranding every
     // subsequent Start behind a stuck guard.
     //
@@ -349,7 +349,7 @@ fn stop_live_transcription(
 
 /// Return the list of supported transcription provider names.
 ///
-/// Pure — no I/O, no state access. Used by the frontend to
+/// Pure: no I/O, no state access. Used by the frontend to
 /// populate the provider selector. Strings are sourced from
 /// [`tardis::app::config::supported_transcription_providers`]
 /// (kept in lockstep with `start_live_transcription`'s
@@ -367,7 +367,7 @@ fn get_supported_transcription_providers() -> Vec<String> {
 /// the UI should pre-populate the settings panel with on first
 /// load.
 ///
-/// Pure — no I/O, no state access. The defaults are sourced from
+/// Pure: no I/O, no state access. The defaults are sourced from
 /// centralised [`tardis::config`] constants so the frontend and
 /// the Tauri command agree on the same starting point without
 /// the UI duplicating constant values. The frontend is expected
@@ -395,7 +395,7 @@ fn get_default_runtime_config() -> tardis::app::config::AppRuntimeConfig {
 /// corrupt or out-of-bounds file surfaces the underlying
 /// [`tardis::app::settings_store::SettingsStoreError`] as a
 /// user-facing string. The command does **not** delete a corrupt
-/// file — the next `save_runtime_settings` call overwrites it.
+/// file; the next `save_runtime_settings` call overwrites it.
 #[tauri::command]
 fn load_runtime_settings(
     app: tauri::AppHandle,
@@ -479,11 +479,11 @@ fn get_mock_translation() -> String {
 ///
 /// Returns the trimmed input on success. Rejects empty or
 /// whitespace-only inputs with a user-facing error string. Does NOT
-/// check whether the file actually exists on disk — the provider's
+/// check whether the file actually exists on disk; the provider's
 /// own `path.is_file()` check surfaces the file-not-found case with
 /// a more specific message ("WAV file does not exist: <path>").
 ///
-/// Pure — no FS or HTTP access.
+/// Pure: no FS or HTTP access.
 pub fn validate_wav_path_input(path: &str) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -509,7 +509,7 @@ pub fn validate_wav_path_input(path: &str) -> Result<String, String> {
 /// | `"not a string"`                    | `"Server response format was unexpected."` |
 /// | anything else                       | `"Transcription failed."`                  |
 ///
-/// Pure — operates on a string. Matching is case-insensitive.
+/// Pure: operates on a string. Matching is case-insensitive.
 pub fn normalize_local_transcription_error(error: &str) -> String {
     let lower = error.to_lowercase();
 
@@ -548,7 +548,7 @@ pub fn normalize_local_transcription_error(error: &str) -> String {
 /// [`tardis::config::LOCAL_WHISPER_*`] constants inside
 /// [`ProviderKind::build`] for `local-whisper`.
 ///
-/// This is **file-based only** — no CPAL microphone capture is
+/// This is **file-based only**: no CPAL microphone capture is
 /// started from the UI. The `start_mock_listening` /
 /// `stop_mock_listening` commands remain a separate, mock-only
 /// surface that does not touch audio hardware.
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn take_stop_signal_clears_the_field() {
-        // After take, the field must be None — otherwise a fast
+        // After take, the field must be None; otherwise a fast
         // Stop→Start could read a stale signal.
         let s = LiveSessionState::default();
         s.store_stop_signal(Arc::new(AtomicBool::new(false)));
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn cleanup_guard_resets_state_on_drop() {
         // Mirrors the live worker-thread path: allocate state,
-        // mark running, store a stop signal, drop the guard —
+        // mark running, store a stop signal, drop the guard,
         // state must be back to defaults.
         let state = Arc::new(LiveSessionState::default());
         state.try_mark_running().unwrap();

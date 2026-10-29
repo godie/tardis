@@ -42,7 +42,7 @@ mod tests {
     use super::*;
 
     /// Tolerance for floating-point comparisons. Comfortably larger than
-    /// `32767/32768 - 1` (≈ 3e-5) to keep tests robust across platforms.
+    /// `32767/32768 - 1` (≈ 3e-5) to keep tests stable across platforms.
     const EPS: f32 = 0.001;
 
     fn assert_approx_eq(actual: f32, expected: f32, epsilon: f32) {

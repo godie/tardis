@@ -34,7 +34,7 @@ pub fn build_transcription_url(base_url: &str) -> String {
 
 /// Pure helper: extract the `text` field from an OpenAI-style
 /// transcription response. Returns an error if `text` is missing or
-/// not a JSON string — an empty string is a *valid* transcript
+/// not a JSON string; an empty string is a *valid* transcript
 /// (silence-only chunk), not an error.
 pub fn extract_text_from_response_json(json: &serde_json::Value) -> Result<String> {
     match json.get("text") {
@@ -64,7 +64,7 @@ pub fn extract_text_from_response_json(json: &serde_json::Value) -> Result<Strin
 /// [`crate::config::LOCAL_WHISPER_*`].
 pub struct LocalWhisperClient {
     /// Base URL of the local server, e.g. `http://localhost:8000`.
-    /// Must **not** include the `/v1/audio/transcriptions` suffix —
+    /// Must **not** include the `/v1/audio/transcriptions` suffix;
     /// [`build_transcription_url`] appends it.
     pub base_url: String,
     /// faster-whisper model id passed as the multipart `model`

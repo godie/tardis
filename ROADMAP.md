@@ -1,13 +1,13 @@
 # TARDIS Roadmap
 
-TARDIS is no longer just a CLI spike. The repo now has four meaningful surfaces:
+TARDIS has four working surfaces:
 
-- A working Rust CLI for audio capture and chunk-oriented experiments
-- A real file-based local transcription provider via self-hosted `faster-whisper`
-- Mock translation flows that prove the end-to-end shape
-- A mock Tauri shell that defines the desktop integration target
+- A Rust CLI for audio capture and chunking
+- A file-based transcription provider backed by self-hosted `faster-whisper`
+- Mock translation that carries each transcript through to an output line
+- A Tauri desktop shell that runs the same backend
 
-This roadmap reflects that actual state and focuses on the shortest path to a coherent local desktop product.
+The roadmap tracks what exists and the shortest path to a usable desktop product.
 
 Status legend: `done` = shipped, `partial` = real groundwork exists but the user-facing loop is incomplete, `next` = immediate target, `later` = important but not yet first priority.
 
@@ -17,10 +17,10 @@ Status: `partial` → `partial (orchestration layer shipped)`
 
 What exists:
 
-- `audio::*` already covers device listing, microphone capture, chunking, chunk saving, and WAV recording.
+- `audio::*` covers device listing, microphone capture, chunking, chunk saving, and WAV recording.
 - `transcription::transcriber::Transcriber` exists for live chunk processing.
 - `transcription::LocalTranscriptionProvider` exists for provider-swappable file transcription.
-- `translation::*` already proves the translation stage with mock implementations.
+- `translation::*` carries the translation stage with mock implementations.
 - `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockTranslator` without CPAL/Docker/fs. Pure-logic coverage (`config`, `events`, `state`, `service` modules) totals ~57 new unit tests.
 
 Gaps:
@@ -30,7 +30,7 @@ Gaps:
 
 Next:
 
-- Wire live `audio` capture chunks into `AppService` so a real-time transcript event stream surfaces through the same `AppEvent` boundary already used by mock flows.
+- Wire live `audio` capture chunks into `AppService`, so live transcripts reach the UI through the same `AppEvent` boundary the mock flows use.
 - Surface provider selection through `AppRuntimeConfig` and propagate it from the UI / CLI flag to the live provider picker.
 - Keep pure decision helpers unit-tested and leave CPAL wiring on the manual CLI path.
 
@@ -40,14 +40,14 @@ Status: `partial` → `partial (live chunk-by-chunk path shipped)`
 
 What exists:
 
-- `local-transcribe-file` can already send a WAV file to a local `faster-whisper` server.
-- `mock-local` already proves provider swapping without Docker.
+- `local-transcribe-file` sends a WAV file to a local `faster-whisper` server.
+- `mock-local` proves provider swapping without Docker.
 - `live-local-transcribe` captures from the default microphone, splits audio into chunks, and sends each speech-like chunk through a selected provider via a temporary WAV file. Default provider is `mock-local` so the command works without Docker.
 
 Gaps:
 
-- The live path is chunk-by-chunk via temporary WAV files, not true streaming — the audio callback delivers samples but the provider interface is still file-based.
-- There is no streamed or true-streaming provider bridge from microphone capture to the local backend.
+- The live path is chunk-by-chunk via temporary WAV files, not true streaming: the audio callback delivers samples, but the provider interface is still file-based.
+- No streaming provider bridge connects microphone capture to the local backend.
 
 Next:
 
@@ -82,12 +82,12 @@ Later:
 
 ## 4. Connect The Tauri Shell To The Real Backend
 
-Status: `partial (UI wired to backend AppEvents, panic-safe cleanup)` → `partial (runtime settings panel live in UI + persisted across sessions + session transcript export)`
+Status: `partial (UI wired to backend AppEvents, panic-safe cleanup)` → `partial (runtime settings panel live in UI + persisted across sessions)`
 
 What exists:
 
-- `UiAppEvent` — serializable frontend-safe payloads with a
-  pure [`app_event_to_ui_event`] mapping (`app::ui_events` — 5 unit tests).
+- `UiAppEvent`: serializable frontend-safe payloads with a
+  pure [`app_event_to_ui_event`] mapping (`app::ui_events`, 5 unit tests).
 - `start_live_transcription` spawns a background thread that captures audio,
   transcribes chunks, and emits `app-event` Tauri events to the frontend.
   Accepts a full `AppRuntimeConfig` from the UI; providers / language
@@ -104,7 +104,7 @@ What exists:
   and on every committed settings change respectively.
 - Session lifecycle is RAII-cleaned: `LiveSessionState` is registered as
   `Arc<...>` with Tauri and a [`SessionCleanupGuard`] resets `is_running`
-  and `stop_signal` on worker exit (success, error, **or panic**) — so a
+  and `stop_signal` on worker exit (success, error, **or panic**), so a
   fast Start→Stop→Start cycle is unblocked even if the worker crashed.
   12 unit tests cover the pure `LiveSessionState` helpers and the
   panic-safety path via `std::panic::catch_unwind`.
@@ -122,23 +122,19 @@ Gaps:
 - No system audio capture.
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
-  present yet — the panic-safety test is single-threaded only.
-- **Session transcript export** is shipped: the backend accumulates
-  transcript + translation events into a [`TranscriptSession`]
-  ([`tardis::app::session`]) inside `LiveSessionState::current_session`,
-  and the UI exposes JSON / plain-text export via
-  `export_current_session_json` / `export_current_session_text`.
-  Pure helpers in [`tardis::app::session_export`] (JSON / text /
-  filename) and file-bound writers in [`tardis::app::session_store`]
-  are unit-tested in isolation; the file I/O is manually verified via
-  `cargo run -- session-export-demo`, which writes
-  `output/sessions/session_demo.{json,txt}`.
-  No audio is persisted — only the recognised text, the per-chunk
-  provider + language metadata, and the session id / start / end
-  stamps.
+  present yet; the panic-safety test is single-threaded only.
+- **Session transcript export is not implemented.** There is no
+  `TranscriptSession` accumulator, no `session_export` / `session_store`
+  module, no export Tauri command, and no export control in the UI.
+  The shell keeps no session history, so the transcript panel shows
+  only the latest chunk. Earlier revisions of this roadmap described
+  this feature as shipped; it was never merged.
 
 Next:
 
+- Add the session accumulator (transcript + translation events per
+  session) plus JSON / plain-text export, and surface export controls
+  in the UI.
 - Add a real translation provider behind the `Translator` trait.
 - Surface real translation events through the Tauri event stream.
 - Add a multithreaded Start/Stop race test to harden the cleanup.
@@ -160,7 +156,7 @@ What exists:
 - The Docker provider has its own operational README.
 - The repo follows Conventional Commits.
 - GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every PR and push to `main`.
-- `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step — Node pin, `npm ci`, Playwright install, `npm run test:e2e` — with each step cross-referencing its CI equivalent.
+- `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step (Node pin, `npm ci`, Playwright install, `npm run test:e2e`), with each step cross-referencing its CI equivalent.
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) is a tag-driven release workflow that publishes `.deb` / `.AppImage` / `.dmg` / `.msi` / `.exe` plus a canonical `SHA256SUMS.txt` to a GitHub Release on every `tardis-vX.Y.Z` (or `vX.Y.Z`) SemVer tag, with auto-generated notes from commits since the prior tag. [`RELEASES.md`](RELEASES.md) at the repo root documents the per-platform install walkthrough (`apt install ./<deb>`, `brew install --cask tardis` *projected*, `winget install tardis` *projected*, plus the WiX Next → Next → Finish flow on Windows).
 
 Gaps:
@@ -171,11 +167,10 @@ Gaps:
 Next:
 
 - Keep documentation aligned with real commands and shipped modules whenever structure changes.
-- Add a release workflow only when the Tauri shell reaches a shippable milestone.
 
 Later:
 
-- Generate release artifacts — see [Generating a release](#generating-a-release) for the TODO list. Once the workflow exists, TARDIS stops being a local-only spike.
+- Generate release artifacts; see [Generating a release](README.md#generating-a-release) for the list of remaining steps.
 
 ## Recommended Execution Order
 
@@ -185,4 +180,4 @@ Later:
 4. Upgrade translation from mock-only to real-provider capable.
 5. Add CI and contributor ergonomics around the stabilized architecture.
 
-That order keeps the codebase honest: one backend, one UI shell, and one provider model instead of separate one-off paths for CLI, file transcription, and desktop preview.
+The order follows the dependency chain: one backend, one UI shell, and one provider model, instead of separate one-off paths for the CLI, file transcription, and desktop preview.

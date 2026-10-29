@@ -1,9 +1,9 @@
 # Development Rules
 
-This project follows three rules for every new feature. They exist so the
-codebase stays verifiable on a machine with no real microphone, no Tauri UI,
-and no internet — and so every hardware-facing feature has a cheap,
-scriptable sanity check you can run by hand.
+This project follows three rules for every new feature. They keep the
+codebase verifiable on a machine with no real microphone, no Tauri UI, and
+no internet, and give every hardware-facing feature a cheap, scriptable
+sanity check you can run by hand.
 
 ## The rules
 
@@ -22,10 +22,10 @@ mutex-wrapped shared buffers) for manual checks.
 
 ### 2. Never unit test CPAL, real microphones, permissions, or physical devices
 
-Hardware-facing code — anything that opens a CPAL stream, requires a real
-input device, or depends on OS-level audio permissions — is not a `cargo
-test` target. Can't be relied on in CI, can't be mocked meaningfully inside
-a unit test. Don't try. Split the logic into a pure function so rule 1
+Hardware-facing code (anything that opens a CPAL stream, requires a real
+input device, or depends on OS-level audio permissions) is not a `cargo
+test` target: CI can't rely on it, and a unit test can't mock it
+meaningfully. Don't try. Split the logic into a pure function so rule 1
 covers the decision, then exercise the hardware glue manually (rule 3).
 
 ### 3. Every hardware/audio feature ships with a `cargo run -- <mode>`
@@ -38,7 +38,7 @@ streams on exit so they can be re-run.
 
 ## Existing coverage
 
-The modules below already follow this split. When you add a new module,
+The modules below follow this split. When you add a new module,
 mirror one of these rows.
 
 | Module | Pure-logic test surface | Manual CLI command |
@@ -69,7 +69,7 @@ mirror one of these rows.
 | `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `app::events` (AppEvent / AppStatus / payload structs / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
-| `app::service` (AppService — reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
+| `app::service` (AppService, reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe` |
 | `app::ui_events` (UiAppEvent + app_event_to_ui_event) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
@@ -95,7 +95,6 @@ mirror one of these rows.
 The capture-loop body (open host, pick device, build F32/I16/U16 stream,
 tick-drain-drop) is currently duplicated across `audio/chunker.rs`,
 `audio/chunk_recorder.rs`, `audio/recorder.rs`, `transcription/pipeline.rs`,
-and `translation/pipeline.rs`. Keep that duplication honest by updating all
-affected sites whenever a new manual command or shared audio-callback rule
-lands. If the loop changes again, prefer extracting a shared helper rather
+and `translation/pipeline.rs`. Update every copy whenever a new manual
+command or shared audio-callback rule lands. If the loop changes again, prefer extracting a shared helper rather
 than letting the copies drift.

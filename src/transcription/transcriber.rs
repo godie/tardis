@@ -33,7 +33,7 @@ pub struct TranscriptionResult {
 
 /// Synchronous per-chunk transcription contract.
 ///
-/// `transcribe_chunk` should be pure with respect to `&self` — the same
+/// `transcribe_chunk` should be pure with respect to `&self`: the same
 /// input chunk + the same impl state must produce the same output.
 /// Returning `None` signals "this chunk is silence / no audio usable;
 /// skip it", which the pipeline uses to print a silence line instead

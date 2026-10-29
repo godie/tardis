@@ -41,7 +41,7 @@ const SYNTHETIC_CHUNK_INDEX: usize = 1;
 ///
 /// Derives `Debug` (so tests can use `Result::unwrap_err()`
 /// freely on the [`Self::new`] validation path) but does
-/// **not** derive `Clone` — see the module-level note on
+/// **not** derive `Clone`; see the module-level note on
 /// Tauri state-split risk.
 #[derive(Debug)]
 pub struct AppService {
@@ -94,7 +94,7 @@ impl AppService {
     /// Run a pure-text mock flow:
     ///
     /// 1. If `transcript_text` is empty or whitespace-only,
-    ///    **silently skip** — return an empty `Vec<AppEvent>`
+    ///    **silently skip**: return an empty `Vec<AppEvent>`
     ///    and leave state untouched. This mirrors
     ///    [`MockTranslator`]'s "skip on empty" philosophy and
     ///    avoids forcing future UI shells to render
@@ -109,7 +109,7 @@ impl AppService {
     /// 4. Return the 1-or-2 emitted events in chronological
     ///    order (transcript first, translation second).
     ///
-    /// Pure with respect to `&mut self` — no I/O, no CPAL, no
+    /// Pure with respect to `&mut self`: no I/O, no CPAL, no
     /// network, no filesystem.
     pub fn run_mock_text_flow(&mut self, transcript_text: &str) -> Vec<AppEvent> {
         if transcript_text.trim().is_empty() {

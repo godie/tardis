@@ -79,7 +79,7 @@ pub fn app_event_kind(event: &AppEvent) -> &'static str {
 
 /// Format an [`AppEvent`] as a single-line console string.
 ///
-/// Pure — no I/O, no allocation beyond the returned `String`.
+/// Pure: no I/O, no allocation beyond the returned `String`.
 /// Used by the CLI and eventually by the Tauri shell log sink.
 pub fn format_app_event_for_console(event: &AppEvent) -> String {
     match event {
@@ -148,7 +148,7 @@ pub struct AppTranslationEvent {
 /// Today the only emitter is the future CLI / UI layer; the
 /// runtime config validator returns `Result<(), String>` rather
 /// than emit `AppErrorEvent`. The single `message` field keeps
-/// the event shape minimal — a future `AppErrorKind` enum is
+/// the event shape minimal; a future `AppErrorKind` enum is
 /// deliberately out of scope until a second error path lands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppErrorEvent {
@@ -285,7 +285,7 @@ mod tests {
     fn app_event_variants_are_distinct() {
         // Two AppEvent values built from different variants must
         // not compare equal even if their inner payloads were
-        // miraculously identical — the variant tag is part of
+        // miraculously identical; the variant tag is part of
         // equality.
         let status = AppEvent::StatusChanged(AppStatus::Idle);
         let error = AppEvent::Error(AppErrorEvent {

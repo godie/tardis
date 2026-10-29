@@ -99,7 +99,7 @@ where
     let stream = device.build_input_stream(
         *config,
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
-            // Recover from poisoning rather than panicking — losing a small
+            // Recover from poisoning rather than panicking; losing a small
             // slice of audio is preferable to aborting the capture.
             let mut buf = match samples.lock() {
                 Ok(b) => b,

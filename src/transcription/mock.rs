@@ -45,7 +45,7 @@ mod tests {
     use super::*;
 
     /// Loose-equality helper for floating-point assertions. f32 sums
-    /// drift — callers pick an epsilon sized to the operation's
+    /// drift, so callers pick an epsilon sized to the operation's
     /// expected magnitude.
     fn assert_approx_eq(actual: f32, expected: f32, epsilon: f32) {
         assert!(

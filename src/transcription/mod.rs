@@ -39,7 +39,7 @@ use anyhow::Result;
 /// via [`ProviderKind::build`] / [`build_provider`].
 ///
 /// **Trait-object Debug bound:** `Box<dyn LocalTranscriptionProvider>`
-/// is `!Debug` by default — [.unwrap_err()] on a
+/// is `!Debug` by default, so [.unwrap_err()] on a
 /// `Result<Box<dyn LocalTranscriptionProvider>>` will not compile
 /// because the panic-handler formats the `Ok` variant with Debug.
 /// Tests that need to grab the `Err` arm should call
@@ -56,7 +56,7 @@ pub trait LocalTranscriptionProvider {
     ///
     /// Implementations encapsulate the network / process / cloud
     /// call. Callers (CLI, pipelines, future hot-paths) depend only
-    /// on this trait — file in, text out.
+    /// on this trait: file in, text out.
     fn transcribe(&self, file_path: &str) -> Result<String>;
 }
 
@@ -92,7 +92,7 @@ impl ProviderKind {
     }
 
     /// Stable CLI / log identifier. Same string the `--provider`
-    /// flag accepts — round-trip holds:
+    /// flag accepts; round-trip holds:
     /// `ProviderKind::from_name(kind.name()) == Some(kind)`.
     pub fn name(&self) -> &'static str {
         match self {
@@ -122,7 +122,7 @@ impl ProviderKind {
 /// CLI can surface a self-explaining error to the user.
 ///
 /// The CLI defaults to `provider = "local-whisper"` if no flag is
-/// passed; this function does NOT layer a default on top — whatever
+/// passed; this function does NOT layer a default on top. Whatever
 /// string the caller passes is what gets parsed.
 pub fn build_provider(name: &str) -> Result<Box<dyn LocalTranscriptionProvider>> {
     let kind = ProviderKind::from_name(name).ok_or_else(|| {
@@ -225,7 +225,7 @@ mod tests {
     fn build_provider_unknown_returns_error_listing_valid_names() {
         // Use `.err().expect(...)` instead of `.unwrap_err()` so we
         // don't require `Box<dyn LocalTranscriptionProvider>: Debug`
-        // — trait objects aren't `Debug` by default, only types that
+        // because trait objects aren't `Debug` by default, only types that
         // explicitly opt in via `: Debug` supertrait are. The
         // alternate path (`Result::err`) returns `Option<E>` whose
         // Debug is just on `anyhow::Error`, which std already

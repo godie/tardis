@@ -33,7 +33,7 @@ pub struct TranslationResult {
 
 /// Synchronous per-call translation contract.
 ///
-/// `translate_text` must be pure with respect to `&self` — the same
+/// `translate_text` must be pure with respect to `&self`: the same
 /// input text + same impl state must produce the same output.
 /// Returning `None` signals "the input is empty / whitespace-only
 /// and not a real translation job; skip it", which the pipeline uses
