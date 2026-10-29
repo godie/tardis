@@ -21,16 +21,15 @@ What exists:
 - `transcription::transcriber::Transcriber` exists for live chunk processing.
 - `transcription::LocalTranscriptionProvider` exists for provider-swappable file transcription.
 - `translation::*` carries the translation stage with mock implementations.
-- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockTranslator` without CPAL/Docker/fs. Pure-logic coverage (`config`, `events`, `state`, `service` modules) totals ~57 new unit tests.
+- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockTranslator` without CPAL/Docker/fs. Pure-logic coverage (`config` 36, `events` 23, `state` 12, `service` 15) totals 86 unit tests.
 
 Gaps:
 
 - `src/app/` is text-input only (`run_mock_text_flow`); connecting it to live microphone capture is the next integration step.
-- `AppEvent` consumers today are the CLI smoke command and (eventually) the Tauri shell; no event sink yet.
 
 Next:
 
-- Wire live `audio` capture chunks into `AppService`, so live transcripts reach the UI through the same `AppEvent` boundary the mock flows use.
+- Wire live `audio` capture chunks into `AppService`, so the live path and the mock flows share one orchestrator. Live transcripts already reach the UI: `start_live_transcription` builds `AppEvent`s through `app::live_events` and maps them with `app_event_to_ui_event`.
 - Surface provider selection through `AppRuntimeConfig` and propagate it from the UI / CLI flag to the live provider picker.
 - Keep pure decision helpers unit-tested and leave CPAL wiring on the manual CLI path.
 
@@ -123,7 +122,7 @@ Gaps:
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
   present yet; the panic-safety test is single-threaded only.
-- **Session transcript export is not implemented.** There is no
+- Session transcript export is not implemented. There is no
   `TranscriptSession` accumulator, no `session_export` / `session_store`
   module, no export Tauri command, and no export control in the UI.
   The shell keeps no session history, so the transcript panel shows
@@ -155,14 +154,14 @@ What exists:
 - `README.md`, `AGENTS.md`, and `DEVELOPMENT_RULES.md` document the testing split and command surfaces.
 - The Docker provider has its own operational README.
 - The repo follows Conventional Commits.
-- GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every PR and push to `main`.
+- GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every pull request and every push to `master` (the default branch).
 - `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step (Node pin, `npm ci`, Playwright install, `npm run test:e2e`), with each step cross-referencing its CI equivalent.
-- [`.github/workflows/release.yml`](.github/workflows/release.yml) is a tag-driven release workflow that publishes `.deb` / `.AppImage` / `.dmg` / `.msi` / `.exe` plus a canonical `SHA256SUMS.txt` to a GitHub Release on every `tardis-vX.Y.Z` (or `vX.Y.Z`) SemVer tag, with auto-generated notes from commits since the prior tag. [`RELEASES.md`](RELEASES.md) at the repo root documents the per-platform install walkthrough (`apt install ./<deb>`, `brew install --cask tardis` *projected*, `winget install tardis` *projected*, plus the WiX Next → Next → Finish flow on Windows).
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) is a tag-driven release workflow that publishes `.deb` / `.AppImage` / `.dmg` / `.msi` / `.exe` plus a canonical `SHA256SUMS.txt` to a GitHub Release on every `tardis-vX.Y.Z` SemVer tag, with auto-generated notes from commits since the prior tag. [`RELEASES.md`](RELEASES.md) at the repo root documents the per-platform install walkthrough (`apt install ./<deb>`, `brew install --cask tardis` *projected*, `winget install tardis` *projected*, plus the WiX Next → Next → Finish flow on Windows).
 
 Gaps:
 
 - No Docker CI for the faster-whisper provider.
-- `cargo clippy -- -D warnings` has 4 pre-existing warnings (unnecessary cast, collapsible ifs) that need fixing before clippy can be added to CI.
+- `cargo clippy` is not in CI because `-D warnings` would fail: 7 lints on the lib (5 `collapsible_if`, 1 unnecessary cast, 1 `default()` on a unit struct plus an `or_else`/`map_err` pair) and 30 across `--all-targets`, 22 of them `field_reassign_with_default` in test setup.
 
 Next:
 

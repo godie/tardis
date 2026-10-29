@@ -12,7 +12,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, chunk duration, volume threshold) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
-- `cargo test` runs 219 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, the `settings_store` persistence layer, and pure Tauri command helpers.
+- `cargo test` runs 219 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 28 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
 
 ## Stack
 
@@ -87,7 +87,7 @@ cargo install tauri-cli --locked --version "^2"
 cd src-tauri && cargo tauri dev
 ```
 
-Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, and speak. [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) has the byte-accurate manual checklist.
+Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, and speak. [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) has the manual checklist.
 
 ## CLI Modes
 
@@ -180,11 +180,12 @@ The desktop shell exposes the following `#[tauri::command]` entry points. All pa
 | --- | --- |
 | `start_live_transcription(config: Option<AppRuntimeConfig>)` | Spawns a background worker thread that captures audio from the default mic, transcribes speech-like chunks via the selected provider, and emits an `app-event` Tauri event for every [`AppEvent`]. Returns `"started with provider <name>"`. |
 | `stop_live_transcription()` | Signals the active session to stop; the worker thread exits and the [`SessionCleanupGuard`] resets `is_running` + `stop_signal`. Idempotent: a stale Stop on a torn-down session returns `NO_SESSION_RUNNING_ERR`. |
-| `transcribe_wav_file_local(path: String)` | File-based local transcription through `local-whisper` (delegates to the same [`LocalWhisperClient`] the CLI uses; "Docker not running?" errors are normalised into a user-facing string). |
+| `transcribe_wav_file_local(file_path: String)` | File-based local transcription through `local-whisper` (delegates to the same [`LocalWhisperClient`] the CLI uses; "Docker not running?" errors are normalised into a user-facing string). |
 | `get_supported_transcription_providers()` | Backend's `["mock-local", "local-whisper"]` list. The UI rebuilds the provider dropdown from this, so a future provider shows up without touching the HTML. |
 | `get_default_runtime_config()` | Default [`AppRuntimeConfig`] for first-load pre-population. |
 | `load_runtime_settings()` | Loads `<OS config dir>/tardis/runtime.json`, falls back to defaults on first run or if the file is missing. |
 | `save_runtime_settings(config)` | Atomically writes the validated + normalised config (write-then-rename via `<file>.tmp`). |
+
 Five mock-only controls preserved for dev reference (no microphone, no Docker, no CPAL): `get_app_status()`, `start_mock_listening()`, `stop_mock_listening()`, `get_mock_transcript()`, `get_mock_translation()`.
 
 What it does not do yet:
@@ -237,7 +238,7 @@ config, event, and UI-payload types.
 
 ## CI
 
-GitHub Actions runs on every PR and push to `main`.
+GitHub Actions runs on every pull request and on every push to `master` (the default branch).
 
 | Check | Command |
 | --- | --- |
@@ -250,15 +251,15 @@ CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mi
 
 ## Generating a release
 
-The desktop shell is **per-OS bundle-ready**: `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2 such that `cargo tauri build` produces a native bundle for the host it runs on. Cross-platform coverage needs a 3-runner CI matrix; the project does **not** ship binaries yet. Anything below prefaced with `[x]` already ships with `tardis-v0.1.0` (the Node-24-pin / Linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone at `bf39ea2`); unchecked items are required before the next tag ships.
+`src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2 so `cargo tauri build --bundles <list>` produces native installers for the host it runs on. Covering all three platforms needs a 3-runner CI matrix; the project does not ship binaries yet. Anything below prefaced with `[x]` already ships with `tardis-v0.1.0` (the Node-24-pin / Linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone at `bf39ea2`); unchecked items are required before the next tag ships.
 
-- [x] **Per-OS bundle config is wired.** `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2; `cargo tauri build` produces native bundles from the repo root.
+- [x] **Per-OS bundle config is wired.** `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2. `bundle.active` is `false`, so `cargo tauri build` needs an explicit `--bundles <list>`: the release workflow passes `deb,appimage` / `dmg` / `msi,nsis` per runner. Without the flag the build exits 0 and produces no installers.
 - [x] **Linux `apt-get` block** + macOS / Windows / non-Debian Linux note live in [Tauri UI Shell Setup](#tauri-ui-shell-setup); the same block CI installs is what a developer needs locally.
 - [ ] **Pick the next tag.** Once the session-export feature lands and a real translation backend is wired in, the natural next milestone is `tardis-v0.2.0` (a bigger bundle than `tardis-v0.1.0`, which marks the Node-24 / linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone).
-- [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`bundle.identifier`, `bundle.version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
+- [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`identifier`, `version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis-ui-shell` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
 - [ ] **Run `cargo build --release` for the CLI binary** (no UI shell, useful for headless / CI smoke users who do not need the desktop app).
 - [ ] **Run `cargo tauri build` for the desktop shell** to produce native bundles:
-  - `.deb` + `.AppImage` + `.rpm` (Linux: needs `dpkg-deb`, `rpmbuild`, `fakeroot`, `appimagetool`)
+  - `.deb` + `.AppImage` (Linux: needs `dpkg-deb`, `fakeroot`, `appimagetool`). `.rpm` is available from the same builder (`--bundles rpm`, needs `rpmbuild`), but the release matrix only asks for `deb,appimage`, so no `.rpm` is published.
   - `.dmg` (macOS: `cargo tauri build` does the disk-image; code signing needs `codesign` + `notarytool` for notarisation)
   - `.msi` + `.exe` (Windows: needs `signtool` for Authenticode signing; WiX for `.msi` already ships with Tauri 2)
   - **Build matrix:** each platform builds on its own host, because Tauri 2 has no first-class OS-cross-compile path (the project itself does not adopt `cargo-zigbuild` or `cargo-xwin` workarounds; they remain an opt-in for downstream forks). CI needs three runners (`ubuntu-latest` / `macos-latest` / `windows-latest`).

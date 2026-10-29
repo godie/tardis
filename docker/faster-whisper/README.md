@@ -28,7 +28,7 @@ From the repo root:
 docker compose -f docker/faster-whisper/docker-compose.yml up
 ```
 
-The first run **pulls the image** *and* **downloads the chosen model**
+The first run pulls the image and downloads the chosen model
 (default `base`, ~150 MB). Subsequent runs reuse the cached model in
 `./hf_cache`.
 

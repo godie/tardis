@@ -49,10 +49,12 @@ src/
     recorder.rs            # CPAL + hound driver (no tests)
     volume.rs              # pure volume helpers, 14 tests
   transcription/
-    mod.rs                 # re-exports: file_pipeline, live_local, mock, pipeline, transcriber
+    mod.rs                 # re-exports: file_pipeline, live_local, local_whisper, mock, mock_local, pipeline, transcriber; ProviderKind + build_provider dispatch, 7 tests
     file_pipeline.rs       # WAV reader + pure i16->f32 helpers, 7 tests
     live_local.rs          # pure helpers + CPAL live local transcription runner, 9 tests
+    local_whisper.rs       # LocalWhisperClient: HTTP client for the faster-whisper server, 8 tests
     mock.rs                # mock transcriber logic, 10 tests
+    mock_local.rs          # deterministic offline provider for live dev, 5 tests
     pipeline.rs            # live CPAL transcription pipeline (no tests)
     transcriber.rs         # transcription trait + result types
   translation/
@@ -63,10 +65,10 @@ src/
   app/
     mod.rs                 # re-exports: config, events, live_events, service, settings_store, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs + console formatting, 23 tests
-    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 18 tests
+    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 36 tests
     live_events.rs         # pure event-construction helpers (build_transcript_event, etc.), 7 tests
     ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 5 tests
-    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, ~14 tests
+    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 20 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```
@@ -223,7 +225,9 @@ the user explicitly asks.
 - Don't add `Todo: …` code paths, `unwrap()`-filled stubs, or dead
   `#[allow(dead_code)]` on functions that should be removed rather
   than silenced.
-- Don't add Tauri / desktop UI, async runtime, or a real transcription
-  API unless the user explicitly asks.
+- Don't add a new desktop-UI surface, async runtime, or transcription
+  provider unless the user explicitly asks. The Tauri shell
+  (`src-tauri/`) and the `local-whisper` provider already exist; extend
+  them instead of starting parallel paths.
 - Don't order `mod audio;` twice in `main.rs`; that produces
   `audio is defined multiple times`.
