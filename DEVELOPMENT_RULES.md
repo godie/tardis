@@ -46,7 +46,8 @@ mirror one of these rows.
 | `audio::devices::print_device_info` | n/a (pure printing) | `cargo run -- devices` |
 | `audio::volume` (avg / threshold / i16 / u16) | `tests` in `src/audio/volume.rs` | `cargo run -- mic`, `mic-5s` |
 | `audio::activity` (silence vs speech-like classification) | `tests` in `src/audio/activity.rs` | `cargo run -- mic`, `mock-transcribe`, `mock-translate`, `mock-transcribe-file output/chunks/chunk_001.wav` |
-| `audio::chunker` (chunk-size + drain helpers) | `tests` in `src/audio/chunker.rs` | `cargo run -- chunk-test` |
+| `audio::chunker` (chunk-size + zero-size guard + drain helpers) | `tests` in `src/audio/chunker.rs` | `cargo run -- chunk-test` |
+| `audio::capture` (`DefaultInput` + `MicInput`: device resolution, f32 stream, chunk drain) | n/a (CPAL + hardware) | every capture mode: `chunk-test`, `record-5s`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe` |
 | `audio::chunk_recorder` (chunk filename + f32->i16 WAV helpers) | `tests` in `src/audio/chunk_recorder.rs` | `cargo run -- save-chunks-test` |
 | `audio::recorder::record_default_mic_to_wav_for_seconds` | n/a (hound + filesystem glue) | `cargo run -- record-5s` |
 | `config` constants | n/a (value-only constants) | consumed by `mic-5s`, `record-5s`, `chunk-test`, `mock-transcribe`, `save-chunks-test`, `mock-transcribe-file`, `mock-translate` |
@@ -73,7 +74,7 @@ mirror one of these rows.
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe` |
 | `app::ui_events` (UiAppEvent + app_event_to_ui_event) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
-| `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_supported_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
+| `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_supported_transcription_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 
 ## How to add a new feature
 

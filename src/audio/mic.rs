@@ -3,10 +3,11 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
+use anyhow::Result;
+use cpal::traits::DeviceTrait;
+use cpal::{FromSample, Sample, SizedSample};
 
+use super::capture::DefaultInput;
 use super::volume::{calculate_average_volume, is_above_threshold};
 use crate::config::DEFAULT_VOLUME_THRESHOLD;
 
@@ -16,27 +17,21 @@ const LOG_COOLDOWN: Duration = Duration::from_millis(100);
 /// un-played `Stream`. Callers must `.play()?` the stream and hold it in
 /// scope to keep capture alive; dropping it stops the stream.
 pub fn start_default_mic_capture() -> Result<cpal::Stream> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))?;
-    println!("Mic device: {}", device);
+    let input = DefaultInput::resolve()?;
+    println!("Mic device: {}", input.device_label());
+    println!("Default input config: {}", input.supported_label());
 
-    let supported = device.default_input_config()?;
-    println!("Default input config: {:?}", supported);
-
-    let config: StreamConfig = supported.into();
-    let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config)?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &config)?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &config)?,
-        other => return Err(anyhow!("Unsupported sample format: {:?}", other)),
+    let stream = match input.sample_format() {
+        cpal::SampleFormat::F32 => build_stream::<f32>(&input)?,
+        cpal::SampleFormat::I16 => build_stream::<i16>(&input)?,
+        cpal::SampleFormat::U16 => build_stream::<u16>(&input)?,
+        other => return Err(anyhow::anyhow!("Unsupported sample format: {other:?}")),
     };
 
     Ok(stream)
 }
 
-fn build_stream<T>(device: &cpal::Device, config: &StreamConfig) -> Result<cpal::Stream>
+fn build_stream<T>(input: &DefaultInput) -> Result<cpal::Stream>
 where
     T: Sample + SizedSample,
     f32: FromSample<T>,
@@ -48,8 +43,8 @@ where
 
     let err_fn = |err| eprintln!("mic stream error: {}", err);
 
-    let stream = device.build_input_stream(
-        *config,
+    let stream = input.device().build_input_stream(
+        input.config(),
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
             // Convert to f32 once so the testable volume helpers can
             // operate on a uniform slice. Buffer size is bounded by the

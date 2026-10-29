@@ -2,6 +2,8 @@
 //!
 //! The `activity` submodule classifies a pre-computed chunk volume into
 //! `Silence` vs. `SpeechLike` against a configurable threshold.
+//! The `capture` submodule resolves the default input device and drains
+//! capture chunks for every CPAL driver in the crate.
 //! The `chunk_recorder` submodule writes one WAV file per captured chunk.
 //! The `chunker` submodule drives a real-time chunk-by-chunk capture test.
 //! The `devices` submodule prints host/device information and exits.
@@ -11,6 +13,7 @@
 //! unit tests.
 
 pub mod activity;
+pub mod capture;
 pub mod chunk_recorder;
 pub mod chunker;
 pub mod devices;

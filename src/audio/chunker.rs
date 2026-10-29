@@ -4,19 +4,18 @@
 //! `chunk_duration_ms`-millisecond chunks, and prints per-chunk stats:
 //! chunk number, sample count, approximate duration, and average volume.
 //!
-//! Pure helpers (`calculate_chunk_size_samples`, `has_complete_chunk`,
-//! `drain_chunk`) live in this module so they can be exercised by unit
-//! tests without touching CPAL or any audio device.
+//! Pure helpers (`calculate_chunk_size_samples`, `chunk_size_or_error`,
+//! `has_complete_chunk`, `drain_chunk`) live in this module so they can be
+//! exercised by unit tests without touching CPAL or any audio device. The
+//! capture stream itself comes from [`super::capture`].
 
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 
+use super::capture::MicInput;
 use super::volume::calculate_average_volume;
 
 // ===== Pure helpers (unit-tested) ========================================
@@ -31,6 +30,25 @@ pub fn calculate_chunk_size_samples(
 ) -> usize {
     let n = (sample_rate as u128) * (channels as u128) * (chunk_duration_ms as u128) / 1000;
     n as usize
+}
+
+/// Chunk size for the given device config, or a self-explaining error when
+/// the computation lands on zero (a 0 ms window, or a degenerate rate /
+/// channel count). Every capture driver shares this guard so the message is
+/// identical everywhere.
+pub fn chunk_size_or_error(
+    sample_rate: u32,
+    channels: u16,
+    chunk_duration_ms: u64,
+) -> Result<usize> {
+    let chunk_size = calculate_chunk_size_samples(sample_rate, channels, chunk_duration_ms);
+    if chunk_size == 0 {
+        return Err(anyhow!(
+            "computed chunk_size is 0 (sample_rate={sample_rate}, channels={channels}, \
+             chunk_duration_ms={chunk_duration_ms})"
+        ));
+    }
+    Ok(chunk_size)
 }
 
 /// Has the buffer accumulated at least `chunk_size` samples?
@@ -54,39 +72,18 @@ pub fn drain_chunk(buffer: &mut Vec<f32>, chunk_size: usize) -> Option<Vec<f32>>
 /// Capture `seconds` of mic audio, splitting it into `chunk_duration_ms`
 /// chunks and printing stats for each. Returns when the window ends.
 pub fn run_chunk_test(seconds: u64, chunk_duration_ms: u64) -> Result<()> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))?;
-    println!("Chunk test device: {}", device);
-
-    let supported = device.default_input_config()?;
-    println!("Default input config: {:?}", supported);
-    let config: StreamConfig = supported.into();
-    let sample_format = supported.sample_format();
-    let sample_rate = config.sample_rate;
-    let channels = config.channels;
-    let chunk_size = calculate_chunk_size_samples(sample_rate, channels, chunk_duration_ms);
-    if chunk_size == 0 {
-        return Err(anyhow!(
-            "computed chunk_size is 0 (sample_rate={sample_rate}, channels={channels}, \
-             chunk_duration_ms={chunk_duration_ms})"
-        ));
-    }
+    let mic = MicInput::start("chunker")?;
+    println!("Chunk test device: {}", mic.input().device_label());
+    println!("Default input config: {}", mic.input().supported_label());
+    let sample_rate = mic.sample_rate();
+    let channels = mic.channels();
+    let chunk_size = mic.chunk_size(chunk_duration_ms)?;
     println!(
         "Chunking every {chunk_duration_ms} ms \
          ({chunk_size} samples per chunk, {sample_rate} Hz, {channels} ch)"
     );
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let stream = match sample_format {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &config, Arc::clone(&buffer))?,
-        other => return Err(anyhow!("Unsupported sample format: {:?}", other)),
-    };
-
-    stream.play()?;
+    mic.play()?;
     println!("Capturing for {seconds} seconds...");
 
     let start = Instant::now();
@@ -100,20 +97,7 @@ pub fn run_chunk_test(seconds: u64, chunk_duration_ms: u64) -> Result<()> {
         // Drain every complete chunk that accumulated during the tick so
         // we don't slowly fall behind when a callback delivers >1 chunk
         // worth of samples between sleeps.
-        loop {
-            let drained: Option<Vec<f32>> = {
-                let mut buf = match buffer.lock() {
-                    Ok(b) => b,
-                    Err(p) => p.into_inner(),
-                };
-                if !has_complete_chunk(buf.len(), chunk_size) {
-                    None
-                } else {
-                    drain_chunk(&mut buf, chunk_size)
-                }
-            };
-            let Some(chunk) = drained else { break };
-
+        while let Some(chunk) = mic.next_chunk(chunk_size) {
             chunk_index += 1;
             let samples = chunk.len();
             let approx_duration_ms =
@@ -128,36 +112,9 @@ pub fn run_chunk_test(seconds: u64, chunk_duration_ms: u64) -> Result<()> {
         }
     }
 
-    drop(stream);
+    drop(mic);
     println!("Chunk test finished. {chunk_index} chunks printed.");
     Ok(())
-}
-
-fn build_stream<T>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    buffer: Arc<Mutex<Vec<f32>>>,
-) -> Result<cpal::Stream>
-where
-    T: Sample + SizedSample,
-    f32: FromSample<T>,
-{
-    let err_fn = |err| eprintln!("chunker stream error: {err}");
-    let stream = device.build_input_stream(
-        *config,
-        move |data: &[T], _info: &cpal::InputCallbackInfo| {
-            let mut buf = match buffer.lock() {
-                Ok(b) => b,
-                Err(p) => p.into_inner(),
-            };
-            for &s in data {
-                buf.push(f32::from_sample(s));
-            }
-        },
-        err_fn,
-        None,
-    )?;
-    Ok(stream)
 }
 
 // ===== Unit tests =======================================================
@@ -181,6 +138,22 @@ mod tests {
     #[test]
     fn chunk_size_48k_stereo_500ms_is_48000() {
         assert_eq!(calculate_chunk_size_samples(48_000, 2, 500), 48_000);
+    }
+
+    // ---- chunk_size_or_error -------------------------------------------
+
+    #[test]
+    fn chunk_size_or_error_returns_computed_size() {
+        assert_eq!(chunk_size_or_error(16_000, 1, 1000).unwrap(), 16_000);
+    }
+
+    #[test]
+    fn chunk_size_or_error_rejects_zero_size() {
+        let err = chunk_size_or_error(16_000, 1, 0).unwrap_err().to_string();
+        assert!(
+            err.contains("computed chunk_size is 0") && err.contains("chunk_duration_ms=0"),
+            "unexpected message: {err}"
+        );
     }
 
     // ---- has_complete_chunk --------------------------------------------

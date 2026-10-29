@@ -9,7 +9,7 @@ commit style, working conventions, things NOT to do.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # ~219+ unit tests on the CLI workspace (179 baseline + ~17 in app::config + ~23 in app::settings_store)
+cargo test                                           # 219 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -39,10 +39,11 @@ src/
   main.rs                  # CLI dispatcher (matches on args.nth(1))
   config.rs                # centralized CLI/audio/pipeline constants
   audio/
-    mod.rs                 # re-exports: activity, chunk_recorder, chunker, devices, mic, recorder, volume
+    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, mic, recorder, volume
     activity.rs            # pure silence/speech-like classifier, 8 tests
-    chunk_recorder.rs      # CPAL + hound chunk saver + pure WAV helpers, 10 tests
-    chunker.rs             # pure chunk-size/drain helpers + CPAL capture loop, 11 tests
+    capture.rs             # shared CPAL device resolution + chunk drain (no tests)
+    chunk_recorder.rs      # hound chunk saver + pure WAV helpers, 10 tests
+    chunker.rs             # pure chunk-size/drain helpers + CPAL capture loop, 13 tests
     devices.rs             # print_device_info (pure print, no tests)
     mic.rs                 # CPAL driver (no tests)
     recorder.rs            # CPAL + hound driver (no tests)
