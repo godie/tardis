@@ -9,9 +9,8 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - A real local transcription provider exists for WAV files sent to a self-hosted `faster-whisper` HTTP server.
 - A second local provider, `mock-local`, exists for deterministic offline development.
 - Translation is still mock-only.
-- The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription` commands. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. Provider selection is available in the UI (`mock-local` — no Docker; `local-whisper` — requires Docker). Translation is still mock-only.
-- **Session export**: during a live Tauri session the backend accumulates transcript + translation events into a `TranscriptSession` ([`src/app/session.rs`](src/app/session.rs)). After pressing **Stop**, the user can click **Export JSON** / **Export Text** in the UI to write the session to a path (`output/sessions/session_current.json` / `.txt` by default). No audio or WAV chunks are persisted — only the recognised text and session metadata. Two formats: pretty JSON (round-trippable through `serde_json`) and human-readable plain text.
-- The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. This is the future shared boundary between the CLI modes and the Tauri shell. Reaching it today requires `cargo run -- app-mock-flow` (sync, no microphone, no Docker).
+- The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
+- The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, chunk duration, volume threshold) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
 - `cargo test` runs ~219+ unit tests over pure helper logic, provider dispatch, the `src/app/` layer, the `settings_store` persistence layer, and pure Tauri command helpers.
 
@@ -25,7 +24,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 
 ## Quick Start
 
-Prerequisites: Node 24 (pinned in `.nvmrc` — `nvm install`), and a stable Rust toolchain ≥ 1.85 (required for the `edition = "2024"` workspace).
+Prerequisites: Node 24 (pinned in `.nvmrc`; run `nvm install`) and a stable Rust toolchain ≥ 1.85 (required for the `edition = "2024"` workspace).
 
 ### Backend
 
@@ -45,35 +44,35 @@ This block mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/wo
 
 Run once per fresh checkout.
 
-1. **Node version** — switch to the pinned Node. Equivalent to the `setup-node` step (`node-version: '24'`, `cache: 'npm'`):
+1. **Node version**: switch to the pinned Node. Equivalent to the `setup-node` step (`node-version: '24'`, `cache: 'npm'`):
 
    ```bash
    nvm use 24
    ```
 
-2. **JS dependencies** — clean install from the lockfile. Equivalent to the `npm ci` half of the `install playwright + chromium` step:
+2. **JS dependencies**: clean install from the lockfile. Equivalent to the `npm ci` half of the `install playwright + chromium` step:
 
    ```bash
    npm ci
    ```
 
-3. **Playwright browser + Linux system deps** — equivalent to the `npx playwright install --with-deps chromium` half of the same step. On Linux the `--with-deps` half requires `sudo` (the `apt-get` libs are shared with the Tauri shell's GUI deps listed in [Tauri UI Shell Setup](#tauri-ui-shell-setup)):
+3. **Playwright browser + Linux system deps**: equivalent to the `npx playwright install --with-deps chromium` half of the same step. On Linux the `--with-deps` half requires `sudo` (the `apt-get` libs are shared with the Tauri shell's GUI deps listed in [Tauri UI Shell Setup](#tauri-ui-shell-setup)):
 
    ```bash
    npx playwright install --with-deps chromium
    ```
 
-4. **Run the e2e suite** — equivalent to the `run playwright tests` step:
+4. **Run the e2e suite**: equivalent to the `run playwright tests` step:
 
    ```bash
    npm run test:e2e
    ```
 
-> **Note**: until real specs ship (in the upcoming session-export feature PR), step 4 exits 0 thanks to the `--pass-with-no-tests` flag the `test:e2e` script carries; drop the flag — or move it into a future `playwright.config.js` as `passWithNoTests: true` — on the first PR that lands specs.
+> **Note**: there are no Playwright specs yet, so step 4 exits 0 thanks to the `--pass-with-no-tests` flag the `test:e2e` script carries; drop the flag (or move it into a future `playwright.config.js` as `passWithNoTests: true`) on the first PR that lands specs.
 
 ### Run the desktop UI (Tauri)
 
-The Tauri shell bundles the same backend you just built into a desktop window with a settings panel, a live transcript / translation feed, and a JSON / Text export panel. Default workflow (works without extra tools):
+The Tauri shell bundles the same backend you just built into a desktop window with a settings panel, a live transcript / translation feed, and a local-WAV transcription card. Default workflow (works without extra tools):
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml
@@ -88,7 +87,7 @@ cargo install tauri-cli --locked --version "^2"
 cd src-tauri && cargo tauri dev
 ```
 
-Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, speak — see [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) for the byte-accurate manual checklist.
+Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, and speak. [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) has the byte-accurate manual checklist.
 
 ## CLI Modes
 
@@ -104,11 +103,10 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console` — the same event stream the Tauri shell will consume. Default provider is `mock-local` (no Docker). Silence chunks are skipped. This is **not** true streaming. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Default provider is `mock-local` (no Docker). Silence chunks are skipped. This is **not** true streaming. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
 | `cargo run -- settings-validate <path>` | Load + validate a settings JSON file at `<path>`. Prints the resolved values and exits `0` on success or `1` with the underlying `SettingsStoreError` on parse / validation / I/O failure. Mirrors the `load_runtime_settings` Tauri command. | Yes |
-| `cargo run -- session-export-demo` | Create a fixture `TranscriptSession` (one transcript + one translation event), then export it as pretty JSON and plain text to `output/sessions/session_demo.{json,txt}`. No microphone, no Docker, no Tauri shell — reusable as a quick smoke test for the entire session/export/file-store pipeline. | Yes |
 
 ## Local Transcription Providers
 
@@ -155,7 +153,7 @@ sudo apt-get install -y --no-install-recommends \
   patchelf
 ```
 
-macOS, Windows, and non-Debian / Ubuntu Linux distributions do not need this block — the WebKit / GTK surface is only required for the Tauri webview to render on Debian / Ubuntu.
+macOS, Windows, and non-Debian / Ubuntu Linux distributions do not need this block. The WebKit / GTK surface is only required for the Tauri webview to render on Debian / Ubuntu.
 
 ## Tauri UI Shell
 
@@ -175,19 +173,15 @@ What the shell does today:
 - Default `transcription_provider` is `mock-local`; `local-whisper` requires the Docker container to be running.
 - Mock-only controls preserved for dev reference: `start_mock_listening`, `get_mock_transcript`, `get_mock_translation`.
 - "Local WAV Transcription" card: validate a path, call `transcribe_wav_file_local`, surface the transcript or a user-facing error.
-- "Session Export" card: after a Stop, write the accumulated session to a JSON or plain-text path via `export_current_session_json` / `export_current_session_text` (powered by [`src/app/session_export.rs`](src/app/session_export.rs) + [`src/app/session_store.rs`](src/app/session_store.rs)). A "Show current JSON" button calls `get_current_session_json` for a peek.
 
 The desktop shell exposes the following `#[tauri::command]` entry points. All paths and event types are unit-tested against the documented contracts in `src-tauri/src/lib.rs`; the binding to the Tauri runtime is verified manually ([docs/tauri-ui-shell.md](docs/tauri-ui-shell.md)):
 
 | Command | Purpose |
 | --- | --- |
 | `start_live_transcription(config: Option<AppRuntimeConfig>)` | Spawns a background worker thread that captures audio from the default mic, transcribes speech-like chunks via the selected provider, and emits an `app-event` Tauri event for every [`AppEvent`]. Returns `"started with provider <name>"`. |
-| `stop_live_transcription()` | Signals the active session to stop; the worker thread exits and the [`SessionCleanupGuard`] resets `is_running` + `stop_signal`. Idempotent — a stale Stop on a torn-down session returns `NO_SESSION_RUNNING_ERR`. |
+| `stop_live_transcription()` | Signals the active session to stop; the worker thread exits and the [`SessionCleanupGuard`] resets `is_running` + `stop_signal`. Idempotent: a stale Stop on a torn-down session returns `NO_SESSION_RUNNING_ERR`. |
 | `transcribe_wav_file_local(path: String)` | File-based local transcription through `local-whisper` (delegates to the same [`LocalWhisperClient`] the CLI uses; "Docker not running?" errors are normalised into a user-facing string). |
-| `export_current_session_json(path: String)` | Saves the in-memory [`TranscriptSession`] as pretty JSON at `path`; consumes the snapshot. |
-| `export_current_session_text(path: String)` | Saves the in-memory [`TranscriptSession`] as plain text at `path`; consumes the snapshot. |
-| `get_current_session_json()` | Read-only JSON render of the current session — does **NOT** consume (a "Show current JSON" peek in the UI). |
-| `get_supported_transcription_providers()` | Backend's `["mock-local", "local-whisper"]` list — the UI rebuilds the provider dropdown from this so a future provider shows up without touching the HTML. |
+| `get_supported_transcription_providers()` | Backend's `["mock-local", "local-whisper"]` list. The UI rebuilds the provider dropdown from this, so a future provider shows up without touching the HTML. |
 | `get_default_runtime_config()` | Default [`AppRuntimeConfig`] for first-load pre-population. |
 | `load_runtime_settings()` | Loads `<OS config dir>/tardis/runtime.json`, falls back to defaults on first run or if the file is missing. |
 | `save_runtime_settings(config)` | Atomically writes the validated + normalised config (write-then-rename via `<file>.tmp`). |
@@ -198,6 +192,7 @@ What it does not do yet:
 - System audio capture
 - Run a real translation backend
 - Streaming/partial transcripts
+- Session transcript history or export: the transcript panel shows only the latest chunk and nothing is written to disk
 - Recording / permission UX before any release candidate
 
 More detail lives in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).
@@ -210,9 +205,9 @@ The Tauri shell persists session settings to `<OS config dir>/tardis/runtime.jso
 - macOS: `~/Library/Application Support/tardis/runtime.json`.
 - Windows: `%APPDATA%\tardis\runtime.json`.
 
-Pure helpers live in [`src/app/settings_store.rs`](src/app/settings_store.rs) — atomic write (write-then-rename via `<path>.tmp`), load-returns-default-on-missing, normalize-and-validate round-trip. The Tauri commands `load_runtime_settings` / `save_runtime_settings` resolve the OS path via `tauri::Manager::path()` and delegate to the pure helpers; the UI calls `load_runtime_settings` on init (falling back to `get_default_runtime_config` if the file is missing or unreadable) and `save_runtime_settings` on every committed settings change.
+Pure helpers live in [`src/app/settings_store.rs`](src/app/settings_store.rs): atomic write (write-then-rename via `<path>.tmp`), load-returns-default-on-missing, normalize-and-validate round-trip. The Tauri commands `load_runtime_settings` / `save_runtime_settings` resolve the OS path via `tauri::Manager::path()` and delegate to the pure helpers; the UI calls `load_runtime_settings` on init (falling back to `get_default_runtime_config` if the file is missing or unreadable) and `save_runtime_settings` on every committed settings change.
 
-CI does **not** verify the actual filesystem path on a developer machine — only the pure round-trip behaviour in unit tests. The first-run contract is documented in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).
+CI does **not** verify the actual filesystem path on a developer machine, only the pure round-trip behaviour in unit tests. The first-run contract is documented in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).
 
 ## Project Layout
 
@@ -236,11 +231,9 @@ docker/faster-whisper/     Local Docker transcription stack
 docs/                      Supplemental project notes
 ```
 
-The `src/app/` layer is the future shared boundary: today it powers
-`cargo run -- app-mock-flow`; once the Tauri shell moves past
-mock-only controls, it will host the same `AppService` API the CLI
-already exercises, end-to-end from microphone capture to UI event
-sink.
+The `src/app/` layer is the code the CLI and the Tauri shell share:
+`cargo run -- app-mock-flow` exercises it, and the shell reuses its
+config, event, and UI-payload types.
 
 ## CI
 
@@ -253,7 +246,7 @@ GitHub Actions runs on every PR and push to `main`.
 | Tauri compilation | `cargo check --manifest-path src-tauri/Cargo.toml` |
 | Unit tests | `cargo test` |
 
-CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mic`, `record-5s`, etc.) — those remain local validation only. CPAL streams, microphones, Docker providers, and Tauri runtime are not exercised in CI.
+CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mic`, `record-5s`, etc.); those remain local validation only. CPAL streams, microphones, Docker providers, and Tauri runtime are not exercised in CI.
 
 ## Generating a release
 
@@ -263,23 +256,21 @@ The desktop shell is **per-OS bundle-ready**: `src-tauri/Cargo.toml` + `src-taur
 - [x] **Linux `apt-get` block** + macOS / Windows / non-Debian Linux note live in [Tauri UI Shell Setup](#tauri-ui-shell-setup); the same block CI installs is what a developer needs locally.
 - [ ] **Pick the next tag.** Once the session-export feature lands and a real translation backend is wired in, the natural next milestone is `tardis-v0.2.0` (a bigger bundle than `tardis-v0.1.0`, which marks the Node-24 / linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone).
 - [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`bundle.identifier`, `bundle.version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
-- [ ] **Run `cargo build --release` for the CLI binary** (no UI shell — useful for headless / CI smoke users who do not need the desktop app).
+- [ ] **Run `cargo build --release` for the CLI binary** (no UI shell, useful for headless / CI smoke users who do not need the desktop app).
 - [ ] **Run `cargo tauri build` for the desktop shell** to produce native bundles:
-  - `.deb` + `.AppImage` + `.rpm` (Linux — needs `dpkg-deb`, `rpmbuild`, `fakeroot`, `appimagetool`)
-  - `.dmg` (macOS — `cargo tauri build` does the disk-image; code signing needs `codesign` + `notarytool` for notarisation)
-  - `.msi` + `.exe` (Windows — needs `signtool` for Authenticode signing; WiX for `.msi` already ships with Tauri 2)
-  - **Build matrix:** each platform builds on its own host — Tauri 2 has no first-class OS-cross-compile path (the project itself does not adopt `cargo-zigbuild` or `cargo-xwin` workarounds; they remain an opt-in for downstream forks). CI needs three runners (`ubuntu-latest` / `macos-latest` / `windows-latest`).
+  - `.deb` + `.AppImage` + `.rpm` (Linux: needs `dpkg-deb`, `rpmbuild`, `fakeroot`, `appimagetool`)
+  - `.dmg` (macOS: `cargo tauri build` does the disk-image; code signing needs `codesign` + `notarytool` for notarisation)
+  - `.msi` + `.exe` (Windows: needs `signtool` for Authenticode signing; WiX for `.msi` already ships with Tauri 2)
+  - **Build matrix:** each platform builds on its own host, because Tauri 2 has no first-class OS-cross-compile path (the project itself does not adopt `cargo-zigbuild` or `cargo-xwin` workarounds; they remain an opt-in for downstream forks). CI needs three runners (`ubuntu-latest` / `macos-latest` / `windows-latest`).
 - [ ] **Code signing + notarisation.**
   - macOS: `codesign --deep --timestamp --options=runtime` + `xcrun notarytool submit --wait` + staple the ticket.
   - Windows: `signtool sign /fd SHA256 /tr http://timestamp.digicert.com` + Authenticode timestamp authority.
   - Linux: GPG `.sig` artifacts sidecar to `.deb` / `.rpm` (`.AppImage` is unsigned by convention; document that).
   - Tauri's `tauri.conf.json` `bundle.macOS.signingIdentity`, `bundle.windows.certificateThumbprint`, and `bundle.beforeBundleCommand` are where these hooks live.
-- [x] **GitHub Release workflow** (`.github/workflows/release.yml`): triggers on the canonical `tardis-vX.Y.Z` SemVer tag pattern (the `v*.*.*` legacy form was retired alongside the deprecated `v0.1.0` tag — see [RELEASES.md § Tagging convention](RELEASES.md#tagging-convention) for the namespace rationale), runs the build matrix above, uploads `.deb`, `.dmg`, `.msi`, `.AppImage`, plus checksums (`SHA256SUMS.txt`) to a GitHub Release with auto-generated notes from commits since the prior tag.
+- [x] **GitHub Release workflow** (`.github/workflows/release.yml`): triggers on the canonical `tardis-vX.Y.Z` SemVer tag pattern (the `v*.*.*` legacy form was retired alongside the deprecated `v0.1.0` tag; see [RELEASES.md § Tagging convention](RELEASES.md#tagging-convention) for the namespace rationale), runs the build matrix above, uploads `.deb`, `.dmg`, `.msi`, `.AppImage`, plus checksums (`SHA256SUMS.txt`) to a GitHub Release with auto-generated notes from commits since the prior tag.
 - [ ] **Lockfile reproducibility.** `Cargo.lock` commits prevent supply-chain drift across builds; bump it on every release-prep with `cargo update --workspace` and review the diff in the same commit that bumps version strings.
-- [ ] **First-run UX + privacy.** Per the [Privacy Note](#privacy-note): visible recording-state indicator, microphone-permission prompt honouring the OS convention, and a "Stop" button reachable in one click — all required before any external distribution.
+- [ ] **First-run UX + privacy.** Per the [Privacy Note](#privacy-note): visible recording-state indicator, microphone-permission prompt honouring the OS convention, and a "Stop" button reachable in one click, all required before any external distribution.
 - [x] **Install / update docs.** A `RELEASES.md` (or a `## Releases` section heading) linking to the GitHub Releases page plus per-platform install walkthrough (`apt install ./tardis.deb`, `brew install --cask tardis`, `winget install tardis`/next-next-finish on Windows) ships next to the binary in the same release commit.
-
-Tracks the bigger goal in ROADMAP §5 "Later" — once a release workflow exists, TARDIS stops being a local-only spike.
 
 ## Testing Model
 
@@ -299,13 +290,13 @@ Microphone or WAV file
   -> activity classification
   -> transcription trait boundary
   -> optional translation trait boundary
-  -> console output today, AppEvent stream tomorrow
+  -> console output or the Tauri event stream
 ```
 
 The `AppEvent` stream is the typed event surface emitted by
-`AppService` (the new `src/app/` orchestration layer). Today the
-CLI's `app-mock-flow` mode prints it directly; the Tauri shell will
-relay each event into the webview once it stops being mock-only.
+`AppService` in the `src/app/` orchestration layer. The CLI prints
+these events with `format_app_event_for_console`; the Tauri shell maps
+them to `UiAppEvent` and emits them to the webview.
 
 Design constraints that shape the codebase:
 

@@ -1,6 +1,6 @@
 //! Pure stub for the [`LocalTranscriptionProvider`] trait.
 //!
-//! Deterministic fake transcripts — never touches the network, the
+//! Deterministic fake transcripts: never touches the network, the
 //! filesystem, or any external service. Used in unit tests and
 //! reserved for a future `--provider` flag (a CLI option that lets
 //! callers pick between [`crate::transcription::local_whisper::LocalWhisperClient`]
@@ -10,7 +10,7 @@
 //! is genuinely an open abstraction: any type that impls the trait
 //! drops in alongside [`crate::transcription::local_whisper::LocalWhisperClient`]
 //! and is reachable from a `Box<dyn LocalTranscriptionProvider>` or
-//! any `T: LocalTranscriptionProvider` generic bound — no call site
+//! any `T: LocalTranscriptionProvider` generic bound, so no call site
 //! has to distinguish between providers unless it asks for `name()`
 //! or matches on the concrete type explicitly.
 
@@ -105,7 +105,7 @@ mod tests {
         // `Box<dyn LocalTranscriptionProvider>` can invoke `name`
         // and `transcribe` without knowing the concrete type. If the
         // trait-method signatures ever drift, every future provider
-        // consumer breaks too — so this test is the canary for the
+        // consumer breaks too, so this test is the canary for the
         // "openness" guarantee.
         let provider: Box<dyn LocalTranscriptionProvider> = Box::new(MockLocalProvider::new());
         assert_eq!(provider.name(), "mock-local");

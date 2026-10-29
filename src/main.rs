@@ -104,7 +104,7 @@ fn run_mic_for(duration: Duration) -> Result<()> {
 /// - Cross-checking the CLI defaults match the UI defaults
 ///   the Tauri shell pre-populates the settings panel with.
 ///
-/// Pure — no FS, no microphone, no Docker. The output is
+/// Pure: no FS, no microphone, no Docker. The output is
 /// `serde_json::to_string_pretty` of the normalized default
 /// config so it is directly pipe-able into a `runtime.json`
 /// file.
@@ -207,8 +207,8 @@ fn run_app_mock_flow() -> Result<()> {
 
     // 4. Demonstrate the silent-skip path. `run_mock_text_flow`
     //    returns an empty `Vec<AppEvent>` for empty / whitespace
-    //    input so `print_events` shows "(no events)" — the future
-    //    UI shell must not render an "empty transcript" toast on
+    //    input so `print_events` shows "(no events)". The UI shell
+    //    must not render an "empty transcript" toast on
     //    every capture tick and the CLI follows the same
     //    philosophy.
     print_step("run_mock_text_flow(\"\")  // silent-skip demo");
@@ -293,8 +293,8 @@ fn run_mock_translate() -> Result<()> {
 ///
 /// Default provider is `"local-whisper"` (the self-hosted
 /// faster-whisper Docker HTTP server). Pass `--provider mock-local`
-/// to use the deterministic offline stub instead — no Docker
-/// required, echoes `"mock transcript for <basename>"` for whatever
+/// to use the deterministic offline stub instead. It needs no Docker
+/// and echoes `"mock transcript for <basename>"` for whatever
 /// path is given. Connection-level errors from the Docker provider
 /// still carry an explicit "is the Docker container running?"
 /// remediation hint.
@@ -306,7 +306,7 @@ fn run_mock_translate() -> Result<()> {
 /// required); pass `--provider local-whisper` to use the
 /// self-hosted faster-whisper server instead.
 ///
-/// This is **not** true streaming — each speech-like chunk is
+/// This is **not** true streaming: each speech-like chunk is
 /// written to a temporary WAV file in `output/live_chunks/`,
 /// sent through the selected
 /// [`transcription::LocalTranscriptionProvider`], and deleted
@@ -319,7 +319,7 @@ fn run_live_local_transcribe() -> Result<()> {
 
     let mut provider_name = "mock-local".to_string();
 
-    // [0] = binary path, [1] = "live-local-transcribe" — start at [2].
+    // [0] = binary path, [1] = "live-local-transcribe"; start at [2].
     let mut i = 2;
     while i < args.len() {
         let arg = &args[i];
@@ -354,7 +354,7 @@ fn run_local_transcribe_file() -> Result<()> {
     let mut provider_name = "local-whisper".to_string();
     let mut path: Option<String> = None;
 
-    // [0] = binary path, [1] = "local-transcribe-file" — start at [2].
+    // [0] = binary path, [1] = "local-transcribe-file"; start at [2].
     let mut i = 2;
     while i < args.len() {
         let arg = &args[i];

@@ -4,7 +4,7 @@ TARDIS releases are cut from annotated tags (convention: `tardis-vX.Y.Z`). Each 
 
 > **Posture for first-cut releases.** Bundles are **not** code-signed. macOS Gatekeeper will require `Right-click → Open` on the first launch; Windows SmartScreen will warn about an unknown publisher; Linux GPG sidecars are not produced. Real code signing + notarisation is a separate task (the **Code signing + notarisation** checkbox in the [`## Generating a release`](README.md#generating-a-release) section of `README.md`).
 
-> **Filename note.** Tauri uses the `productName` from `src-tauri/tauri.conf.json` verbatim in installer filenames — and `productName` is `"TARDIS v1"` (with a literal space). The space shows up in the on-disk filename (`TARDIS v1_0.2.0_amd64.deb`) but must be URL-encoded as `%20` in `curl` commands (`TARDIS%20v1_0.2.0_amd64.deb`).
+> **Filename note.** Tauri uses the `productName` from `src-tauri/tauri.conf.json` verbatim in installer filenames. `productName` is `"TARDIS v1"` (with a literal space). The space shows up in the on-disk filename (`TARDIS v1_0.2.0_amd64.deb`) but must be URL-encoded as `%20` in `curl` commands (`TARDIS%20v1_0.2.0_amd64.deb`).
 
 ## Tagging convention
 
@@ -14,7 +14,7 @@ TARDIS releases are strictly cut from **annotated** tags matching the canonical 
 
 ## Download
 
-- **GitHub Releases:** <https://github.com/godie/tardis/releases> — pick the latest tag (e.g. `tardis-v0.2.0`) and download the artefact for your platform.
+- **GitHub Releases:** <https://github.com/godie/tardis/releases>. Pick the latest tag (e.g. `tardis-v0.2.0`) and download the artefact for your platform.
 - **Verify integrity** before installing (note the `%20` URL-encoding on the space in `TARDIS v1`):
 
   ```bash
@@ -63,7 +63,7 @@ chmod +x 'TARDIS v1_<version>_amd64.AppImage'
 
 3. First launch: because the bundle is **not** signed with a Developer ID yet, right-click the app in `/Applications` → **Open** → confirm the dialog. Subsequent launches can be normal double-clicks.
 
-For a Homebrew Cask distribution (not yet wired — projected in the README release section):
+For a Homebrew Cask distribution (not wired yet; projected in the README release section):
 
 ```bash
 brew install --cask tardis   # projected, not yet a tap formula
@@ -89,10 +89,10 @@ A `.exe` (NSIS) installer is also uploaded alongside the `.msi`; both produce th
 
 ## Update
 
-TARDIS does **not** ship an in-app updater yet — re-run the install walkthrough for the new tag. A future release may add Tauri 2's built-in `tauri-plugin-updater` (referenced from the `Next:` items in [`README.md` § Tauri UI Shell](README.md#tauri-ui-shell)).
+TARDIS does **not** ship an in-app updater yet; re-run the install walkthrough for the new tag. A future release may add Tauri 2's built-in `tauri-plugin-updater` (referenced from the `Next:` items in [`README.md` § Tauri UI Shell](README.md#tauri-ui-shell)).
 
 ## Cross-references
 
-- Release workflow source — [`.github/workflows/release.yml`](.github/workflows/release.yml)
+- Release workflow source: [`.github/workflows/release.yml`](.github/workflows/release.yml)
 - Release item in `## Generating a release` of [`README.md`](README.md)
-- Operational roadmap — [`ROADMAP.md`](ROADMAP.md)
+- Operational roadmap: [`ROADMAP.md`](ROADMAP.md)

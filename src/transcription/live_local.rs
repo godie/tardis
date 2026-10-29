@@ -7,7 +7,7 @@
 //! chunk to a temporary WAV file first because the provider interface
 //! is file-based).
 //!
-//! This is **not** true streaming — it is chunk-by-chunk live
+//! This is **not** true streaming: it is chunk-by-chunk live
 //! transcription via temporary WAV files. The default provider is
 //! `mock-local` so the command works without Docker; pass
 //! `--provider local-whisper` to use the self-hosted faster-whisper
@@ -105,7 +105,7 @@ pub fn live_transcription_status_message(chunk_index: usize, status: &str) -> St
 ///   caller is responsible for running
 ///   [`crate::app::config::normalize_runtime_config`] and
 ///   [`crate::app::config::validate_runtime_config`] before
-///   calling here — this function does NOT revalidate to avoid
+///   calling here; this function does NOT revalidate to avoid
 ///   double work, but a malformed config surfaces downstream
 ///   as a provider error or chunk-size error and the help
 ///   message is informative. The Tauri command validates ahead
@@ -239,7 +239,7 @@ where
             let avg_volume = calculate_average_volume(&samples);
 
             if !should_transcribe_chunk(avg_volume, threshold) {
-                // Silence chunks are not events — they would spam
+                // Silence chunks are not events; they would spam
                 // the event stream. Print directly for CLI; skip
                 // entirely for Tauri (the UI shows the last
                 // transcript/translation, not a silence log).
@@ -272,7 +272,7 @@ where
             let wav_path_str = wav_path.to_string_lossy().to_string();
             match provider.transcribe(&wav_path_str) {
                 Ok(text) => {
-                    // Transcript event — uses the configured
+                    // Transcript event. Uses the configured
                     // provider name verbatim so the UI displays
                     // exactly what the user selected.
                     on_event(build_transcript_event(
@@ -338,7 +338,7 @@ where
 /// centralised [`crate::config`] constants so the CLI's
 /// behaviour is unchanged when called via
 /// `cargo run -- live-local-transcribe --provider mock-local`.
-/// Keep this signature stable — the CLI in `src/main.rs` calls
+/// Keep this signature stable: the CLI in `src/main.rs` calls
 /// it directly. The Tauri shell never reaches this wrapper; it
 /// uses the config-based function above so the UI can pass a
 /// full [`AppRuntimeConfig`].

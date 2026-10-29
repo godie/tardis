@@ -4,8 +4,8 @@
 //! speech-like activity against a configurable `f32` threshold.
 //!
 //! Independent of CPAL, audio capture, the device layer, and the
-//! transcript / translation pipeline — only consumes a derived
-//! `average_volume` and a `volume_threshold` so it can be unit-tested
+//! transcript / translation pipeline. It consumes only a derived
+//! `average_volume` and a `volume_threshold`, so it can be unit-tested
 //! in isolation.
 //!
 //! Today the boundary is a single `volume > threshold` check, which
@@ -19,11 +19,11 @@
 /// volume sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioActivity {
-    /// Volume is at or below the configured threshold — treat as
+    /// Volume is at or below the configured threshold, so treat it as
     /// silence. Mirrors the mock-transcription `average_volume <=
     /// threshold` boundary.
     Silence,
-    /// Volume is strictly above the configured threshold — treat as
+    /// Volume is strictly above the configured threshold, so treat it as
     /// speech-like activity.
     SpeechLike,
 }
@@ -50,8 +50,8 @@ pub fn classify_audio_activity(volume: f32, threshold: f32) -> AudioActivity {
 
 /// Human-readable label for an [`AudioActivity`] variant. Useful in
 /// log lines and CLI output. Annotated `#[allow(dead_code)]` because no
-/// production call site reaches it yet — it's exercised by unit tests
-/// today and reserved for future VAD / activity-aware logging changes.
+/// production call site reaches it yet; unit tests exercise it today and
+/// it is reserved for future VAD / activity-aware logging changes.
 #[allow(dead_code)]
 pub fn activity_label(activity: AudioActivity) -> &'static str {
     match activity {
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn is_speech_like_equal_to_threshold_is_false() {
-        // Boundary: equal-to-threshold must NOT be speech-like — matches
+        // Boundary: equal-to-threshold must NOT be speech-like; it matches
         // the mock transcription contract `average_volume <= threshold`.
         assert!(!is_speech_like(0.01_f32, 0.01_f32));
     }

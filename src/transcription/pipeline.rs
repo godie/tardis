@@ -6,7 +6,7 @@
 //! whether to print a transcript line or a silence skip line.
 //!
 //! Today the pipeline uses `MockTranscriber`; once a real API impl
-//! lands behind a feature flag, only this file changes — the trait,
+//! lands behind a feature flag, only this file changes; the trait,
 //! the pure logic, and the chunking layer stay untouched. CPAL stays
 //! here; the `Transcriber` trait itself never imports CPAL.
 

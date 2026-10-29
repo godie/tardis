@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Operational handbook for AI agents working on this repo. Sibling of
-`DEVELOPMENT_RULES.md` (which covers *what* to test) — this file covers
+`DEVELOPMENT_RULES.md` covers *what* to test; this file covers
 *how* to work here: build/test commands, layout, CPAL 0.18 gotchas,
 commit style, working conventions, things NOT to do.
 
@@ -70,10 +70,9 @@ src/
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```
 
-The `app/` layer is the future shared boundary between CLI modes and
-the Tauri shell. It never opens CPAL/Docker/HTTP/filesystem handles
-on its own; real captures will be wired into it from outside the
-layer.
+The `app/` layer holds the config and event types that the CLI modes and
+the Tauri shell share. It never opens CPAL/Docker/HTTP/filesystem handles
+on its own; real captures are wired into it from outside the layer.
 
 When you add a module, mirror an existing one above:
 - **Pure helpers** live in their own file with `#[cfg(test)] mod tests`
@@ -90,10 +89,10 @@ capture and file-pipeline surfaces stay unchanged. `faster-whisper`,
 `whisper.cpp`, and local OpenAI Whisper are reasonable future provider
 options, but do not implement them unless the user explicitly asks.
 
-## UI event bridge — Tauri ↔ backend
+## UI event bridge: Tauri and backend
 
-The backend `AppEvent` stream is the canonical floor; the Tauri
-shell and the CLI both consume it. The bridge between them is:
+The backend `AppEvent` stream is the source of truth; the Tauri
+shell and the CLI both consume it. The bridge is:
 
 ```
 CLI / Tauri command
@@ -112,44 +111,40 @@ CLI / Tauri command
   future Tauri-frontend protocol change is a serialisation
   tweak on this struct, **not** a redesign of the backend
   event surface.
-- **Provider selection is backend-side.** The Tauri command
-  `start_live_transcription(provider: Option<String>)` validates
-  `provider` against `transcription::build_provider` before
-  touching any shared state, defaults to `"mock-local"` when
-  `None`, and emits a typed error event back to the frontend if
-  the name is unknown. The frontend's `<select id="provider-select">`
-  mirrors the `get_supported_providers` vector.
+- **Provider selection is validated in the backend.**
+  `start_live_transcription` takes an optional `AppRuntimeConfig`,
+  normalizes and validates it (provider name included) before touching
+  shared state, and falls back to `AppRuntimeConfig::default()` when the
+  UI sends none. The frontend rebuilds `<select id="provider-select">`
+  from `get_supported_transcription_providers`.
 - **Session lifecycle is worker-owned.** The worker thread
   spawned by `start_live_transcription` holds a clone of the
   `Arc<LiveSessionState>` managed state and resets both
   `is_running` and `stop_signal` in a `SessionCleanupGuard`
-  RAII guard. `Drop` covers normal return, `Err`, and panic —
+  RAII guard. `Drop` runs on normal return, `Err`, and panic, so
   the next `start_live_transcription` call is unblocked even
   if the worker crashed mid-loop.
 - **Tauri runtime + session behavior is manual-tested.** No
   unit test exercises the bound to Tauri's command runtime,
   `AppHandle::emit`, or the cross-thread `Arc<LiveSessionState>`
-  ownership pattern. The two invariants are *contractually*
-  enforced by the typed signatures (the
-  `tauri::State<'_, Arc<LiveSessionState>>` argument forces
-  consumers to clone — the cleaner could not leak) and by the
-  `SessionCleanupGuard` Drop semantics, both of which are
-  unit-tested in isolation. The cross-process wiring itself
-  is verified locally by
+  ownership pattern. The typed signature enforces part of it (the
+  `tauri::State<'_, Arc<LiveSessionState>>` argument forces consumers to
+  clone), and `SessionCleanupGuard`'s `Drop` performs the reset; the pure
+  parts are unit-tested in isolation. The wiring itself is verified locally by
   `cargo run --manifest-path src-tauri/Cargo.toml` and the
   manual flow described in `docs/tauri-ui-shell.md`.
 
-## CPAL 0.18 gotchas (verified during prior turns)
+## CPAL 0.18 gotchas (verified while building the pipeline)
 
 - `cpal::StreamConfig::sample_rate` is `u32` **directly**, not a tuple
-  struct. Do not write `config.sample_rate.0` — fails with
+  struct. Do not write `config.sample_rate.0`; it fails with
   *"u32 is a primitive type and therefore doesn't have fields"*.
 - `cpal::StreamConfig` is `Copy`. Pass it via `*config` to
   `device.build_input_stream(...)`.
 - `device.name()` is gone in CPAL 0.18. Use `{}` / `to_string()`
   because `Device` implements `Display`.
 - `host.input_devices()` and `host.output_devices()` return
-  `Result<Devices, _>` — propagate with `?`, do not `.unwrap()`.
+  `Result<Devices, _>`; propagate with `?`, do not `.unwrap()`.
 - `cpal::Sample`, `cpal::SizedSample`, and `cpal::FromSample` are at
   the crate root (re-exported from `dasp_sample`). `i16::from_sample(s)`
   is identity for I16, centers for U16 (`(s as i32 - 0x8000) as i16`),
@@ -189,7 +184,7 @@ the user explicitly asks.
 ## Working conventions
 
 - A failing test in the pure-helper surface is a real bug. Don't widen
-  the assertion to make it pass — confirm the behaviour is correct
+  the assertion to make it pass. Confirm the behaviour is correct
   first.
 - For f32 boundaries (e.g. `avg <= threshold`), do not rely on
   `vec![0.01_f32; 1000]`. The 1000 f32 additions accumulate drift and
@@ -214,20 +209,20 @@ the user explicitly asks.
 
 ## Things NOT to do
 
-- ❌ `device.name()` — gone in CPAL 0.18. Use `{}` / `to_string()`.
-- ❌ `config.sample_rate.0` — it's a plain `u32` in 0.18.
-- ❌ Allocate, print, or block long in the audio callback.
-- ❌ `.unwrap()` `host.input_devices()` / `output_devices()` /
-  `device.default_input_config()`. `?` with a clear `anyhow!` /
+- `device.name()` is gone in CPAL 0.18. Use `{}` / `to_string()`.
+- `config.sample_rate.0` does not compile; `sample_rate` is a plain `u32` in 0.18.
+- Don't allocate, print, or block for long inside the audio callback.
+- Don't `.unwrap()` `host.input_devices()` / `output_devices()` /
+  `device.default_input_config()`. Use `?` with a clear `anyhow!` /
   `Context` chain.
-- ❌ Unit test CPAL streams, mic hardware, or permissions. Split
+- Don't unit-test CPAL streams, mic hardware, or permissions. Split
   logic into pure helpers, test those, then verify the rest manually
   via `cargo run -- <mode>`.
-- ❌ Commit `output/mic_test.wav`. `.gitignore` excludes `/output`.
-- ❌ Add `Todo: …` code paths, sneak in `unwrap()`-filled stubs, or
-  leave dead `#[allow(dead_code)]` on functions that should be
-  removed rather than silenced.
-- ❌ Add Tauri / desktop UI, async runtime, or a real transcription
+- Don't commit `output/mic_test.wav`. `.gitignore` excludes `/output`.
+- Don't add `Todo: …` code paths, `unwrap()`-filled stubs, or dead
+  `#[allow(dead_code)]` on functions that should be removed rather
+  than silenced.
+- Don't add Tauri / desktop UI, async runtime, or a real transcription
   API unless the user explicitly asks.
-- ❌ Order `mod audio;` twice in `main.rs` — once led to
-  `audio is defined multiple times` already.
+- Don't order `mod audio;` twice in `main.rs`; that produces
+  `audio is defined multiple times`.

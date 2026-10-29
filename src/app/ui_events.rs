@@ -1,6 +1,6 @@
 //! UI-safe serializable event payloads for Tauri/frontend.
 //!
-//! Each [`UiAppEvent`] is a flat struct with optional fields —
+//! Each [`UiAppEvent`] is a flat struct with optional fields, so
 //! the frontend inspects `kind` to decide which fields are
 //! populated. [`app_event_to_ui_event`] converts a backend
 //! [`crate::app::events::AppEvent`] into this shape.
@@ -53,7 +53,7 @@ pub struct UiAppEvent {
 /// Convert a backend [`AppEvent`] into a serializable
 /// [`UiAppEvent`] payload for the Tauri frontend.
 ///
-/// Pure — no I/O, no allocation beyond the returned struct.
+/// Pure: no I/O, no allocation beyond the returned struct.
 pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
     match event {
         AppEvent::StatusChanged(status) => UiAppEvent {

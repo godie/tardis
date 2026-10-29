@@ -337,7 +337,7 @@ async function saveCurrentSettings() {
     await invoke("save_runtime_settings", { config });
     log("saved runtime settings:", config);
   } catch (error) {
-    // Don't block the UI on save failures — the user can still
+    // Don't block the UI on save failures; the user can still
     // press Start Listening, and the backend will re-validate
     // using the active config object the frontend sends in that
     // call.
@@ -363,7 +363,7 @@ targetLanguage.addEventListener("change", () => {
 
 // ===== Local WAV transcription ============================================
 //
-// File-based only — no CPAL stream is started. Calls the
+// File-based only: no CPAL stream is started. Calls the
 // `transcribe_wav_file_local` Rust command, which delegates to
 // `tardis::transcription::build_provider("local-whisper")` and
 // returns plaintext (or a user-facing error string). Errors are

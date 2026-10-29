@@ -61,7 +61,7 @@ pub const WAV_BITS_PER_SAMPLE: u16 = 16;
 
 /// Base URL of the local faster-whisper Docker server. Matches
 /// `docker/faster-whisper/docker-compose.yml`'s `127.0.0.1:8000:8000`
-/// port binding — audio never leaves the loopback interface.
+/// port binding; audio never leaves the loopback interface.
 pub const LOCAL_WHISPER_BASE_URL: &str = "http://localhost:8000";
 
 /// Default faster-whisper model id passed as the multipart `model`
