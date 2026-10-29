@@ -5,6 +5,60 @@ Operational handbook for AI agents working on this repo. Sibling of
 *how* to work here: build/test commands, layout, CPAL 0.18 gotchas,
 commit style, working conventions, things NOT to do.
 
+## Product direction: core pipeline first
+
+TARDIS started as a real-time translator. Translation is now one
+**mode** of a general voice pipeline, not the product itself. Finish
+the core loop before adding features:
+
+```
+capture audio -> transcribe -> process (LLM) -> synthesize -> play
+```
+
+Every use case runs these same five stages. Only the `process` stage
+differs, and the difference is configuration, not a separate pipeline:
+
+| Mode | Prompt intent | Output language | When it acts |
+| --- | --- | --- | --- |
+| `translate` | Restate the segment in the target language, add nothing | target (differs from source) | Every speech segment |
+| `respond` | Answer as the host, using session context | same as input | Only when the decision step says so |
+
+Target shape for the code (land incrementally, each step with mocks first):
+
+- **`Processor` replaces `Translator`.** `translation::translator::Translator`
+  becomes the `translate` implementation of a general `Processor` trait
+  that returns `Option<Output>`; `None` is the normal result in
+  `respond` mode. Both modes share one LLM client and differ only in
+  prompt and acting rule.
+- **New stage traits: `Synthesizer` (TTS) and `Player` (audio out).**
+  Follow the `Transcriber` pattern: object-safe trait, a deterministic
+  mock, then real providers behind it (e.g. a local TTS server in
+  Docker, like `faster-whisper`). Voice cloning (KittenTTS 2) is a later
+  `Synthesizer` provider, not a core requirement.
+- **`AppRuntimeConfig` gains a `mode`:** `Translate { source, target }`
+  or `Respond { language, policy }`.
+- **`AppEvent` generalizes:** `Translation` becomes `Output`, and a
+  `Speech` event covers the synthesize/play stages.
+- **Decision step (respond mode only)** sits inside the `respond`
+  processor. Start with a deterministic rule (host named + question)
+  before any LLM classifier. Never auto-speak commitments (dates,
+  agreements, opinions); suggest them to the host instead.
+
+Core completion order:
+
+1. `Synthesizer` + `Player` mocks so the full loop runs end to end.
+2. Real LLM `Processor` in `translate` mode.
+3. Real TTS provider.
+4. `respond` mode with the minimal decision rule.
+5. System-audio capture (loopback) as a second source next to the mic,
+   and output to a virtual input device for calls.
+
+Latency becomes the constraint once the LLM and TTS stages are real.
+The current sync traits and temp-WAV chunking are fine for steps 1–2;
+move to a streaming interface between stages before step 4. Per the
+rules below, adding an async runtime still needs the user's explicit
+go-ahead.
+
 ## Build + test
 
 ```sh
