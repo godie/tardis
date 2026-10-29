@@ -123,7 +123,7 @@ Gaps:
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
   present yet; the panic-safety test is single-threaded only.
-- **Session transcript export is not implemented.** There is no
+- Session transcript export is not implemented. There is no
   `TranscriptSession` accumulator, no `session_export` / `session_store`
   module, no export Tauri command, and no export control in the UI.
   The shell keeps no session history, so the transcript panel shows

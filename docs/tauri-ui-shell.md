@@ -252,8 +252,6 @@ getting-started docs exactly.
 - `Transcribe File` button: validates the path, calls
   `transcribe_wav_file_local`, surfaces the transcript or a
   user-facing error.
-- No microphone capture from the UI.
-- No system audio capture from the UI.
 - No async runtime: the command runs synchronously on Tauri's IPC
   thread and returns `Result<String, String>`.
 

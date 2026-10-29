@@ -87,7 +87,7 @@ cargo install tauri-cli --locked --version "^2"
 cd src-tauri && cargo tauri dev
 ```
 
-Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, and speak. [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) has the byte-accurate manual checklist.
+Both commands open the **TARDIS v1** window. Pick a provider, click **Start Listening**, and speak. [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md) has the manual checklist.
 
 ## CLI Modes
 
@@ -185,6 +185,7 @@ The desktop shell exposes the following `#[tauri::command]` entry points. All pa
 | `get_default_runtime_config()` | Default [`AppRuntimeConfig`] for first-load pre-population. |
 | `load_runtime_settings()` | Loads `<OS config dir>/tardis/runtime.json`, falls back to defaults on first run or if the file is missing. |
 | `save_runtime_settings(config)` | Atomically writes the validated + normalised config (write-then-rename via `<file>.tmp`). |
+
 Five mock-only controls preserved for dev reference (no microphone, no Docker, no CPAL): `get_app_status()`, `start_mock_listening()`, `stop_mock_listening()`, `get_mock_transcript()`, `get_mock_translation()`.
 
 What it does not do yet:
@@ -250,7 +251,7 @@ CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mi
 
 ## Generating a release
 
-The desktop shell is **per-OS bundle-ready**: `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2 such that `cargo tauri build` produces a native bundle for the host it runs on. Cross-platform coverage needs a 3-runner CI matrix; the project does **not** ship binaries yet. Anything below prefaced with `[x]` already ships with `tardis-v0.1.0` (the Node-24-pin / Linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone at `bf39ea2`); unchecked items are required before the next tag ships.
+`src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2 so `cargo tauri build` produces a native bundle for the host it runs on. Covering all three platforms needs a 3-runner CI matrix; the project does not ship binaries yet. Anything below prefaced with `[x]` already ships with `tardis-v0.1.0` (the Node-24-pin / Linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone at `bf39ea2`); unchecked items are required before the next tag ships.
 
 - [x] **Per-OS bundle config is wired.** `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2; `cargo tauri build` produces native bundles from the repo root.
 - [x] **Linux `apt-get` block** + macOS / Windows / non-Debian Linux note live in [Tauri UI Shell Setup](#tauri-ui-shell-setup); the same block CI installs is what a developer needs locally.

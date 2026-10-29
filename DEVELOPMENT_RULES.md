@@ -94,8 +94,9 @@ mirror one of these rows.
 ## When to refactor
 
 The capture-loop body (open host, pick device, build F32/I16/U16 stream,
-tick-drain-drop) is currently duplicated across `audio/chunker.rs`,
-`audio/chunk_recorder.rs`, `audio/recorder.rs`, `transcription/pipeline.rs`,
-and `translation/pipeline.rs`. Update every copy whenever a new manual
-command or shared audio-callback rule lands. If the loop changes again, prefer extracting a shared helper rather
-than letting the copies drift.
+tick-drain-drop) lives in `audio/capture.rs`: `DefaultInput` resolves the
+device and `MicInput` builds the stream and drains complete chunks. The
+drivers (`audio/chunker.rs`, `audio/chunk_recorder.rs`, `audio/recorder.rs`,
+`transcription/pipeline.rs`, `translation/pipeline.rs`) keep only their own
+loop shape, banner text, and per-chunk work. Change the shared helper when
+the loop needs to change; do not copy it back into a driver.
