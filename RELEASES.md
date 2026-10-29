@@ -41,7 +41,7 @@ TARDIS releases are strictly cut from **annotated** tags matching the canonical 
    sudo apt install ./'TARDIS v1_<version>_amd64.deb'
    ```
 
-3. Launch from your application launcher, or run `tardis --help` from a terminal (the binary lands at `/usr/bin/tardis` after install).
+3. Launch **TARDIS v1** from your application launcher. The packaged executable is `/usr/bin/tardis-ui-shell` (the `src-tauri` crate name, since `mainBinaryName` is not set in `tauri.conf.json`); the `.deb` does not contain the root crate's `tardis` CLI binary.
 
 A portable `.AppImage` is also shipped for distributions that prefer not to install packages system-wide:
 
@@ -79,7 +79,7 @@ brew install --cask tardis   # projected, not yet a tap formula
    https://github.com/godie/tardis/releases/latest/download/TARDIS%20v1_<version>_x64_en-US.msi
    ```
 
-2. Double-click the `.msi` and click through the WiX installer (Next → Next → Finish). `tardis` lands at `%LOCALAPPDATA%\Programs\TARDIS v1\` and on the Start Menu.
+2. Double-click the `.msi` and click through the WiX installer (Next → Next → Finish). `tardis-ui-shell.exe` lands at `%LOCALAPPDATA%\Programs\TARDIS v1\` and on the Start Menu.
 
 For `winget` distribution (not yet wired):
 

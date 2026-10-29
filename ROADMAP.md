@@ -154,7 +154,7 @@ What exists:
 - `README.md`, `AGENTS.md`, and `DEVELOPMENT_RULES.md` document the testing split and command surfaces.
 - The Docker provider has its own operational README.
 - The repo follows Conventional Commits.
-- GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every pull request. The workflow's `push` trigger names `main`, but the default branch is `master`, so merges to it skip CI.
+- GitHub Actions CI runs `cargo fmt --check`, `cargo check`, `cargo test`, and Tauri `cargo check` on every pull request and every push to `master` (the default branch).
 - `README.md` Quickstart mirrors the [`ui-tests` job in `.github/workflows/ci.yml`](.github/workflows/ci.yml) step-by-step (Node pin, `npm ci`, Playwright install, `npm run test:e2e`), with each step cross-referencing its CI equivalent.
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) is a tag-driven release workflow that publishes `.deb` / `.AppImage` / `.dmg` / `.msi` / `.exe` plus a canonical `SHA256SUMS.txt` to a GitHub Release on every `tardis-vX.Y.Z` SemVer tag, with auto-generated notes from commits since the prior tag. [`RELEASES.md`](RELEASES.md) at the repo root documents the per-platform install walkthrough (`apt install ./<deb>`, `brew install --cask tardis` *projected*, `winget install tardis` *projected*, plus the WiX Next → Next → Finish flow on Windows).
 

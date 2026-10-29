@@ -238,7 +238,7 @@ config, event, and UI-payload types.
 
 ## CI
 
-GitHub Actions runs on every pull request. `.github/workflows/ci.yml` also lists `push: branches: [main]`, but the default branch is `master`, so pushes to the default branch do not trigger CI.
+GitHub Actions runs on every pull request and on every push to `master` (the default branch).
 
 | Check | Command |
 | --- | --- |
@@ -256,10 +256,10 @@ CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mi
 - [x] **Per-OS bundle config is wired.** `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2. `bundle.active` is `false`, so `cargo tauri build` needs an explicit `--bundles <list>`: the release workflow passes `deb,appimage` / `dmg` / `msi,nsis` per runner. Without the flag the build exits 0 and produces no installers.
 - [x] **Linux `apt-get` block** + macOS / Windows / non-Debian Linux note live in [Tauri UI Shell Setup](#tauri-ui-shell-setup); the same block CI installs is what a developer needs locally.
 - [ ] **Pick the next tag.** Once the session-export feature lands and a real translation backend is wired in, the natural next milestone is `tardis-v0.2.0` (a bigger bundle than `tardis-v0.1.0`, which marks the Node-24 / linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone).
-- [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`identifier`, `version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
+- [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`identifier`, `version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis-ui-shell` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
 - [ ] **Run `cargo build --release` for the CLI binary** (no UI shell, useful for headless / CI smoke users who do not need the desktop app).
 - [ ] **Run `cargo tauri build` for the desktop shell** to produce native bundles:
-  - `.deb` + `.AppImage` + `.rpm` (Linux: needs `dpkg-deb`, `rpmbuild`, `fakeroot`, `appimagetool`)
+  - `.deb` + `.AppImage` (Linux: needs `dpkg-deb`, `fakeroot`, `appimagetool`). `.rpm` is available from the same builder (`--bundles rpm`, needs `rpmbuild`), but the release matrix only asks for `deb,appimage`, so no `.rpm` is published.
   - `.dmg` (macOS: `cargo tauri build` does the disk-image; code signing needs `codesign` + `notarytool` for notarisation)
   - `.msi` + `.exe` (Windows: needs `signtool` for Authenticode signing; WiX for `.msi` already ships with Tauri 2)
   - **Build matrix:** each platform builds on its own host, because Tauri 2 has no first-class OS-cross-compile path (the project itself does not adopt `cargo-zigbuild` or `cargo-xwin` workarounds; they remain an opt-in for downstream forks). CI needs three runners (`ubuntu-latest` / `macos-latest` / `windows-latest`).

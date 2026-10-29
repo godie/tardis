@@ -2,13 +2,12 @@
 #
 # Tag-driven release workflow for the TARDIS Tauri 2 desktop shell + CLI.
 #
-# Triggers on SemVer tags `tardis-vX.Y.Z` (canonical form) and `vX.Y.Z`
-# (legacy form accepted for compatibility with the older `v0.1.0` tag at
-# commit `da97097...`). Publishes per-platform Tauri bundles plus a
-# SHA256SUMS.txt to a GitHub Release with auto-generated notes from
-# commits since the prior tag. Code signing is intentionally NOT
-# performed here — it is a separate unchecked item in the README's
-# `## Generating a release` section.
+# Triggers on SemVer tags `tardis-vX.Y.Z` (the only accepted form; the legacy
+# bare `vX.Y.Z` form was retired with the `v0.1.0` tag at commit `da97097...`).
+# Publishes per-platform Tauri bundles plus a SHA256SUMS.txt to a GitHub Release
+# with auto-generated notes from commits since the prior tag. Code signing is
+# intentionally NOT performed here — it is a separate unchecked item in the
+# README's `## Generating a release` section.
 
 name: Release
 
