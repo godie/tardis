@@ -4,6 +4,7 @@ const transcriptCopy = "mock transcript: speech detected";
 const translationCopy = "[mock es] mock transcript: speech detected";
 
 const statusIndicator = document.querySelector("#status-indicator");
+const statusAnnouncer = document.querySelector("#status-announcer");
 const transcriptPanel = document.querySelector("#transcript-content");
 const translationPanel = document.querySelector("#translation-content");
 const liveError = document.querySelector("#live-error");
@@ -57,6 +58,9 @@ function setStatus(status) {
   statusIndicator.textContent = status;
   statusIndicator.dataset.status = status;
   statusIndicator.setAttribute("aria-label", `Current status: ${status}`);
+  // The pill itself is not a live region, so a status change would
+  // otherwise be silent for screen reader users.
+  if (statusAnnouncer) statusAnnouncer.textContent = `Status: ${status}`;
 }
 
 function setLiveError(message) {
@@ -89,6 +93,7 @@ function appendTranslation(text) {
 // ===== Live transcription via Tauri events ================================
 
 let isListening = false;
+let isStarting = false;
 
 const languageHint = document.querySelector("#language-hint");
 
@@ -105,40 +110,82 @@ if (sourceLanguage) {
   sourceLanguage.addEventListener("change", updateLanguageHint);
 }
 
-async function startLiveTranscription() {
-  if (isListening) return;
+// Read a numeric field the way the backend will see it. A cleared box, a
+// locale decimal comma typed into <input type="number">, or a pasted run
+// of digits out of range all sanitize to "" — and Number("") is 0, which
+// would quietly start a session with a zero chunk window. Reject instead
+// of guessing, and mark the field so the problem is visible.
+function readNumberInput(input, label) {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const value = input.valueAsNumber;
+  if (input.value.trim() === "" || !Number.isFinite(value) || value < min || value > max) {
+    input.setAttribute("aria-invalid", "true");
+    const decimals = input.step.includes(".") ? " (use a dot for decimals)" : "";
+    return {
+      ok: false,
+      message: `${label} must be a number from ${min} to ${max}${decimals}.`,
+    };
+  }
+  input.removeAttribute("aria-invalid");
+  return { ok: true, value };
+}
 
+// One place owns the Start/Stop/settings invariants: Stop is only
+// actionable while a session runs, Start only while it does not, and the
+// settings panel is locked exactly for the duration. A failed or aborted
+// start must not leave the panel locked with Stop live.
+function setSessionControls(running) {
+  startButton.disabled = running;
+  startButton.dataset.state = running ? "busy" : "idle";
+  stopButton.disabled = !running;
+  if (running) {
+    // An in-flight live runner is never silently reconfig'd.
+    disableSessionSettings();
+  } else {
+    enableSessionSettings();
+  }
+}
+
+async function startLiveTranscription() {
+  // A second click while the first invoke is still in flight would spawn
+  // two backend runners; the isListening flag alone lands too late.
+  if (isListening || isStarting) return;
+
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
+  const problem = [chunk, threshold].find((result) => !result.ok);
+  if (problem) {
+    setLiveError(problem.message);
+    (chunk.ok ? volumeThresholdInput : chunkDurationMsInput).focus();
+    return;
+  }
+
+  isStarting = true;
   setStatus("Starting\u2026");
   setLiveError("");
 
-  // Build a single AppRuntimeConfig-shaped object from the
-  // settings panel. The backend re-validates; client-side Number()
-  // coercion plus a "raw string" fallback keeps the page alive
-  // even if the user has not yet touched an input (the
-  // server-side default applies).
+  // Build a single AppRuntimeConfig-shaped object from the settings panel.
   const config = {
     transcription_provider: providerSelect.value,
     source_language: sourceLanguage.value,
     target_language: targetLanguage.value,
-    chunk_duration_ms: Number(chunkDurationMsInput.value),
-    volume_threshold: Number(volumeThresholdInput.value),
+    chunk_duration_ms: chunk.value,
+    volume_threshold: threshold.value,
   };
 
   try {
     const msg = await invoke("start_live_transcription", { config });
     log("start_live_transcription:", msg, "config:", config);
     isListening = true;
-    startButton.disabled = true;
-    startButton.dataset.state = "busy";
-    stopButton.disabled = false;
-    // Lock the settings panel while a session is in progress so
-    // an in-flight live runner is not silently reconfig'd. The
-    // backend ignores mid-session changes anyway.
-    disableSessionSettings();
+    setSessionControls(true);
   } catch (error) {
     setStatus("Error");
     setLiveError(`Failed to start: ${error}`);
     isListening = false;
+    setSessionControls(false);
+  } finally {
+    isStarting = false;
   }
 }
 
@@ -161,11 +208,12 @@ async function stopLiveTranscription() {
     const msg = await invoke("stop_live_transcription");
     log("stop_live_transcription:", msg);
     isListening = false;
-    startButton.disabled = false;
-    startButton.dataset.state = "idle";
-    stopButton.disabled = true;
+    setSessionControls(false);
   } catch (error) {
+    // Still listening: leave the controls as they are so Stop stays
+    // clickable and the user can retry.
     log("stop error:", error);
+    setLiveError(`Failed to stop: ${error}`);
   }
 }
 
@@ -187,21 +235,12 @@ function setupEventListener() {
           setStatus(status.charAt(0).toUpperCase() + status.slice(1));
           if (status === "listening") {
             isListening = true;
-            startButton.disabled = true;
-            startButton.dataset.state = "busy";
-            stopButton.disabled = false;
-            // The backend will produce a `stopped` event when the
-            // worker exits, so settings re-enable happens there.
-            // We deliberately do not call disableSessionSettings()
-            // here because Start may already have done it.
+            setSessionControls(true);
           } else if (status === "stopped") {
+            // Worker has fully exited; let the user adjust settings
+            // before pressing Start again.
             isListening = false;
-            startButton.disabled = false;
-            startButton.dataset.state = "idle";
-            stopButton.disabled = true;
-            // Worker has fully exited; let the user adjust
-            // settings before pressing Start again.
-            enableSessionSettings();
+            setSessionControls(false);
           }
         }
         break;
@@ -326,12 +365,22 @@ async function loadFromBackendSettings() {
 // that we can simply log the rejection and leave the inputs as
 // the user set them (the next valid change re-saves).
 async function saveCurrentSettings() {
+  // Persisting an out-of-range or empty box would store a config the
+  // backend rejects on the next start; keep the last good values on disk
+  // and let the field stay as the user typed it.
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
+  if (!chunk.ok || !threshold.ok) {
+    log("skipping settings save:", (chunk.ok ? threshold : chunk).message);
+    return;
+  }
+
   const config = {
     transcription_provider: providerSelect.value,
     source_language: sourceLanguage.value,
     target_language: targetLanguage.value,
-    chunk_duration_ms: Number(chunkDurationMsInput.value),
-    volume_threshold: Number(volumeThresholdInput.value),
+    chunk_duration_ms: chunk.value,
+    volume_threshold: threshold.value,
   };
   try {
     await invoke("save_runtime_settings", { config });
@@ -390,9 +439,26 @@ function setFileTranscribeOutput(message, isMuted) {
   fileTranscribeOutput.classList.toggle("muted", Boolean(isMuted));
 }
 
-async function runFileTranscribe() {
-  const filePath = wavFilePathInput.value;
+let isTranscribing = false;
 
+async function runFileTranscribe() {
+  // The click path is covered by the disabled attribute, but Enter inside
+  // the path field and a rapid double-click can both land here.
+  if (isTranscribing) return;
+
+  const filePath = wavFilePathInput.value.trim();
+  if (!filePath) {
+    wavFilePathInput.setAttribute("aria-invalid", "true");
+    setFileTranscribeStatus("No file \u2014 enter a WAV path first.", "error");
+    setFileTranscribeError(
+      "Enter the path to a WAV file, for example output/chunks/chunk_001.wav.",
+    );
+    wavFilePathInput.focus();
+    return;
+  }
+
+  isTranscribing = true;
+  wavFilePathInput.removeAttribute("aria-invalid");
   setFileTranscribeError("");
   setFileTranscribeStatus("Transcribing\u2026", "busy");
   setFileTranscribeOutput("Transcribing\u2026", true);
@@ -409,6 +475,7 @@ async function runFileTranscribe() {
     setFileTranscribeOutput("(no transcript)", true);
     setFileTranscribeError(message);
   } finally {
+    isTranscribing = false;
     transcribeFileButton.disabled = false;
     transcribeFileButton.dataset.state = "idle";
   }
@@ -422,14 +489,18 @@ wavFilePathInput.addEventListener("keydown", (event) => {
   // retry after fixing a typo.
   if (event.key === "Enter") {
     event.preventDefault();
+    if (transcribeFileButton.disabled) return;
     runFileTranscribe();
   }
 });
 
 window.addEventListener("DOMContentLoaded", () => {
   syncInitialState().catch((error) => {
-    setStatus("Stopped");
-    transcriptPanel.textContent = "Unable to reach the mock backend commands.";
-    translationPanel.textContent = String(error);
+    // Report the failure where alerts belong instead of overwriting the
+    // transcript panels with a raw error string and losing the placeholder
+    // copy that tells the user what to do next.
+    setStatus("Error");
+    setLiveError(`Could not read the backend state: ${error}`);
+    setSessionControls(false);
   });
 });

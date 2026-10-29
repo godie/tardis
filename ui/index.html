@@ -18,6 +18,7 @@
         <div class="status-block">
           <span class="status-label">Status</span>
           <span id="status-indicator" class="status-pill" data-status="Idle" aria-label="Current status: Idle">Idle</span>
+          <span id="status-announcer" class="visually-hidden" role="status" aria-live="polite"></span>
         </div>
 
         <div class="control-right">
@@ -33,7 +34,7 @@
             <button id="start-button" class="action action-primary" type="button">
               Start Listening
             </button>
-            <button id="stop-button" class="action action-secondary" type="button">
+            <button id="stop-button" class="action action-secondary" type="button" disabled>
               Stop
             </button>
           </div>
@@ -81,7 +82,7 @@
             <p class="panel-kicker">Transcript</p>
             <h2>Captured speech</h2>
           </div>
-          <p id="transcript-content" class="panel-copy muted" aria-live="polite">
+          <p id="transcript-content" class="panel-copy muted" dir="auto" aria-live="polite">
             Click Start Listening to begin capturing audio. Transcripts appear here.
           </p>
         </article>
@@ -91,7 +92,7 @@
             <p class="panel-kicker">Translation</p>
             <h2>Rendered output</h2>
           </div>
-          <p id="translation-content" class="panel-copy muted" aria-live="polite">
+          <p id="translation-content" class="panel-copy muted" dir="auto" aria-live="polite">
             Mock translations (en &rarr; es) appear alongside each transcript.
           </p>
         </article>
@@ -127,13 +128,19 @@
           </button>
         </div>
 
-        <p id="file-transcribe-status" class="file-transcribe-status" data-state="idle">
+        <p
+          id="file-transcribe-status"
+          class="file-transcribe-status"
+          data-state="idle"
+          role="status"
+          aria-live="polite"
+        >
           Idle &mdash; enter a path above and click Transcribe File.
         </p>
 
         <article class="file-transcribe-panel">
           <p class="panel-kicker">Transcript</p>
-          <p id="file-transcribe-output" class="panel-copy muted">
+          <p id="file-transcribe-output" class="panel-copy muted" dir="auto">
             The transcript returned by the local faster-whisper server will appear here.
           </p>
         </article>
