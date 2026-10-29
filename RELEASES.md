@@ -4,7 +4,9 @@ TARDIS releases are cut from annotated tags (convention: `tardis-vX.Y.Z`). Each 
 
 > **Posture for first-cut releases.** Bundles are **not** code-signed. macOS Gatekeeper will require `Right-click → Open` on the first launch; Windows SmartScreen will warn about an unknown publisher; Linux GPG sidecars are not produced. Real code signing + notarisation is a separate task (the **Code signing + notarisation** checkbox in the [`## Generating a release`](README.md#generating-a-release) section of `README.md`).
 
-> **Filename note.** Tauri uses the `productName` from `src-tauri/tauri.conf.json` verbatim in installer filenames. `productName` is `"TARDIS v1"` (with a literal space). The space shows up in the on-disk filename (`TARDIS v1_0.2.0_amd64.deb`) but must be URL-encoded as `%20` in `curl` commands (`TARDIS%20v1_0.2.0_amd64.deb`).
+> **Filename note.** Tauri uses the `productName` from `src-tauri/tauri.conf.json` verbatim in installer filenames. `productName` is `"TARDIS v1"` (with a literal space). The space shows up in the on-disk filename (`TARDIS v1_<version>_amd64.deb`) but must be URL-encoded as `%20` in `curl` commands (`TARDIS%20v1_<version>_amd64.deb`). The version segment comes from `src-tauri/tauri.conf.json`'s `version` field, currently `0.1.0`.
+
+> **Status.** No release has been published yet. The runs for `tardis-v0.1.0` and `tardis-v0.2.0` both failed, so every download URL below 404s until a run succeeds.
 
 ## Tagging convention
 
@@ -89,7 +91,7 @@ A `.exe` (NSIS) installer is also uploaded alongside the `.msi`; both produce th
 
 ## Update
 
-TARDIS does **not** ship an in-app updater yet; re-run the install walkthrough for the new tag. A future release may add Tauri 2's built-in `tauri-plugin-updater` (referenced from the `Next:` items in [`README.md` § Tauri UI Shell](README.md#tauri-ui-shell)).
+TARDIS does **not** ship an in-app updater yet; re-run the install walkthrough for the new tag. A future release may add Tauri 2's built-in `tauri-plugin-updater`.
 
 ## Cross-references
 

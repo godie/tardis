@@ -176,7 +176,7 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
 
 1. Open the Tauri UI (`cargo run --manifest-path src-tauri/Cargo.toml`).
 2. Leave `transcription_provider` at `mock-local`.
-3. Pick `transcript_provider` = `mock-local`, `source_language` = `en`, `target_language` = `es`.
+3. Check `source_language` = `en` and `target_language` = `es`.
 4. Click **Start Listening**. The status pill flips to `Listening`.
 5. Speak into the default microphone. The transcript panel shows
    `mock transcript for live_chunk_NNN.wav` per chunk; the
@@ -223,8 +223,9 @@ that path, edit the HTML `min` / `max` attributes down to 0
 in the inspector and click **Start Listening**. The start
 button handler catches the returned error, sets the status
 pill to `Error`, and shows the validator's first violation
-message in the live-error panel ("`chunk_duration_ms (0) is
-below the minimum of 250 ms`").
+message in the live-error panel ("`chunk_duration_ms must be
+greater than 0`"; values between 1 and 249 report "is below
+the minimum of 250 ms").
 
 Settings are **persisted across sessions** to
 `<OS config dir>/tardis/runtime.json` (Linux:
@@ -247,7 +248,7 @@ getting-started docs exactly.
 - Transcript panel (mock flow): `mock transcript: speech detected`
 - Translation panel (mock flow): `[mock es] mock transcript: speech detected`
 
-## What is connected (file-based only)
+## File-based transcription (connected)
 
 - `Transcribe File` button: validates the path, calls
   `transcribe_wav_file_local`, surfaces the transcript or a

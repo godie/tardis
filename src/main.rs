@@ -15,6 +15,7 @@
 //!   cargo run -- live-local-transcribe [--provider <name>] -> chunk-by-chunk live transcription (default mock-local)
 //!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
 //!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
+//!   cargo run -- app-mock-flow                              -> exercise the mock AppService flow end-to-end (no mic, no Docker)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 

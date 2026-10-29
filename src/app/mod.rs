@@ -7,17 +7,18 @@
 //!   `-> audio/transcription/translation modules`
 //!   `-> AppEvent outputs`
 //!
-//! Today only the synchronous, mock-only surface is wired
-//! ([`service::AppService::start_listening_mock`],
+//! Both frontends consume the layer today. The mock flows go through
+//! [`service::AppService`] ([`service::AppService::start_listening_mock`],
 //! [`service::AppService::stop_listening`],
-//! [`service::AppService::run_mock_text_flow`]). Future live
-//! capture and Tauri integration consume the same
-//! [`events::AppEvent`] stream.
+//! [`service::AppService::run_mock_text_flow`]); the live path builds the
+//! same [`events::AppEvent`] values in [`live_events`], and the Tauri shell
+//! maps them to serializable payloads in [`ui_events`]. [`settings_store`]
+//! persists [`config::AppRuntimeConfig`] to the OS config dir.
 //!
-//! The layer holds **no** CPAL stream, no Docker conduit, no HTTP
-//! client, and no filesystem handle today; pure-text flows only.
-//! Tests live next to the code in `#[cfg(test)] mod tests` per
-//! AGENTS.md conventions.
+//! The layer holds **no** CPAL stream, no Docker conduit, and no HTTP
+//! client: audio devices and providers are injected by the CLI and
+//! `src-tauri`. Tests live next to the code in `#[cfg(test)] mod tests`
+//! per AGENTS.md conventions.
 
 pub mod config;
 pub mod events;
