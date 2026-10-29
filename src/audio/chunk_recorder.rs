@@ -3,7 +3,8 @@
 //! Captures ~`seconds` from the default mic, splits the buffer into
 //! `chunk_duration_ms` chunks via the shared `audio::chunker` helpers,
 //! converts each f32 chunk to 16-bit Int PCM, and writes a separate
-//! WAV file per chunk into `output_dir` (created if missing).
+//! WAV file per chunk into `output_dir` (created if missing). The capture
+//! stream comes from [`super::capture`].
 //!
 //! Pure helpers (`format_chunk_filename`, `f32_sample_to_i16`,
 //! `f32_samples_to_i16`) live next to the CPAL driver so the formatting
@@ -13,16 +14,13 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
+use anyhow::{Context, Result};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 
-use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
+use crate::audio::capture::MicInput;
 use crate::audio::volume::calculate_average_volume;
 use crate::config::WAV_BITS_PER_SAMPLE;
 
@@ -67,40 +65,19 @@ pub fn f32_samples_to_i16(samples: &[f32]) -> Vec<i16> {
 pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &str) -> Result<()> {
     fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
 
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))?;
-    println!("Chunk recorder device: {device}");
-
-    let supported = device.default_input_config()?;
-    println!("Default input config: {supported:?}");
-    let config: StreamConfig = supported.into();
-    let sample_format = supported.sample_format();
-    let sample_rate = config.sample_rate;
-    let channels = config.channels;
-    let chunk_size = calculate_chunk_size_samples(sample_rate, channels, chunk_duration_ms);
-    if chunk_size == 0 {
-        return Err(anyhow!(
-            "computed chunk_size is 0 (sample_rate={sample_rate}, channels={channels}, \
-             chunk_duration_ms={chunk_duration_ms})"
-        ));
-    }
+    let mic = MicInput::start("chunk recorder")?;
+    println!("Chunk recorder device: {}", mic.input().device_label());
+    println!("Default input config: {}", mic.input().supported_label());
+    let sample_rate = mic.sample_rate();
+    let channels = mic.channels();
+    let chunk_size = mic.chunk_size(chunk_duration_ms)?;
     println!(
         "Chunk recorder: chunking every {chunk_duration_ms} ms \
          ({chunk_size} samples per chunk, {sample_rate} Hz, {channels} ch); \
          saving to {output_dir}/"
     );
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let stream = match sample_format {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, Arc::clone(&buffer))?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &config, Arc::clone(&buffer))?,
-        other => return Err(anyhow!("Unsupported sample format: {other:?}")),
-    };
-
-    stream.play()?;
+    mic.play()?;
     println!("Capturing for {seconds} seconds...");
 
     let start = Instant::now();
@@ -111,20 +88,7 @@ pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &s
     while start.elapsed() < total_duration {
         thread::sleep(tick);
 
-        loop {
-            let drained: Option<Vec<f32>> = {
-                let mut buf = match buffer.lock() {
-                    Ok(b) => b,
-                    Err(p) => p.into_inner(),
-                };
-                if !has_complete_chunk(buf.len(), chunk_size) {
-                    None
-                } else {
-                    drain_chunk(&mut buf, chunk_size)
-                }
-            };
-            let Some(samples) = drained else { break };
-
+        while let Some(samples) = mic.next_chunk(chunk_size) {
             chunk_index += 1;
             let avg_volume = calculate_average_volume(&samples);
             let filename = format_chunk_filename(chunk_index);
@@ -139,36 +103,9 @@ pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &s
         }
     }
 
-    drop(stream);
+    drop(mic);
     println!("Chunk recorder finished. {chunk_index} chunks written to {output_dir}/");
     Ok(())
-}
-
-fn build_stream<T>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    buffer: Arc<Mutex<Vec<f32>>>,
-) -> Result<cpal::Stream>
-where
-    T: Sample + SizedSample,
-    f32: FromSample<T>,
-{
-    let err_fn = |err| eprintln!("chunk recorder stream error: {err}");
-    let stream = device.build_input_stream(
-        *config,
-        move |data: &[T], _info: &cpal::InputCallbackInfo| {
-            let mut buf = match buffer.lock() {
-                Ok(b) => b,
-                Err(p) => p.into_inner(),
-            };
-            for &s in data {
-                buf.push(f32::from_sample(s));
-            }
-        },
-        err_fn,
-        None,
-    )?;
-    Ok(stream)
 }
 
 /// Write a slice of f32 samples to a 16-bit Int PCM WAV file at `path`.

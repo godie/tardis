@@ -12,10 +12,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
+use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::{FromSample, Sample, SizedSample};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec};
 
+use crate::audio::capture::DefaultInput;
 use crate::config::WAV_BITS_PER_SAMPLE;
 
 /// Records `seconds` of audio from the default microphone and writes a
@@ -33,24 +34,18 @@ pub fn record_default_mic_to_wav_for_seconds(seconds: u64, output_path: &str) ->
         }
     }
 
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))?;
-    println!("Recording device: {}", device);
-
-    let supported = device.default_input_config()?;
-    println!("Default input config: {:?}", supported);
-    let config: StreamConfig = supported.into();
-    let sample_format = supported.sample_format();
+    let input = DefaultInput::resolve()?;
+    println!("Recording device: {}", input.device_label());
+    println!("Default input config: {}", input.supported_label());
+    let config = input.config();
 
     let samples: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let stream = match sample_format {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config, Arc::clone(&samples))?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &config, Arc::clone(&samples))?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &config, Arc::clone(&samples))?,
-        other => return Err(anyhow!("Unsupported sample format: {:?}", other)),
+    let stream = match input.sample_format() {
+        cpal::SampleFormat::F32 => build_stream::<f32>(&input, Arc::clone(&samples))?,
+        cpal::SampleFormat::I16 => build_stream::<i16>(&input, Arc::clone(&samples))?,
+        cpal::SampleFormat::U16 => build_stream::<u16>(&input, Arc::clone(&samples))?,
+        other => return Err(anyhow!("Unsupported sample format: {other:?}")),
     };
 
     stream.play()?;
@@ -86,18 +81,14 @@ pub fn record_default_mic_to_wav_for_seconds(seconds: u64, output_path: &str) ->
     Ok(())
 }
 
-fn build_stream<T>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    samples: Arc<Mutex<Vec<i16>>>,
-) -> Result<cpal::Stream>
+fn build_stream<T>(input: &DefaultInput, samples: Arc<Mutex<Vec<i16>>>) -> Result<cpal::Stream>
 where
     T: Sample + SizedSample,
     i16: FromSample<T>,
 {
     let err_fn = |err| eprintln!("recorder stream error: {err}");
-    let stream = device.build_input_stream(
-        *config,
+    let stream = input.device().build_input_stream(
+        input.config(),
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
             // Recover from poisoning rather than panicking; losing a small
             // slice of audio is preferable to aborting the capture.

@@ -36,21 +36,19 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
+use anyhow::{Context, Result};
 
 use crate::app::config::AppRuntimeConfig;
 use crate::app::events::{AppEvent, AppStatus, format_app_event_for_console};
 use crate::app::live_events::{build_error_event, build_transcript_event, build_translation_event};
 use crate::audio::activity;
+use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
-use crate::audio::chunker::{calculate_chunk_size_samples, drain_chunk, has_complete_chunk};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::transcription;
@@ -146,26 +144,12 @@ where
     let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());
 
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))?;
-    println!("device:  {device}");
-
-    let supported = device.default_input_config()?;
-    println!("config:  {supported:?}");
-    let stream_config: StreamConfig = supported.into();
-    let sample_format = supported.sample_format();
-    let sample_rate = stream_config.sample_rate;
-    let channels = stream_config.channels;
-    let chunk_size = calculate_chunk_size_samples(sample_rate, channels, config.chunk_duration_ms);
-    if chunk_size == 0 {
-        return Err(anyhow!(
-            "computed chunk_size is 0 (sample_rate={sample_rate}, channels={channels}, \
-             chunk_duration_ms={})",
-            config.chunk_duration_ms
-        ));
-    }
+    let mic = MicInput::start("live-local")?;
+    println!("device:  {}", mic.input().device_label());
+    println!("config:  {}", mic.input().supported_label());
+    let sample_rate = mic.sample_rate();
+    let channels = mic.channels();
+    let chunk_size = mic.chunk_size(config.chunk_duration_ms)?;
     println!(
         "chunk:   {} ms ({chunk_size} samples, {sample_rate} Hz, {channels} ch)",
         config.chunk_duration_ms
@@ -176,15 +160,7 @@ where
         None => println!("duration: until stopped\n"),
     }
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let stream = match sample_format {
-        SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, Arc::clone(&buffer))?,
-        SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, Arc::clone(&buffer))?,
-        SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, Arc::clone(&buffer))?,
-        other => return Err(anyhow!("Unsupported sample format: {other:?}")),
-    };
-
-    stream.play()?;
+    mic.play()?;
 
     // Emit the first event: capture has started.
     on_event(AppEvent::StatusChanged(AppStatus::Listening));
@@ -221,20 +197,7 @@ where
 
         thread::sleep(tick);
 
-        loop {
-            let drained: Option<Vec<f32>> = {
-                let mut buf = match buffer.lock() {
-                    Ok(b) => b,
-                    Err(p) => p.into_inner(),
-                };
-                if !has_complete_chunk(buf.len(), chunk_size) {
-                    None
-                } else {
-                    drain_chunk(&mut buf, chunk_size)
-                }
-            };
-            let Some(samples) = drained else { break };
-
+        while let Some(samples) = mic.next_chunk(chunk_size) {
             chunk_index += 1;
             let avg_volume = calculate_average_volume(&samples);
 
@@ -317,7 +280,7 @@ where
         }
     }
 
-    drop(stream);
+    drop(mic);
 
     // Emit the final event: capture has stopped.
     on_event(AppEvent::StatusChanged(AppStatus::Stopped));
@@ -386,33 +349,6 @@ pub fn run_live_local_transcription_test(
             println!("{}", format_app_event_for_console(&event));
         },
     )
-}
-
-fn build_stream<T>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    buffer: Arc<Mutex<Vec<f32>>>,
-) -> Result<cpal::Stream>
-where
-    T: Sample + SizedSample,
-    f32: FromSample<T>,
-{
-    let err_fn = |err| eprintln!("live-local stream error: {err}");
-    let stream = device.build_input_stream(
-        *config,
-        move |data: &[T], _info: &cpal::InputCallbackInfo| {
-            let mut buf = match buffer.lock() {
-                Ok(b) => b,
-                Err(p) => p.into_inner(),
-            };
-            for &s in data {
-                buf.push(f32::from_sample(s));
-            }
-        },
-        err_fn,
-        None,
-    )?;
-    Ok(stream)
 }
 
 // ===== Unit tests ========================================================
