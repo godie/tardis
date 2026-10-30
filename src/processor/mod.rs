@@ -14,6 +14,11 @@
 
 pub mod mock;
 pub mod pipeline;
+// `processor::processor` mirrors `transcription::transcriber`: the contract
+// lives in a file named after the trait it defines, and call sites read as
+// `processor::processor::Processor`. Renaming the file would break that
+// symmetry for a naming lint only.
+#[allow(clippy::module_inception)]
 pub mod processor;
 
 pub use mock::MockProcessor;
@@ -108,14 +113,15 @@ mod tests {
 
     #[test]
     fn processor_kind_name_round_trips() {
-        for kind in [ProcessorKind::Mock] {
-            assert_eq!(
-                ProcessorKind::from_name(kind.name()),
-                Some(kind),
-                "name() -> from_name() round trip failed for {:?}",
-                kind
-            );
-        }
+        // Lock-in: every `ProcessorKind` variant must round-trip. Extending
+        // the enum means extending this assertion, which is the right
+        // friction for adding a processor.
+        let kind = ProcessorKind::Mock;
+        assert_eq!(
+            ProcessorKind::from_name(kind.name()),
+            Some(kind),
+            "name() -> from_name() round trip failed for {kind:?}"
+        );
     }
 
     #[test]

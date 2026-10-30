@@ -57,11 +57,11 @@ where
             if !is_above_threshold(avg, DEFAULT_VOLUME_THRESHOLD) {
                 return;
             }
-            if let Ok(mut last) = last_log.lock() {
-                if last.elapsed() >= LOG_COOLDOWN {
-                    println!("[mic] vol={:.3}", avg);
-                    *last = Instant::now();
-                }
+            if let Ok(mut last) = last_log.lock()
+                && last.elapsed() >= LOG_COOLDOWN
+            {
+                println!("[mic] vol={:.3}", avg);
+                *last = Instant::now();
             }
         },
         err_fn,

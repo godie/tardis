@@ -191,17 +191,16 @@ where
         // can break the loop; when `should_stop` is `Some`, the
         // time path is bypassed so a long-running Tauri session
         // with both parameters exits exclusively on the stop flag.
-        if !has_stop_signal {
-            if let Some(d) = total_duration {
-                if start.elapsed() >= d {
-                    break;
-                }
-            }
+        if !has_stop_signal
+            && let Some(d) = total_duration
+            && start.elapsed() >= d
+        {
+            break;
         }
-        if let Some(ref flag) = should_stop {
-            if flag.load(Ordering::Relaxed) {
-                break;
-            }
+        if let Some(ref flag) = should_stop
+            && flag.load(Ordering::Relaxed)
+        {
+            break;
         }
 
         thread::sleep(tick);
