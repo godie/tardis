@@ -383,6 +383,25 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* Rendered-audio line under the translation panel. Display only: the
+   player is a backend stage, so there are no transport controls here
+   (see docs/core-pipeline-plan.md §2.5). */
+.speech-status {
+  margin: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
+  color: var(--ink-soft);
+  /* Durations tick 1.2 s -> 11.2 s; tabular digits keep the line from
+     reflowing as they change. */
+  font-variant-numeric: tabular-nums;
+}
+
+.speech-status[data-state="spoken"] {
+  color: var(--ink);
+}
+
 /* ---- Resilience ----------------------------------------------------- */
 
 /* Announced, not seen: the live status mirror used by screen readers. */

@@ -68,13 +68,14 @@ pub fn is_terminal_status(status: AppStatus) -> bool {
 /// Pure helper: stable kind tag for an [`AppEvent`] variant.
 ///
 /// Returns one of `"status"`, `"transcript"`, `"output"`,
-/// or `"error"`. Useful for prefixing console output
+/// `"speech"`, or `"error"`. Useful for prefixing console output
 /// without matching on every variant at every call site.
 pub fn app_event_kind(event: &AppEvent) -> &'static str {
     match event {
         AppEvent::StatusChanged(_) => "status",
         AppEvent::Transcript(_) => "transcript",
         AppEvent::Output(_) => "output",
+        AppEvent::Speech(_) => "speech",
         AppEvent::Error(_) => "error",
     }
 }
@@ -102,6 +103,12 @@ pub fn format_app_event_for_console(event: &AppEvent) -> String {
                 o.source_language,
                 o.target_language,
                 o.text
+            )
+        }
+        AppEvent::Speech(s) => {
+            format!(
+                "[chunk {}][speech {} {}ms] {}",
+                s.chunk_index, s.language, s.duration_ms, s.text
             )
         }
         AppEvent::Error(e) => {
@@ -155,6 +162,30 @@ pub struct AppOutputEvent {
     pub is_final: bool,
 }
 
+/// Per-utterance speech event emitted after the [`crate::synthesis::Synthesizer`]
+/// rendered the text the [`crate::audio::player::Player`] was asked to speak.
+///
+/// The runner emits this only when synthesis returned `Some`: a
+/// `None` synthesis is "nothing to say" and produces no event, so the
+/// stream does not fill with zero-length speech lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppSpeechEvent {
+    /// 1-based chunk index matching the transcript / translation that
+    /// produced this line.
+    pub chunk_index: usize,
+    /// The text that was synthesized (rendered output, not the source
+    /// transcript).
+    pub text: String,
+    /// Language the text was spoken in.
+    pub language: String,
+    /// Rendered length of the audio, in milliseconds, as reported by
+    /// [`crate::synthesis::chunk_duration_ms`].
+    pub duration_ms: u64,
+    /// `true` for terminal outputs of an utterance. Real streaming
+    /// providers may emit partials with `is_final = false` first.
+    pub is_final: bool,
+}
+
 /// Generic error event surfaced when the orchestration layer
 /// cannot continue without intervention.
 ///
@@ -179,6 +210,7 @@ pub enum AppEvent {
     StatusChanged(AppStatus),
     Transcript(AppTranscriptEvent),
     Output(AppOutputEvent),
+    Speech(AppSpeechEvent),
     Error(AppErrorEvent),
 }
 
@@ -456,6 +488,60 @@ mod tests {
         assert!(
             s.contains("mock translation"),
             "translation event should include translated text, got: {s}"
+        );
+    }
+
+    // ---- Speech -------------------------------------------------------
+
+    #[test]
+    fn speech_events_are_comparable() {
+        let a = AppSpeechEvent {
+            chunk_index: 1,
+            text: "hola".to_string(),
+            language: "es".to_string(),
+            duration_ms: 1_240,
+            is_final: true,
+        };
+        let b = a.clone();
+        let mut c = a.clone();
+        c.duration_ms = 60;
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn app_event_kind_speech() {
+        let e = AppEvent::Speech(AppSpeechEvent {
+            chunk_index: 1,
+            text: "hola".to_string(),
+            language: "es".to_string(),
+            duration_ms: 60,
+            is_final: true,
+        });
+        assert_eq!(app_event_kind(&e), "speech");
+    }
+
+    #[test]
+    fn format_speech_event_includes_language_and_duration() {
+        let e = AppEvent::Speech(AppSpeechEvent {
+            chunk_index: 3,
+            text: "hola".to_string(),
+            language: "es".to_string(),
+            duration_ms: 1_240,
+            is_final: true,
+        });
+        let s = format_app_event_for_console(&e);
+        assert!(
+            s.contains("chunk 3"),
+            "speech event should include chunk index, got: {s}"
+        );
+        assert!(
+            s.contains("speech es 1240ms"),
+            "speech event should include language and duration, got: {s}"
+        );
+        assert!(
+            s.contains("hola"),
+            "speech event should include the spoken text, got: {s}"
         );
     }
 

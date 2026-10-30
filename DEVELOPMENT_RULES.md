@@ -52,6 +52,7 @@ mirror one of these rows.
 | `audio::recorder::record_default_mic_to_wav_for_seconds` | n/a (hound + filesystem glue) | `cargo run -- record-5s` |
 | `audio::mic` (`start_default_mic_capture`: CPAL stream builder + volume logging) | n/a (CPAL + hardware) | `cargo run -- mic`, `mic-5s` |
 | `audio::player` (`Player` trait + `MockPlayer`: records chunks, duration sum, idempotent `stop`) | `tests` in `src/audio/player.rs` | `cargo run -- mock-voice-flow`, `cargo run -- live-local-transcribe` |
+| `audio::gate` (`HalfDuplexGate`: speaking blocks draining, reverb tail, tail advance) | `tests` in `src/audio/gate.rs` | `cargo run -- live-local-transcribe` (speak, then confirm the next utterance is not clipped) |
 | `config` constants | n/a (value-only constants) | consumed by `mic-5s`, `record-5s`, `chunk-test`, `mock-transcribe`, `save-chunks-test`, `mock-transcribe-file`, `mock-translate` |
 | `transcription` (`ProviderKind` parse + `build_provider` dispatch) | `tests` in `src/transcription/mod.rs` | consumed by `local-transcribe-file`, `live-local-transcribe` |
 | `transcription::mock_local` (`MockLocalProvider`) | `tests` in `src/transcription/mock_local.rs` | `cargo run -- live-local-transcribe` (default provider) |
@@ -62,6 +63,8 @@ mirror one of these rows.
 | `transcription::live_local` (live chunk filename + should_transcribe + status message helpers) | `tests` in `src/transcription/live_local.rs` | `cargo run -- live-local-transcribe [--provider <name>]` |
 | `transcription::live_local::run_live_local_transcription_test` | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]` |
 | `transcription::transcriber` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-transcribe`, `mock-transcribe-file`, `mock-translate` |
+| `synthesis` (`Synthesizer` trait + `Speech` / `AudioChunk` + `chunk_duration_ms`) | `tests` in `src/synthesis/mod.rs` | consumed by `mock-voice-flow`, `live-local-transcribe` |
+| `synthesis::mock` (`MockSynthesizer`: deterministic square wave, skip-on-empty) | `tests` in `src/synthesis/mock.rs` | `cargo run -- mock-voice-flow`, `cargo run -- live-local-transcribe` |
 | `processor::mock` (`MockProcessor`) | `tests` in `src/processor/mock.rs` | `cargo run -- mock-translate`, `cargo run -- mock-voice-flow` |
 | `processor::pipeline::run_mock_translate_test` | n/a (CPAL driver) | `cargo run -- mock-translate` |
 | `processor` (`ProcessorKind` parse + `build_processor` dispatch) | `tests` in `src/processor/mod.rs` | consumed by `mock-translate`, `mock-voice-flow`, `live-local-transcribe`, `app-mock-flow` |
@@ -74,12 +77,12 @@ mirror one of these rows.
 | `src-tauri::start_live_transcription` (`Option<AppRuntimeConfig>` arg + session lifecycle) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `src-tauri::get_default_runtime_config` / `get_supported_transcription_providers` (UI populators) | n/a (pure, exercised via the running shell) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
-| `app::events` (AppEvent / AppStatus / payload structs / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow` |
+| `app::events` (AppEvent / AppStatus / payload structs incl. `AppSpeechEvent` / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow`, `mock-voice-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
 | `app::service` (AppService, reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_speech_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe`, `mock-voice-flow` |
-| `app::ui_events` (UiAppEvent + app_event_to_ui_event) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
+| `app::ui_events` (UiAppEvent + app_event_to_ui_event, incl. `speech` / `duration_ms`) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
 | `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_supported_transcription_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 
 ## How to add a new feature

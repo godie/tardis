@@ -9,7 +9,9 @@
 //! All helpers are pure (no I/O, no CPAL, no network) and
 //! unit-testable in isolation.
 
-use crate::app::events::{AppErrorEvent, AppEvent, AppOutputEvent, AppTranscriptEvent};
+use crate::app::events::{
+    AppErrorEvent, AppEvent, AppOutputEvent, AppSpeechEvent, AppTranscriptEvent,
+};
 use crate::processor::processor::OutputKind;
 
 /// Build an [`AppEvent::Transcript`] from the raw fields.
@@ -61,6 +63,33 @@ pub fn build_output_event(
         text,
         source_language,
         target_language,
+        is_final,
+    })
+}
+
+/// Build an [`AppEvent::Speech`] from the raw fields.
+///
+/// # Arguments
+///
+/// * `chunk_index` — 1-based index matching the transcript that
+///   produced this utterance.
+/// * `text` — the text that was synthesized.
+/// * `language` — language the text was spoken in.
+/// * `duration_ms` — rendered audio length, from
+///   [`crate::synthesis::chunk_duration_ms`].
+/// * `is_final` — `true` for terminal outputs of an utterance.
+pub fn build_speech_event(
+    chunk_index: usize,
+    text: String,
+    language: String,
+    duration_ms: u64,
+    is_final: bool,
+) -> AppEvent {
+    AppEvent::Speech(AppSpeechEvent {
+        chunk_index,
+        text,
+        language,
+        duration_ms,
         is_final,
     })
 }
@@ -148,6 +177,29 @@ mod tests {
             assert_eq!(t.target_language, "fr");
         } else {
             panic!("expected Translation, got {e:?}");
+        }
+    }
+
+    // ---- build_speech_event --------------------------------------------
+
+    #[test]
+    fn build_speech_event_creates_speech_variant() {
+        let e = build_speech_event(1, "hola".to_string(), "es".to_string(), 1_240, true);
+        assert!(matches!(e, AppEvent::Speech(_)));
+    }
+
+    #[test]
+    fn speech_event_maps_every_field() {
+        let e = build_speech_event(4, "hola".to_string(), "es".to_string(), 960, false);
+        match &e {
+            AppEvent::Speech(s) => {
+                assert_eq!(s.chunk_index, 4);
+                assert_eq!(s.text, "hola");
+                assert_eq!(s.language, "es");
+                assert_eq!(s.duration_ms, 960);
+                assert!(!s.is_final);
+            }
+            other => panic!("expected Speech, got {other:?}"),
         }
     }
 
