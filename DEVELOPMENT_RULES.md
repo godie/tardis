@@ -62,7 +62,7 @@ mirror one of these rows.
 | `transcription::file_pipeline` (i16->f32 conversion + WAV-driven mock run) | `tests` in `src/transcription/file_pipeline.rs` | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` |
 | `transcription::pipeline::run_mock_transcription_test` | n/a (CPAL driver) | `cargo run -- mock-transcribe` |
 | `transcription::live_local` (live utterance filename + should_transcribe + status message helpers) | `tests` in `src/transcription/live_local.rs` | `cargo run -- live-local-transcribe [--provider <name>]` |
-| `transcription::live_local::run_live_local_transcription_test` (utterance-based: endpointing decides when a WAV is written and sent) | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]` |
+| `transcription::live_local::run_live_local_transcription_test` (utterance-based: endpointing decides when a WAV is written and sent, and an open utterance is flushed at teardown) | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]`, then stop mid-sentence and confirm the last turn is transcribed |
 | `transcription::transcriber` trait / result types | n/a (abstraction surface, no behavior) | exercised indirectly by `mock-transcribe`, `mock-transcribe-file`, `mock-translate` |
 | `synthesis` (`Synthesizer` trait + `Speech` / `AudioChunk` + `chunk_duration_ms`) | `tests` in `src/synthesis/mod.rs` | consumed by `mock-voice-flow`, `live-local-transcribe` |
 | `synthesis::mock` (`MockSynthesizer`: deterministic square wave, skip-on-empty) | `tests` in `src/synthesis/mock.rs` | `cargo run -- mock-voice-flow`, `cargo run -- live-local-transcribe` |
