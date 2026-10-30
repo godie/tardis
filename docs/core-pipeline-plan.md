@@ -175,11 +175,12 @@ Deliberate choices:
   processor instance serves both modes, so translation and response differ
   only in prompt, output language, and acting rule. A mode switch becomes a
   config change instead of a rebuild.
-- **`ProcessMode` is never persisted.** It carries the language pair as a
-  per-call argument and has no serde derives, so nothing about the mode
-  reaches `runtime.json`. `source_language` / `target_language` stay the
-  only stored copy, which is why no migration is needed and why the two
-  cannot drift.
+- **`ProcessMode` carries the language pair per call and is never
+  persisted.** As implemented it is a pure runtime argument with no serde
+  derives, so nothing about it reaches `runtime.json`. §2.4's `mode` field
+  stores only the mode discriminant: `source_language` / `target_language`
+  stay the only stored copy of the languages, which is why no migration is
+  needed and why the two cannot drift.
 - **`OutputKind` travels with the result**, so the event layer never has to
   guess which mode produced a line.
 
@@ -514,6 +515,14 @@ Tauri shell fills the output panel.
 trap is the mock string; keep `"[mock {target}] mock translation:
 \"{text}\""` verbatim so the only output change in the whole plan is PR 5's
 provider swap.
+
+**`ProcessMode` is a runtime argument, never stored state.** It carries the
+language pair per call (`Translate { source_language, target_language }`)
+and derives no serde traits, so it cannot reach `runtime.json`.
+`AppRuntimeConfig.source_language` / `target_language` remain the only stored
+copy of the languages, and PR 6's `mode` field adds nothing to them: it
+stores a discriminant and reads the pair back from those two fields.
+Persisting the languages in both places would let the two copies drift.
 
 ### PR 2 — `Synthesizer` + `Player` mocks and the half-duplex gate; the loop runs end to end on mocks
 
