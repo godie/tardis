@@ -27,6 +27,19 @@ pub const DEFAULT_CHUNK_DURATION_MS: u64 = 1000;
 /// transcriber.
 pub const DEFAULT_VOLUME_THRESHOLD: f32 = 0.01;
 
+/// Default non-speech time tolerated inside one utterance, in
+/// milliseconds. Long enough to survive a pause between words in a slow
+/// sentence, short enough that a finished turn is not kept open.
+pub const DEFAULT_HANGOVER_MS: u64 = 400;
+
+/// Default shortest burst kept as an utterance, in milliseconds. Anything
+/// shorter is treated as noise: no event, no WAV, no provider call.
+pub const DEFAULT_MIN_SPEECH_MS: u64 = 200;
+
+/// Default burst cap, in milliseconds. A speaker who never pauses is
+/// flushed at this length so the capture buffer cannot grow without bound.
+pub const DEFAULT_MAX_UTTERANCE_MS: u64 = 15_000;
+
 /// Root directory the CLI writes all artefacts (WAV recordings, per-chunk
 /// files) into. Reserved for future directory listings / bulk-cleanup
 /// commands; [`DEFAULT_MIC_RECORDING_PATH`] and [`DEFAULT_CHUNKS_DIR`]

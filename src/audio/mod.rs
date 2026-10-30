@@ -7,6 +7,8 @@
 //! The `chunk_recorder` submodule writes one WAV file per captured chunk.
 //! The `chunker` submodule drives a real-time chunk-by-chunk capture test.
 //! The `devices` submodule prints host/device information and exits.
+//! The `endpoint` submodule holds the pure silence endpointing state machine
+//! that turns fixed windows into whole utterances.
 //! The `gate` submodule holds the pure half-duplex state machine that keeps
 //! capture from hearing our own playback.
 //! The `mic` submodule handles microphone capture with simple volume logging.
@@ -22,6 +24,7 @@ pub mod capture;
 pub mod chunk_recorder;
 pub mod chunker;
 pub mod devices;
+pub mod endpoint;
 pub mod gate;
 pub mod mic;
 pub mod player;

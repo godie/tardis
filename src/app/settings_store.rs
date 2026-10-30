@@ -323,6 +323,9 @@ mod tests {
             target_language: "it".to_string(),
             chunk_duration_ms: 750,
             volume_threshold: 0.04,
+            hangover_ms: 600,
+            min_speech_ms: 300,
+            max_utterance_ms: 20_000,
         };
         save_to_path(&path, &cfg).expect("save must succeed");
         let loaded = load_from_path_or_default(&path).expect("load must succeed");
@@ -570,6 +573,27 @@ mod tests {
         assert_eq!(cfg.transcription_provider, "mock-local");
         assert_eq!(cfg.source_language, "en");
         assert_eq!(cfg.target_language, "es");
+    }
+
+    #[test]
+    fn legacy_json_without_endpointing_fields_loads_with_defaults() {
+        // `runtime.json` written before endpointing existed has five keys.
+        // The three new fields are `#[serde(default = …)]`, so an existing
+        // user file keeps loading instead of failing the round trip.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("legacy JSON must still load");
+        assert_eq!(cfg.hangover_ms, crate::config::DEFAULT_HANGOVER_MS);
+        assert_eq!(cfg.min_speech_ms, crate::config::DEFAULT_MIN_SPEECH_MS);
+        assert_eq!(
+            cfg.max_utterance_ms,
+            crate::config::DEFAULT_MAX_UTTERANCE_MS
+        );
     }
 
     #[test]

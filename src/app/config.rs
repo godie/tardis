@@ -46,6 +46,35 @@ pub struct AppRuntimeConfig {
     /// as [`crate::audio::volume::calculate_average_volume`]'s
     /// output. Mirrors [`central::DEFAULT_VOLUME_THRESHOLD`].
     pub volume_threshold: f32,
+    /// Non-speech time, in milliseconds, tolerated inside one
+    /// utterance before it closes. Mirrors
+    /// [`central::DEFAULT_HANGOVER_MS`]. `serde` defaults it so a
+    /// `runtime.json` written before endpointing existed still
+    /// loads.
+    #[serde(default = "default_hangover_ms")]
+    pub hangover_ms: u64,
+    /// Shortest burst kept as an utterance, in milliseconds;
+    /// anything shorter is noise. Mirrors
+    /// [`central::DEFAULT_MIN_SPEECH_MS`].
+    #[serde(default = "default_min_speech_ms")]
+    pub min_speech_ms: u64,
+    /// Burst cap, in milliseconds: an utterance is flushed at this
+    /// length even if the speaker never paused. Mirrors
+    /// [`central::DEFAULT_MAX_UTTERANCE_MS`].
+    #[serde(default = "default_max_utterance_ms")]
+    pub max_utterance_ms: u64,
+}
+
+fn default_hangover_ms() -> u64 {
+    central::DEFAULT_HANGOVER_MS
+}
+
+fn default_min_speech_ms() -> u64 {
+    central::DEFAULT_MIN_SPEECH_MS
+}
+
+fn default_max_utterance_ms() -> u64 {
+    central::DEFAULT_MAX_UTTERANCE_MS
 }
 
 /// Lower bound on `AppRuntimeConfig::chunk_duration_ms`. Below
@@ -69,6 +98,19 @@ pub const MAX_CHUNK_DURATION_MS: u64 = 5000;
 /// anything above `1.0` is meaningless and almost certainly a
 /// UI input bug.
 pub const MAX_VOLUME_THRESHOLD: f32 = 1.0;
+
+/// Upper bound on `AppRuntimeConfig::hangover_ms`. A hangover longer
+/// than this would keep an utterance open across whole seconds of
+/// silence, merging separate turns.
+pub const MAX_HANGOVER_MS: u64 = 5_000;
+
+/// Upper bound on `AppRuntimeConfig::min_speech_ms`. Above this almost
+/// every real utterance would be discarded as noise.
+pub const MAX_MIN_SPEECH_MS: u64 = 5_000;
+
+/// Upper bound on `AppRuntimeConfig::max_utterance_ms`. The cap exists
+/// to bound memory; a minute is already generous for one turn.
+pub const MAX_MAX_UTTERANCE_MS: u64 = 60_000;
 
 /// Return the canonical list of supported transcription
 /// provider names.
@@ -112,6 +154,9 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         target_language: config.target_language.trim().to_string(),
         chunk_duration_ms: config.chunk_duration_ms,
         volume_threshold: config.volume_threshold,
+        hangover_ms: config.hangover_ms,
+        min_speech_ms: config.min_speech_ms,
+        max_utterance_ms: config.max_utterance_ms,
     }
 }
 
@@ -123,6 +168,9 @@ impl Default for AppRuntimeConfig {
             target_language: central::DEFAULT_TARGET_LANGUAGE.to_string(),
             chunk_duration_ms: central::DEFAULT_CHUNK_DURATION_MS,
             volume_threshold: central::DEFAULT_VOLUME_THRESHOLD,
+            hangover_ms: central::DEFAULT_HANGOVER_MS,
+            min_speech_ms: central::DEFAULT_MIN_SPEECH_MS,
+            max_utterance_ms: central::DEFAULT_MAX_UTTERANCE_MS,
         }
     }
 }
@@ -146,6 +194,12 @@ impl Default for AppRuntimeConfig {
 /// 6. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
 ///    [`MAX_CHUNK_DURATION_MS`].
 /// 7. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
+/// 8. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
+///    first non-speech frame).
+/// 9. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
+/// 10. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
+///     least `min_speech_ms`, so a valid utterance can never exceed the
+///     cap before it reaches the minimum.
 ///
 /// *Note:* this validator expects the caller to have already
 /// run [`normalize_runtime_config`] on the config so the
@@ -195,6 +249,33 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
         return Err(format!(
             "volume_threshold ({}) is above the maximum of {}",
             config.volume_threshold, MAX_VOLUME_THRESHOLD
+        ));
+    }
+    if config.hangover_ms > MAX_HANGOVER_MS {
+        return Err(format!(
+            "hangover_ms ({}) is above the maximum of {} ms",
+            config.hangover_ms, MAX_HANGOVER_MS
+        ));
+    }
+    if config.min_speech_ms > MAX_MIN_SPEECH_MS {
+        return Err(format!(
+            "min_speech_ms ({}) is above the maximum of {} ms",
+            config.min_speech_ms, MAX_MIN_SPEECH_MS
+        ));
+    }
+    if config.max_utterance_ms == 0 {
+        return Err("max_utterance_ms must be greater than 0".to_string());
+    }
+    if config.max_utterance_ms > MAX_MAX_UTTERANCE_MS {
+        return Err(format!(
+            "max_utterance_ms ({}) is above the maximum of {} ms",
+            config.max_utterance_ms, MAX_MAX_UTTERANCE_MS
+        ));
+    }
+    if config.max_utterance_ms < config.min_speech_ms {
+        return Err(format!(
+            "max_utterance_ms ({}) is below min_speech_ms ({})",
+            config.max_utterance_ms, config.min_speech_ms
         ));
     }
     Ok(())
@@ -634,5 +715,128 @@ mod tests {
             validate_runtime_config(&cfg).is_ok(),
             "volume_threshold exactly at MAX_VOLUME_THRESHOLD must validate"
         );
+    }
+
+    // ---- endpointing fields ------------------------------------------
+
+    #[test]
+    fn default_pulls_endpointing_fields_from_centralised_constants() {
+        let cfg = AppRuntimeConfig::default();
+        assert_eq!(cfg.hangover_ms, central::DEFAULT_HANGOVER_MS);
+        assert_eq!(cfg.min_speech_ms, central::DEFAULT_MIN_SPEECH_MS);
+        assert_eq!(cfg.max_utterance_ms, central::DEFAULT_MAX_UTTERANCE_MS);
+    }
+
+    #[test]
+    fn hangover_at_max_boundary_is_valid() {
+        let cfg = AppRuntimeConfig {
+            hangover_ms: MAX_HANGOVER_MS,
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn hangover_above_max_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            hangover_ms: MAX_HANGOVER_MS + 1,
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("hangover_ms") && err.contains(&MAX_HANGOVER_MS.to_string()),
+            "error must name the field and the bound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_hangover_is_valid() {
+        // 0 means "close on the first non-speech frame", a legitimate
+        // setting for a push-to-talk style session.
+        let cfg = AppRuntimeConfig {
+            hangover_ms: 0,
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn min_speech_above_max_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            min_speech_ms: MAX_MIN_SPEECH_MS + 1,
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("min_speech_ms"),
+            "error must name the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_max_utterance_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            max_utterance_ms: 0,
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("max_utterance_ms"),
+            "error must name the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn max_utterance_above_max_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            max_utterance_ms: MAX_MAX_UTTERANCE_MS + 1,
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("max_utterance_ms") && err.contains(&MAX_MAX_UTTERANCE_MS.to_string()),
+            "error must name the field and the bound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn max_utterance_below_min_speech_is_invalid() {
+        // The cap would flush before the burst could ever qualify, so every
+        // utterance would be discarded: reject the pair instead of silently
+        // producing no output.
+        let cfg = AppRuntimeConfig {
+            min_speech_ms: 1_000,
+            max_utterance_ms: 500,
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("max_utterance_ms") && err.contains("min_speech_ms"),
+            "error must name both fields, got: {err}"
+        );
+    }
+
+    #[test]
+    fn max_utterance_equal_to_min_speech_is_valid() {
+        let cfg = AppRuntimeConfig {
+            min_speech_ms: 500,
+            max_utterance_ms: 500,
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn normalize_preserves_endpointing_fields() {
+        let cfg = AppRuntimeConfig {
+            hangover_ms: 0,
+            min_speech_ms: 300,
+            max_utterance_ms: 20_000,
+            ..AppRuntimeConfig::default()
+        };
+        let out = normalize_runtime_config(cfg);
+        assert_eq!(out.hangover_ms, 0);
+        assert_eq!(out.min_speech_ms, 300);
+        assert_eq!(out.max_utterance_ms, 20_000);
     }
 }

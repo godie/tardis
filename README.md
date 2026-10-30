@@ -11,8 +11,8 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - Translation is still mock-only.
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
-- The runtime settings selected in the UI (provider, language pair, chunk duration, volume threshold) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
-- `cargo test` runs 219 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 28 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
+- The runtime settings selected in the UI (provider, language pair, capture window, volume threshold, utterance boundaries) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
+- `cargo test` runs 305 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 28 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
 
 ## Stack
 
@@ -68,7 +68,9 @@ Run once per fresh checkout.
    npm run test:e2e
    ```
 
-> **Note**: there are no Playwright specs yet, so step 4 exits 0 thanks to the `--pass-with-no-tests` flag the `test:e2e` script carries; drop the flag (or move it into a future `playwright.config.js` as `passWithNoTests: true`) on the first PR that lands specs.
+The suite lives in [`ui/tests/`](ui/tests) and is configured by [`playwright.config.js`](playwright.config.js), which serves `ui/` over plain HTTP with `ui/tests/serve.mjs` (no dependencies, nothing written to disk). `session.spec.js` starts and stops a session and asserts the lifecycle the shell owns: the full `AppRuntimeConfig` is sent on Start (endpointing fields included), the settings panel locks for the duration, Stop only releases it once the backend reports `stopped`, the `transcript` / `output` / `speech` payloads land in their panels, a double Start does not spawn two sessions, and an impossible endpointing pair is rejected before reaching the backend.
+
+> **Scope**: the tests inject a fake `window.__TAURI__` bridge before the page scripts run, so they exercise the real `ui/` HTML/CSS/JS, not the Rust commands. The window itself is not automated because `tauri-driver` does not support macOS; the Rust side is covered by `cargo test --manifest-path src-tauri/Cargo.toml` and the manual flow in [`docs/tauri-ui-shell.md`](docs/tauri-ui-shell.md).
 
 ### Run the desktop UI (Tauri)
 
@@ -103,7 +105,7 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>]` | Chunk-by-chunk live transcription from the default microphone. Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Default provider is `mock-local` (no Docker). Silence chunks are skipped. This is **not** true streaming. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Default provider is `mock-local` (no Docker). Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
 | `cargo run -- settings-validate <path>` | Load + validate a settings JSON file at `<path>`. Prints the resolved values and exits `0` on success or `1` with the underlying `SettingsStoreError` on parse / validation / I/O failure. Mirrors the `load_runtime_settings` Tauri command. | Yes |
@@ -129,7 +131,7 @@ Then transcribe a saved chunk:
 cargo run -- local-transcribe-file output/chunks/chunk_001.wav
 ```
 
-Or run chunk-by-chunk live transcription (no Docker needed with the default `mock-local` provider):
+Or run utterance-by-utterance live transcription (no Docker needed with the default `mock-local` provider):
 
 ```bash
 cargo run -- live-local-transcribe
@@ -167,8 +169,8 @@ cargo run --manifest-path src-tauri/Cargo.toml
 
 What the shell does today:
 
-- **Session settings panel**: pick a `transcription_provider`, `source_language`, `target_language`, `chunk_duration_ms`, and `volume_threshold` before pressing **Start Listening**. Settings are pre-populated from a persisted `runtime.json` if one exists, otherwise from `AppRuntimeConfig::default()` ([`src/app/config.rs`](src/app/config.rs)). The provider dropdown is rebuilt from the backend's supported-provider list so a future provider shows up without touching the HTML. The settings lock while a session is in progress.
-- **Live transcription**: Click Start Listening to capture audio from the default microphone, chunk it using the requested chunk size, classify each chunk with the requested threshold, and transcribe speech-like chunks through the selected provider. Transcript and translation events flow into the window via Tauri events. Click Stop to end the session. Translation uses the selected source/target language pair (no hardcoded en/es).
+- **Session settings panel**: pick a `transcription_provider`, `source_language`, `target_language`, `chunk_duration_ms`, `volume_threshold`, `hangover_ms`, `min_speech_ms`, and `max_utterance_ms` before pressing **Start Listening**. Settings are pre-populated from a persisted `runtime.json` if one exists, otherwise from `AppRuntimeConfig::default()` ([`src/app/config.rs`](src/app/config.rs)). The provider dropdown is rebuilt from the backend's supported-provider list so a future provider shows up without touching the HTML. The settings lock while a session is in progress.
+- **Live transcription**: Click Start Listening to capture audio from the default microphone in the requested window, classify each window with the requested threshold, group windows into utterances with the endpointing settings, and transcribe each finished utterance through the selected provider. Transcript and translation events flow into the window via Tauri events. Click Stop to end the session. Translation uses the selected source/target language pair (no hardcoded en/es).
 - **Provider selector**: choose `mock-local` (no Docker, deterministic) or `local-whisper` (requires Docker).
 - Default `transcription_provider` is `mock-local`; `local-whisper` requires the Docker container to be running.
 - Mock-only controls preserved for dev reference: `start_mock_listening`, `get_mock_transcript`, `get_mock_translation`.
@@ -200,7 +202,7 @@ More detail lives in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).
 
 ## Persistence
 
-The Tauri shell persists session settings to `<OS config dir>/tardis/runtime.json` so the same provider / language pair / chunk size / threshold come back next launch:
+The Tauri shell persists session settings to `<OS config dir>/tardis/runtime.json` so the same provider / language pair / capture window / threshold / utterance boundaries come back next launch:
 
 - Linux: `$XDG_CONFIG_HOME/tardis/runtime.json` (typically `~/.config/tardis/runtime.json`).
 - macOS: `~/Library/Application Support/tardis/runtime.json`.
