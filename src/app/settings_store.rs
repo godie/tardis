@@ -139,11 +139,10 @@ pub fn save_to_path(path: &Path, config: &AppRuntimeConfig) -> Result<(), Settin
     {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(json.as_bytes())?;
-        f.sync_all().or_else(|e| {
+        f.sync_all().inspect_err(|_| {
             // Best-effort cleanup of the temp when fsync fails so
             // we don't leak the partial write.
             let _ = fs::remove_file(&tmp);
-            Err(e)
         })?;
     }
 

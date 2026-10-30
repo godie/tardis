@@ -246,8 +246,10 @@ mod tests {
 
     #[test]
     fn empty_provider_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.transcription_provider = String::new();
+        let cfg = AppRuntimeConfig {
+            transcription_provider: String::new(),
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("transcription_provider"),
@@ -257,15 +259,19 @@ mod tests {
 
     #[test]
     fn whitespace_provider_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.transcription_provider = "   \t\n".to_string();
+        let cfg = AppRuntimeConfig {
+            transcription_provider: "   \t\n".to_string(),
+            ..AppRuntimeConfig::default()
+        };
         assert!(validate_runtime_config(&cfg).is_err());
     }
 
     #[test]
     fn empty_source_language_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.source_language = String::new();
+        let cfg = AppRuntimeConfig {
+            source_language: String::new(),
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("source_language"),
@@ -275,15 +281,19 @@ mod tests {
 
     #[test]
     fn whitespace_source_language_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.source_language = "   ".to_string();
+        let cfg = AppRuntimeConfig {
+            source_language: "   ".to_string(),
+            ..AppRuntimeConfig::default()
+        };
         assert!(validate_runtime_config(&cfg).is_err());
     }
 
     #[test]
     fn empty_target_language_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.target_language = String::new();
+        let cfg = AppRuntimeConfig {
+            target_language: String::new(),
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("target_language"),
@@ -293,8 +303,10 @@ mod tests {
 
     #[test]
     fn whitespace_target_language_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.target_language = " ".to_string();
+        let cfg = AppRuntimeConfig {
+            target_language: " ".to_string(),
+            ..AppRuntimeConfig::default()
+        };
         assert!(validate_runtime_config(&cfg).is_err());
     }
 
@@ -302,8 +314,10 @@ mod tests {
 
     #[test]
     fn zero_chunk_duration_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = 0;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: 0,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("chunk_duration_ms"),
@@ -313,8 +327,10 @@ mod tests {
 
     #[test]
     fn positive_chunk_duration_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = 500; // 500 ms
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: 500,
+            ..AppRuntimeConfig::default()
+        };
         assert!(validate_runtime_config(&cfg).is_ok());
     }
 
@@ -322,8 +338,10 @@ mod tests {
 
     #[test]
     fn negative_threshold_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = -0.0001;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: -0.0001,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("volume_threshold"),
@@ -333,8 +351,10 @@ mod tests {
 
     #[test]
     fn zero_threshold_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = 0.0;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: 0.0,
+            ..AppRuntimeConfig::default()
+        };
         assert!(
             validate_runtime_config(&cfg).is_ok(),
             "zero threshold must be accepted — it just means 'always speech'"
@@ -353,8 +373,10 @@ mod tests {
     /// accept.
     #[test]
     fn epsilon_threshold_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = f32::EPSILON;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: f32::EPSILON,
+            ..AppRuntimeConfig::default()
+        };
         assert!(validate_runtime_config(&cfg).is_ok());
     }
 
@@ -364,11 +386,13 @@ mod tests {
     /// will flag the drift.
     #[test]
     fn validator_fails_fast_on_first_violation() {
-        let mut cfg = AppRuntimeConfig::default();
         // Three violations stacked; provider comes first.
-        cfg.transcription_provider = String::new();
-        cfg.source_language = String::new();
-        cfg.volume_threshold = -1.0;
+        let cfg = AppRuntimeConfig {
+            transcription_provider: String::new(),
+            source_language: String::new(),
+            volume_threshold: -1.0,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("transcription_provider"),
@@ -487,8 +511,10 @@ mod tests {
 
     #[test]
     fn unsupported_provider_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.transcription_provider = "openai-cloud".to_string();
+        let cfg = AppRuntimeConfig {
+            transcription_provider: "openai-cloud".to_string(),
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("not supported"),
@@ -527,8 +553,10 @@ mod tests {
 
     #[test]
     fn too_small_chunk_duration_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = MIN_CHUNK_DURATION_MS - 1;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: MIN_CHUNK_DURATION_MS - 1,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("below the minimum"),
@@ -542,8 +570,10 @@ mod tests {
 
     #[test]
     fn too_large_chunk_duration_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = MAX_CHUNK_DURATION_MS + 1;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: MAX_CHUNK_DURATION_MS + 1,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("above the maximum"),
@@ -557,8 +587,10 @@ mod tests {
 
     #[test]
     fn chunk_duration_at_min_boundary_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = MIN_CHUNK_DURATION_MS;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: MIN_CHUNK_DURATION_MS,
+            ..AppRuntimeConfig::default()
+        };
         assert!(
             validate_runtime_config(&cfg).is_ok(),
             "chunk_duration_ms exactly at MIN_CHUNK_DURATION_MS must validate"
@@ -567,8 +599,10 @@ mod tests {
 
     #[test]
     fn chunk_duration_at_max_boundary_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = MAX_CHUNK_DURATION_MS;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: MAX_CHUNK_DURATION_MS,
+            ..AppRuntimeConfig::default()
+        };
         assert!(
             validate_runtime_config(&cfg).is_ok(),
             "chunk_duration_ms exactly at MAX_CHUNK_DURATION_MS must validate"
@@ -579,8 +613,10 @@ mod tests {
 
     #[test]
     fn threshold_greater_than_one_is_invalid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = 1.5;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: 1.5,
+            ..AppRuntimeConfig::default()
+        };
         let err = validate_runtime_config(&cfg).unwrap_err();
         assert!(
             err.contains("above the maximum"),
@@ -590,8 +626,10 @@ mod tests {
 
     #[test]
     fn threshold_at_one_boundary_is_valid() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = 1.0;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: 1.0,
+            ..AppRuntimeConfig::default()
+        };
         assert!(
             validate_runtime_config(&cfg).is_ok(),
             "volume_threshold exactly at MAX_VOLUME_THRESHOLD must validate"

@@ -117,7 +117,7 @@ pub fn write_chunk_wav(
     sample_rate: u32,
 ) -> Result<()> {
     let spec = WavSpec {
-        channels: channels as u16,
+        channels,
         sample_rate,
         bits_per_sample: WAV_BITS_PER_SAMPLE,
         sample_format: HoundSampleFormat::Int,

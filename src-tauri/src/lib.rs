@@ -232,9 +232,8 @@ fn start_live_transcription(
     //    from the settings panel; on `None` we fall back to
     //    `AppRuntimeConfig::default()` so old frontends (or CLI
     //    smoke tests calling the same command) keep working.
-    let config = tardis::app::config::normalize_runtime_config(
-        config.unwrap_or_else(tardis::app::config::AppRuntimeConfig::default),
-    );
+    let config =
+        tardis::app::config::normalize_runtime_config(config.unwrap_or_default());
     tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
 
     // 2. Try to mark the session as running.
@@ -428,7 +427,7 @@ fn save_runtime_settings(
     config: tardis::app::config::AppRuntimeConfig,
 ) -> Result<(), String> {
     let config = tardis::app::config::normalize_runtime_config(config);
-    tardis::app::config::validate_runtime_config(&config).map_err(|e| e)?;
+    tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
     let base_dir = app
         .path()
         .config_dir()

@@ -193,8 +193,10 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_config_with_empty_provider() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.transcription_provider = String::new();
+        let cfg = AppRuntimeConfig {
+            transcription_provider: String::new(),
+            ..AppRuntimeConfig::default()
+        };
         let err = AppService::new(cfg).unwrap_err();
         assert!(
             err.contains("transcription_provider"),
@@ -204,8 +206,10 @@ mod tests {
 
     #[test]
     fn new_rejects_zero_chunk_duration() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.chunk_duration_ms = 0;
+        let cfg = AppRuntimeConfig {
+            chunk_duration_ms: 0,
+            ..AppRuntimeConfig::default()
+        };
         let err = AppService::new(cfg).unwrap_err();
         assert!(
             err.contains("chunk_duration_ms"),
@@ -215,8 +219,10 @@ mod tests {
 
     #[test]
     fn new_rejects_negative_threshold() {
-        let mut cfg = AppRuntimeConfig::default();
-        cfg.volume_threshold = -0.1;
+        let cfg = AppRuntimeConfig {
+            volume_threshold: -0.1,
+            ..AppRuntimeConfig::default()
+        };
         let err = AppService::new(cfg).unwrap_err();
         assert!(
             err.contains("volume_threshold"),

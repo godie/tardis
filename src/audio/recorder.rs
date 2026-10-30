@@ -27,11 +27,11 @@ pub fn record_default_mic_to_wav_for_seconds(seconds: u64, output_path: &str) ->
     // Ensure target directory exists. Skip when the caller passed a bare
     // filename (`create_dir_all("")` would fail on most platforms).
     let out_path = Path::new(output_path);
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating output directory {:?}", parent))?;
-        }
+    if let Some(parent) = out_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating output directory {:?}", parent))?;
     }
 
     let input = DefaultInput::resolve()?;

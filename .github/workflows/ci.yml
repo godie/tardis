@@ -13,6 +13,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -32,6 +34,12 @@ jobs:
 
       - name: cargo check
         run: cargo check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo clippy (tauri)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: cargo check (tauri)
         run: cargo check --manifest-path src-tauri/Cargo.toml

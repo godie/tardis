@@ -145,8 +145,8 @@ mod tests {
 
     #[test]
     fn mock_processor_new_works() {
-        // Default-fabricated and `new()`-fabricated instances must be
-        // equal because MockProcessor is a unit struct.
-        assert_eq!(MockProcessor::new(), MockProcessor::default());
+        // Both constructors must produce the same value because
+        // MockProcessor is a unit struct, whose only inhabitant is itself.
+        assert_eq!(MockProcessor::new(), MockProcessor);
     }
 }
