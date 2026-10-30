@@ -100,6 +100,39 @@ pub fn live_utterance_status_message(utterance_index: usize, status: &str) -> St
     format!("[utterance {utterance_index}] {status}")
 }
 
+/// What to do with the audio still buffered when capture ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopFlush {
+    /// Close the open utterance and run it through the stages as a turn.
+    Speak { frames: usize },
+    /// Nothing worth keeping: drop the buffered samples.
+    Drop,
+}
+
+/// Decide what happens to the pending utterance when capture stops.
+///
+/// Capture can be interrupted mid-utterance (the stop signal, the CLI
+/// timer), and the samples buffered for it are real user audio: dropping
+/// them loses the last turn. That flush cannot be covered by a hardware-free
+/// test while it lives inside the CPAL loop, so the decision is pure here and
+/// the runner only acts on it. [`endpoint::finish`] owns the timing rule
+/// (`min_speech_ms`); this adds the "is there any audio at all" guard, so an
+/// open utterance holding zero samples never reaches the provider.
+pub fn stop_flush(
+    state: &EndpointState,
+    config: &EndpointConfig,
+    pending_samples: usize,
+) -> StopFlush {
+    match endpoint::finish(state, config) {
+        EndpointDecision::Utterance { frames } if pending_samples > 0 => {
+            StopFlush::Speak { frames }
+        }
+        EndpointDecision::Utterance { .. }
+        | EndpointDecision::Discard
+        | EndpointDecision::Continue => StopFlush::Drop,
+    }
+}
+
 // ===== CPAL-driven runner ================================================
 
 /// Run live chunk-by-chunk local transcription, routing each
@@ -310,14 +343,13 @@ where
 
     // Capture can stop mid-utterance (the stop signal, the CLI timer). Flush
     // what was captured so the last turn is not silently dropped.
-    match endpoint::finish(&endpoint_state, &endpoint_config) {
-        EndpointDecision::Utterance { frames } if !pending_samples.is_empty() => {
+    match stop_flush(&endpoint_state, &endpoint_config, pending_samples.len()) {
+        StopFlush::Speak { frames } => {
             utterance_index += 1;
             let utterance = std::mem::take(&mut pending_samples);
             stages.run(utterance_index, frames, &utterance, &mut speaker)?;
         }
-        EndpointDecision::Utterance { .. } | EndpointDecision::Discard => pending_samples.clear(),
-        EndpointDecision::Continue => {}
+        StopFlush::Drop => pending_samples.clear(),
     }
 
     drop(mic);
@@ -694,5 +726,96 @@ mod tests {
             msg.starts_with("[utterance "),
             "message should start with '[utterance ', got: {msg}"
         );
+    }
+
+    // ---- stop_flush -----------------------------------------------------
+    //
+    // The bug these pin down: stopping a session while an utterance was open
+    // used to drop `pending_samples`, so the last turn never reached the
+    // provider. `advance` is driven directly here instead of the capture loop
+    // so the decision runs without CPAL.
+
+    fn endpoint_config(
+        chunk_duration_ms: u64,
+        hangover_ms: u64,
+        min_speech_ms: u64,
+    ) -> EndpointConfig {
+        EndpointConfig {
+            chunk_duration_ms,
+            hangover_ms,
+            min_speech_ms,
+            max_utterance_ms: 15_000,
+        }
+    }
+
+    #[test]
+    fn stop_flush_speaks_the_open_utterance() {
+        let cfg = endpoint_config(1_000, 400, 200);
+        let mut state = EndpointState::new();
+        assert_eq!(
+            endpoint::advance(&mut state, true, &cfg),
+            EndpointDecision::Continue
+        );
+        assert!(state.is_open());
+
+        // One 1 s window of speech is a kept utterance; the samples buffered
+        // for it must reach the stages rather than be thrown away.
+        assert_eq!(
+            stop_flush(&state, &cfg, 16_000),
+            StopFlush::Speak { frames: 1 }
+        );
+    }
+
+    #[test]
+    fn stop_flush_counts_trailing_silence_in_the_frame_total() {
+        let cfg = endpoint_config(1_000, 3_000, 200);
+        let mut state = EndpointState::new();
+        endpoint::advance(&mut state, true, &cfg);
+        endpoint::advance(&mut state, true, &cfg);
+        // One silent frame is inside the 3 s hangover, so the utterance stays
+        // open and the stop-time flush must still include it.
+        assert_eq!(
+            endpoint::advance(&mut state, false, &cfg),
+            EndpointDecision::Continue
+        );
+
+        assert_eq!(
+            stop_flush(&state, &cfg, 48_000),
+            StopFlush::Speak { frames: 3 }
+        );
+    }
+
+    #[test]
+    fn stop_flush_drops_a_burst_below_min_speech() {
+        // 250 ms of speech needs 3 frames of 100 ms, so a single speech frame
+        // is noise: no event, no WAV, no provider call.
+        let cfg = endpoint_config(100, 400, 250);
+        let mut state = EndpointState::new();
+        assert_eq!(
+            endpoint::advance(&mut state, true, &cfg),
+            EndpointDecision::Continue
+        );
+        assert!(state.is_open());
+
+        assert_eq!(stop_flush(&state, &cfg, 1_600), StopFlush::Drop);
+    }
+
+    #[test]
+    fn stop_flush_drops_when_no_utterance_is_open() {
+        let cfg = endpoint_config(1_000, 400, 200);
+        let state = EndpointState::new();
+
+        assert_eq!(stop_flush(&state, &cfg, 0), StopFlush::Drop);
+    }
+
+    #[test]
+    fn stop_flush_drops_an_open_utterance_holding_no_samples() {
+        // Defensive: an open utterance with an empty buffer would otherwise
+        // write a zero-length WAV and call the provider on it.
+        let cfg = endpoint_config(1_000, 400, 200);
+        let mut state = EndpointState::new();
+        endpoint::advance(&mut state, true, &cfg);
+
+        assert_eq!(stop_flush(&state, &cfg, 0), StopFlush::Drop);
     }
 }
