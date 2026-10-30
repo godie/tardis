@@ -194,6 +194,10 @@ where
     println!("config:  {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
     let channels = mic.channels();
+    // What the hardware reports, before the stream folds it down to mono.
+    // BlackHole 16ch/64ch say 16/64 here while the buffer holds one channel.
+    let device_channels = mic.device_channels();
+    println!("input:   {device_channels} ch -> mono (channels carrying energy)");
     let chunk_size = mic.chunk_size(config.chunk_duration_ms)?;
     println!(
         "chunk:   {} ms ({chunk_size} samples, {sample_rate} Hz, {channels} ch)",
