@@ -101,7 +101,7 @@ function updateLanguageHint() {
   const source = document.querySelector("#source-language").value;
   const target = document.querySelector("#target-language").value;
   if (languageHint) {
-    languageHint.textContent = `During live transcription, translation uses ${source} \u2192 ${target}. The mock translator produces deterministic placeholder output.`;
+    languageHint.textContent = `During live transcription, the process stage renders output in ${target} from ${source}. The mock processor produces deterministic placeholder output.`;
   }
 }
 
@@ -252,9 +252,9 @@ function setupEventListener() {
         }
         break;
       }
-      case "translation": {
-        if (payload.translated_text) {
-          appendTranslation(payload.translated_text);
+      case "output": {
+        if (payload.text) {
+          appendTranslation(payload.text);
         }
         break;
       }

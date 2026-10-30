@@ -9,7 +9,7 @@
 //! calls return mutated values, no I/O happens.
 
 use super::config::AppRuntimeConfig;
-use super::events::{AppEvent, AppStatus, AppTranscriptEvent, AppTranslationEvent};
+use super::events::{AppEvent, AppOutputEvent, AppStatus, AppTranscriptEvent};
 
 /// Owner of the orchestration layer's mutable surface.
 ///
@@ -24,7 +24,7 @@ pub struct AppState {
     pub status: AppStatus,
     pub config: AppRuntimeConfig,
     pub last_transcript: Option<String>,
-    pub last_translation: Option<String>,
+    pub last_output: Option<String>,
 }
 
 impl AppState {
@@ -37,7 +37,7 @@ impl AppState {
             status: AppStatus::Idle,
             config,
             last_transcript: None,
-            last_translation: None,
+            last_output: None,
         }
     }
 
@@ -57,11 +57,11 @@ impl AppState {
         AppEvent::Transcript(event)
     }
 
-    /// Store the translation's text in `last_translation` and
+    /// Store the translation's text in `last_output` and
     /// return the translation event. Pure mutation.
-    pub fn apply_translation(&mut self, event: AppTranslationEvent) -> AppEvent {
-        self.last_translation = Some(event.translated_text.clone());
-        AppEvent::Translation(event)
+    pub fn apply_output(&mut self, event: AppOutputEvent) -> AppEvent {
+        self.last_output = Some(event.text.clone());
+        AppEvent::Output(event)
     }
 }
 
@@ -79,6 +79,7 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::processor::OutputKind;
 
     fn sample_config() -> AppRuntimeConfig {
         AppRuntimeConfig::default()
@@ -99,9 +100,9 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_with_no_last_translation() {
+    fn new_starts_with_no_last_output() {
         let state = AppState::new(sample_config());
-        assert!(state.last_translation.is_none());
+        assert!(state.last_output.is_none());
     }
 
     #[test]
@@ -164,39 +165,41 @@ mod tests {
         assert_eq!(returned, AppEvent::Transcript(event));
     }
 
-    // ---- apply_translation -------------------------------------------
+    // ---- apply_output -------------------------------------------
 
     #[test]
-    fn apply_translation_stores_text_in_last_translation() {
+    fn apply_output_stores_text_in_last_output() {
         let mut state = AppState::new(sample_config());
-        let event = AppTranslationEvent {
+        let event = AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "hello".to_string(),
-            translated_text: "[mock es] mock translation: \"hello\"".to_string(),
+            text: "[mock es] mock translation: \"hello\"".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
         };
-        state.apply_translation(event.clone());
+        state.apply_output(event.clone());
         assert_eq!(
-            state.last_translation.as_deref(),
+            state.last_output.as_deref(),
             Some("[mock es] mock translation: \"hello\"")
         );
     }
 
     #[test]
-    fn apply_translation_returns_translation_event() {
+    fn apply_output_returns_translation_event() {
         let mut state = AppState::new(sample_config());
-        let event = AppTranslationEvent {
+        let event = AppOutputEvent {
             chunk_index: 3,
+            kind: OutputKind::Translate,
             source_text: "hi".to_string(),
-            translated_text: "[mock es] hi".to_string(),
+            text: "[mock es] hi".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
         };
-        let returned = state.apply_translation(event.clone());
-        assert_eq!(returned, AppEvent::Translation(event));
+        let returned = state.apply_output(event.clone());
+        assert_eq!(returned, AppEvent::Output(event));
     }
 
     // ---- full sequence ------------------------------------------------
@@ -222,19 +225,17 @@ mod tests {
         assert!(matches!(tr, AppEvent::Transcript(_)));
         assert_eq!(state.last_transcript.as_deref(), Some("transcribed"));
 
-        let tl = state.apply_translation(AppTranslationEvent {
+        let tl = state.apply_output(AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "transcribed".to_string(),
-            translated_text: "[mock es] transcribed".to_string(),
+            text: "[mock es] transcribed".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
         });
-        assert!(matches!(tl, AppEvent::Translation(_)));
-        assert_eq!(
-            state.last_translation.as_deref(),
-            Some("[mock es] transcribed")
-        );
+        assert!(matches!(tl, AppEvent::Output(_)));
+        assert_eq!(state.last_output.as_deref(), Some("[mock es] transcribed"));
 
         // Listening -> Stopped
         let e2 = state.set_status(AppStatus::Stopped);

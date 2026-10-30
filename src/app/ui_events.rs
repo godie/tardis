@@ -17,8 +17,8 @@ use crate::app::events::AppEvent;
 /// present) to decide which optional fields to render.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct UiAppEvent {
-    /// Always present: `"status"`, `"transcript"`,
-    /// `"translation"`, or `"error"`.
+    /// Always present: `"status"`, `"transcript"`, `"output"`,
+    /// or `"error"`.
     pub kind: String,
     /// Present for `status` events: `"listening"`, `"stopped"`,
     /// `"idle"`, or `"error"`.
@@ -30,18 +30,19 @@ pub struct UiAppEvent {
     /// Present for `transcript` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Present for `transcript` events.
+    /// Present for `transcript` and `output` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Present for `translation` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_language: Option<String>,
-    /// Present for `translation` events.
+    /// Present for `output` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_language: Option<String>,
-    /// Present for `translation` events.
+    /// Present for `output` events: which mode produced the line
+    /// (`"translate"` or `"respond"`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub translated_text: Option<String>,
+    pub output_kind: Option<String>,
     /// Present for `error` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -64,7 +65,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             text: None,
             source_language: None,
             target_language: None,
-            translated_text: None,
+            output_kind: None,
             message: None,
             is_final: None,
         },
@@ -76,21 +77,21 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             text: Some(t.text.clone()),
             source_language: None,
             target_language: None,
-            translated_text: None,
+            output_kind: None,
             message: None,
             is_final: Some(t.is_final),
         },
-        AppEvent::Translation(t) => UiAppEvent {
-            kind: "translation".to_string(),
+        AppEvent::Output(o) => UiAppEvent {
+            kind: "output".to_string(),
             status: None,
-            chunk_index: Some(t.chunk_index),
+            chunk_index: Some(o.chunk_index),
             provider: None,
-            text: None,
-            source_language: Some(t.source_language.clone()),
-            target_language: Some(t.target_language.clone()),
-            translated_text: Some(t.translated_text.clone()),
+            text: Some(o.text.clone()),
+            source_language: Some(o.source_language.clone()),
+            target_language: Some(o.target_language.clone()),
+            output_kind: Some(o.kind.as_label().to_string()),
             message: None,
-            is_final: Some(t.is_final),
+            is_final: Some(o.is_final),
         },
         AppEvent::Error(e) => UiAppEvent {
             kind: "error".to_string(),
@@ -100,7 +101,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             text: None,
             source_language: None,
             target_language: None,
-            translated_text: None,
+            output_kind: None,
             message: Some(e.message.clone()),
             is_final: None,
         },
@@ -112,7 +113,8 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::events::{AppErrorEvent, AppStatus, AppTranscriptEvent, AppTranslationEvent};
+    use crate::app::events::{AppErrorEvent, AppOutputEvent, AppStatus, AppTranscriptEvent};
+    use crate::processor::processor::OutputKind;
 
     // ---- app_event_to_ui_event -----------------------------------------
 
@@ -144,25 +146,26 @@ mod tests {
         assert_eq!(ui.is_final, Some(true));
         // Non-applicable fields are None.
         assert!(ui.status.is_none());
-        assert!(ui.translated_text.is_none());
+        assert!(ui.output_kind.is_none());
         assert!(ui.message.is_none());
     }
 
     #[test]
     fn translation_event_maps_languages() {
-        let e = AppEvent::Translation(AppTranslationEvent {
+        let e = AppEvent::Output(AppOutputEvent {
             chunk_index: 2,
+            kind: OutputKind::Translate,
             source_text: "hello".to_string(),
-            translated_text: "hola".to_string(),
+            text: "hola".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
         });
         let ui = app_event_to_ui_event(&e);
-        assert_eq!(ui.kind, "translation");
+        assert_eq!(ui.kind, "output");
         assert_eq!(ui.source_language.as_deref(), Some("en"));
         assert_eq!(ui.target_language.as_deref(), Some("es"));
-        assert_eq!(ui.translated_text.as_deref(), Some("hola"));
+        assert_eq!(ui.text.as_deref(), Some("hola"));
         // Non-applicable fields are None.
         assert!(ui.provider.is_none());
         assert!(ui.message.is_none());

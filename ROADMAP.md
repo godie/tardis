@@ -4,7 +4,7 @@ TARDIS has four working surfaces:
 
 - A Rust CLI for audio capture and chunking
 - A file-based transcription provider backed by self-hosted `faster-whisper`
-- Mock translation that carries each transcript through to an output line
+- A mock process stage that carries each transcript through to an output line (translate mode)
 - A Tauri desktop shell that runs the same backend
 
 The roadmap tracks what exists and the shortest path to a usable desktop product.
@@ -18,19 +18,20 @@ Status: `partial` → `partial (orchestration layer shipped)`
 What exists:
 
 - `audio::*` covers device listing, microphone capture, chunking, chunk saving, and WAV recording.
-- `transcription::transcriber::Transcriber` exists for live chunk processing.
-- `transcription::LocalTranscriptionProvider` exists for provider-swappable file transcription.
-- `translation::*` carries the translation stage with mock implementations.
-- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockTranslator` without CPAL/Docker/fs. Pure-logic coverage (`config` 36, `events` 23, `state` 12, `service` 15) totals 86 unit tests.
+- `transcription::LocalTranscriptionProvider` is the real backend contract (file in, text out): `LocalWhisperClient` (Docker `faster-whisper`) and `MockLocalProvider` implement it, and the live runner selects between them through `ProviderKind` / `build_provider`.
+- `transcription::transcriber::Transcriber` exists for in-process `&[f32]` chunk processing; today only `MockTranscriber` implements it and it drives the mock pipelines (`mock-transcribe*`, `mock-translate`).
+- `processor::*` carries the process stage: `Processor` returns `Option<Output>` (translate today, respond later), `build_processor` dispatches, and `MockProcessor` is the deterministic default.
+- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockProcessor` without CPAL/Docker/fs. Pure-logic coverage (`config` 36, `events` 23, `state` 12, `service` 15) totals 86 unit tests.
+- Provider selection is surfaced end to end: `transcription_provider` on `AppRuntimeConfig` (default `mock-local`, validated against `ProviderKind`), `#provider-select` built from `get_supported_transcription_providers`, and `--provider <name>` on the CLI.
 
 Gaps:
 
-- `src/app/` is text-input only (`run_mock_text_flow`); connecting it to live microphone capture is the next integration step.
+- The live path and the mock path do not share an orchestrator. Live capture deliberately bypasses `AppService`: `AppService`'s module doc forbids it holding a CPAL stream, so the live runner (`transcription/live_local.rs`) owns capture and emits through `app::live_events` instead. Routing capture *into* `AppService` is not the fix; the missing piece is an injection point, because the stage implementations are constructed inside the runners.
+- The process stage is injectable now (`build_processor` in the live runner, `AppService::with_processor` in the mock flow) but only `mock` exists behind it, and the config has no field to select another one yet.
 
 Next:
 
-- Wire live `audio` capture chunks into `AppService`, so the live path and the mock flows share one orchestrator. Live transcripts already reach the UI: `start_live_transcription` builds `AppEvent`s through `app::live_events` and maps them with `app_event_to_ui_event`.
-- Surface provider selection through `AppRuntimeConfig` and propagate it from the UI / CLI flag to the live provider picker.
+- Introduce injectable stage traits (`Processor`, later `Synthesizer` / `Player`) behind the existing mock implementations, so the live runner and `AppService` stop constructing their own stages. Design and PR order: [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md) — needs the maintainer's go-ahead before adding providers or an async runtime.
 - Keep pure decision helpers unit-tested and leave CPAL wiring on the manual CLI path.
 
 ## 2. Turn Real Transcription Into A Live Path
@@ -60,8 +61,8 @@ Status: `partial`
 
 What exists:
 
-- `translation::translator::Translator` and the mock translation pipeline already define the handoff point.
-- The CLI already proves chunk-by-chunk transcription-to-translation flow.
+- `processor::processor::Processor` and the mock translate pipeline already define the handoff point.
+- The CLI already proves chunk-by-chunk transcription-to-output flow.
 
 Gaps:
 
@@ -76,7 +77,7 @@ Next:
 
 Later:
 
-- Add session-level language preferences and source-language detection.
+- Add source-language detection. (Session-level language preferences are shipped: `source_language` / `target_language` on `AppRuntimeConfig`, `#source-language` / `#target-language` in the settings panel, consumed by the live runner with no hardcoded pair.)
 - Support translation policy per target language instead of one fixed demo path.
 
 ## 4. Connect The Tauri Shell To The Real Backend
@@ -117,7 +118,7 @@ Gaps:
   dir gets one entry, but there is no first-run "remember my last
   session?" prompt, no import/export, and no schema-version field for
   future migrations.
-- Translation is still mock-only.
+- The process stage is still mock-only: `build_processor` resolves to `mock` because no config field selects a real provider yet.
 - No system audio capture.
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
@@ -134,7 +135,7 @@ Next:
 - Add the session accumulator (transcript + translation events per
   session) plus JSON / plain-text export, and surface export controls
   in the UI.
-- Add a real translation provider behind the `Translator` trait.
+- Generalize the process stage to a `Processor` trait (returns `Option<Output>`, so "stay silent" is a normal result) and inject it, then add a real provider in translate mode; see [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md).
 - Surface real translation events through the Tauri event stream.
 - Add a multithreaded Start/Stop race test to harden the cleanup.
 - Add a top-level `schema_version` to the persisted file so future

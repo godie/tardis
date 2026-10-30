@@ -9,7 +9,8 @@
 //! All helpers are pure (no I/O, no CPAL, no network) and
 //! unit-testable in isolation.
 
-use crate::app::events::{AppErrorEvent, AppEvent, AppTranscriptEvent, AppTranslationEvent};
+use crate::app::events::{AppErrorEvent, AppEvent, AppOutputEvent, AppTranscriptEvent};
+use crate::processor::processor::OutputKind;
 
 /// Build an [`AppEvent::Transcript`] from the raw fields.
 ///
@@ -33,28 +34,31 @@ pub fn build_transcript_event(
     })
 }
 
-/// Build an [`AppEvent::Translation`] from the raw fields.
+/// Build an [`AppEvent::Output`] from the raw fields.
 ///
 /// # Arguments
 ///
 /// * `chunk_index` — 1-based index matching the source transcript.
+/// * `kind` — which mode produced the line (`translate` / `respond`).
 /// * `source_text` — original transcript text.
-/// * `translated_text` — translated output.
+/// * `text` — rendered output.
 /// * `source_language` — BCP-47-ish source code (e.g. `"en"`).
-/// * `target_language` — BCP-47-ish target code (e.g. `"es"`).
+/// * `target_language` — BCP-47-ish output code (e.g. `"es"`).
 /// * `is_final` — `true` for terminal outputs of a call.
-pub fn build_translation_event(
+pub fn build_output_event(
     chunk_index: usize,
+    kind: OutputKind,
     source_text: String,
-    translated_text: String,
+    text: String,
     source_language: String,
     target_language: String,
     is_final: bool,
 ) -> AppEvent {
-    AppEvent::Translation(AppTranslationEvent {
+    AppEvent::Output(AppOutputEvent {
         chunk_index,
+        kind,
         source_text,
-        translated_text,
+        text,
         source_language,
         target_language,
         is_final,
@@ -112,32 +116,34 @@ mod tests {
         }
     }
 
-    // ---- build_translation_event ---------------------------------------
+    // ---- build_output_event ---------------------------------------
 
     #[test]
-    fn build_translation_event_creates_translation_variant() {
-        let e = build_translation_event(
+    fn build_output_event_creates_translation_variant() {
+        let e = build_output_event(
             1,
+            OutputKind::Translate,
             "hello".to_string(),
             "hola".to_string(),
             "en".to_string(),
             "es".to_string(),
             true,
         );
-        assert!(matches!(e, AppEvent::Translation(_)));
+        assert!(matches!(e, AppEvent::Output(_)));
     }
 
     #[test]
     fn translation_event_includes_languages() {
-        let e = build_translation_event(
+        let e = build_output_event(
             2,
+            OutputKind::Translate,
             "hello".to_string(),
             "hola".to_string(),
             "en".to_string(),
             "fr".to_string(),
             true,
         );
-        if let AppEvent::Translation(t) = &e {
+        if let AppEvent::Output(t) = &e {
             assert_eq!(t.source_language, "en");
             assert_eq!(t.target_language, "fr");
         } else {

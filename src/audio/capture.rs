@@ -1,7 +1,7 @@
 //! Shared CPAL input plumbing.
 //!
 //! Every chunked capture driver (`chunker`, `chunk_recorder`,
-//! `transcription::pipeline`, `translation::pipeline`,
+//! `transcription::pipeline`, `processor::pipeline`,
 //! `transcription::live_local`) used to resolve the default input device,
 //! build the same f32 callback stream, and drain complete chunks out of the
 //! same shared buffer. This module owns that machinery; the drivers keep only

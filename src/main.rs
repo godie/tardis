@@ -32,7 +32,7 @@ use tardis::{
         service::AppService,
         settings_store,
     },
-    audio, config, transcription, translation,
+    audio, config, processor, transcription,
 };
 
 use anyhow::{Result, anyhow};
@@ -186,7 +186,7 @@ fn run_settings_validate() -> Result<()> {
 /// - Persist anything to disk.
 ///
 /// This command exists for the developer to validate that the
-/// `app` module + `MockTranslator` are wired together end-to-end
+/// `app` module + `MockProcessor` are wired together end-to-end
 /// in one short synchronous run.
 fn run_app_mock_flow() -> Result<()> {
     println!("=== app-mock-flow (sync smoke for AppService) ===\n");
@@ -221,7 +221,7 @@ fn run_app_mock_flow() -> Result<()> {
     let state = service.state();
     println!("final status:     {}", status_label(state.status));
     println!("last_transcript:  {:?}", state.last_transcript);
-    println!("last_translation: {:?}", state.last_translation);
+    println!("last_output: {:?}", state.last_output);
     println!("\n=== done ===");
     Ok(())
 }
@@ -280,7 +280,7 @@ fn run_mock_transcribe_file() -> Result<()> {
 }
 
 fn run_mock_translate() -> Result<()> {
-    translation::pipeline::run_mock_translate_test(
+    processor::pipeline::run_mock_translate_test(
         config::DEFAULT_PIPELINE_TEST_SECONDS,
         config::DEFAULT_CHUNK_DURATION_MS,
         config::DEFAULT_SOURCE_LANGUAGE,
