@@ -7,9 +7,11 @@
 //! chunk to a temporary WAV file first because the provider interface
 //! is file-based). Each transcript is then translated, synthesized by
 //! [`crate::synthesis::MockSynthesizer`], and handed to
-//! [`crate::audio::player::MockPlayer`], which records instead of
+//! [`crate::audio::player::CountingPlayer`], which counts instead of
 //! playing: the whole five-stage loop runs with no TTS service, no
-//! output device, and no permissions.
+//! output device, and no permissions. It counts rather than records
+//! because an indefinite session would otherwise hold every rendered
+//! sample in memory.
 //!
 //! This is **not** true streaming: it is chunk-by-chunk live
 //! transcription via temporary WAV files. The default provider is
@@ -55,8 +57,8 @@ use crate::app::live_events::{
 use crate::audio::activity;
 use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
-use crate::audio::gate::HalfDuplexGate;
-use crate::audio::player::{MockPlayer, Player};
+use crate::audio::gate::{HalfDuplexGate, playback_backlog};
+use crate::audio::player::{CountingPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::processor::processor::ProcessMode;
@@ -188,7 +190,7 @@ where
         target_language: config.target_language.clone(),
     };
     let synthesizer = MockSynthesizer::new();
-    let mut player = MockPlayer::new();
+    let mut player = CountingPlayer::new();
     let mut gate = HalfDuplexGate::with_default_tail();
     // Duration of one drained/captured frame batch, for the gate's tail.
     let captured_ms = chunk_size as u64 * 1_000 / (sample_rate as u64 * channels as u64);
@@ -302,13 +304,24 @@ where
                                 chunk.is_final,
                             ));
 
-                            // Half duplex: stop listening while we speak,
-                            // then drop the buffered playback audio and the
-                            // reverb tail so the pipeline cannot transcribe
-                            // its own voice.
+                            // Half duplex: stop listening while we speak.
+                            // Playback blocks, so the ring buffer fills with
+                            // our own voice; clearing it drops that whole
+                            // backlog at once, partial chunk included.
                             gate.begin_speaking();
                             let playback = player.play_chunk(&chunk);
                             gate.end_speaking();
+                            let dropped = mic.clear();
+                            let backlog = playback_backlog(dropped, chunk_size);
+                            if !has_stop_signal && backlog.requires_clear() {
+                                println!(
+                                    "{} dropped buffered playback audio ({} chunk(s), {} partial sample(s))",
+                                    live_transcription_status_message(chunk_index, "half-duplex"),
+                                    backlog.chunks,
+                                    backlog.partial_samples,
+                                );
+                            }
+                            // Only the reverb tail is left to discard.
                             discard_blocked_capture(&mic, chunk_size, tick, captured_ms, &mut gate);
 
                             // A playback failure must not kill the session:
@@ -357,13 +370,15 @@ where
     Ok(())
 }
 
-/// Drop captured audio until the gate allows draining again.
+/// Discard capture until the gate allows draining again.
 ///
-/// Runs **after** playback returned (`end_speaking`), so the `speaking`
-/// flag is already false and only the reverb tail keeps the gate closed.
-/// Everything the ring buffer collected during playback is drained here
-/// and thrown away — that is the "clear the buffer on end_speaking" half
-/// of the half-duplex rule; the pure decision lives in
+/// Runs **after** playback returned (`end_speaking`) and after the caller
+/// cleared the buffer, so the only thing still blocking is the reverb tail.
+/// Anything captured during this window is thrown away too: it can be room
+/// reverb or the device's own output latency. Draining the playback backlog
+/// is deliberately not this function's job — that is `MicInput::clear`,
+/// because a single chunk can outlast the whole tail and the leftovers
+/// would then be transcribed as our own voice. The pure decision lives in
 /// [`crate::audio::gate::HalfDuplexGate::drain_allowed`].
 fn discard_blocked_capture(
     mic: &MicInput,

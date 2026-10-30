@@ -149,6 +149,24 @@ impl MicInput {
         }
         drain_chunk(&mut buffer, chunk_size)
     }
+
+    /// Drop everything currently buffered, partial samples included, and
+    /// return how many samples were discarded.
+    ///
+    /// The half-duplex gate calls this the moment playback ends: audio
+    /// captured while the player spoke is our own voice, and a leftover
+    /// partial chunk would otherwise be glued onto the next utterance.
+    /// Draining chunk by chunk cannot do this, because the drain stops as
+    /// soon as the reverb tail is consumed and the rest stays queued.
+    pub fn clear(&self) -> usize {
+        let mut buffer = match self.buffer.lock() {
+            Ok(buffer) => buffer,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let dropped = buffer.len();
+        buffer.clear();
+        dropped
+    }
 }
 
 fn build_stream<T>(

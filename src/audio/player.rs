@@ -37,7 +37,9 @@ pub trait Player {
 ///
 /// Every successful `play_chunk` appends a clone of the chunk, so the
 /// runner and its tests can assert exactly what would have been
-/// spoken. No CPAL stream, no device, no permissions.
+/// spoken. No CPAL stream, no device, no permissions. Keeping the samples
+/// makes this unsuitable for a session that runs indefinitely; use
+/// [`CountingPlayer`] there.
 #[derive(Debug, Default)]
 pub struct MockPlayer {
     played: Mutex<Vec<AudioChunk>>,
@@ -86,6 +88,55 @@ impl Player for MockPlayer {
 
     fn stop(&mut self) -> Result<()> {
         // Nothing to tear down: the mock never started anything.
+        Ok(())
+    }
+}
+
+/// [`Player`] that counts instead of recording.
+///
+/// The live loop runs until the user stops it, so retaining a copy of every
+/// rendered buffer would grow memory for the whole session. This keeps only
+/// the counters the summary line reports and drops the audio, which is what
+/// a player with no output device can honestly do.
+#[derive(Debug, Default)]
+pub struct CountingPlayer {
+    chunks: usize,
+    duration_ms: u64,
+    stops: usize,
+}
+
+impl CountingPlayer {
+    /// Construct a fresh `CountingPlayer` with nothing counted.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Chunks handed to `play_chunk` so far, including failed ones.
+    pub fn played_count(&self) -> usize {
+        self.chunks
+    }
+
+    /// Total rendered audio passed in, in milliseconds.
+    pub fn played_duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    /// How many times `stop` was called. The contract makes `stop`
+    /// idempotent, so this counts calls rather than transitions.
+    pub fn stop_count(&self) -> usize {
+        self.stops
+    }
+}
+
+impl Player for CountingPlayer {
+    fn play_chunk(&mut self, chunk: &AudioChunk) -> Result<()> {
+        self.chunks += 1;
+        self.duration_ms += crate::synthesis::chunk_duration_ms(chunk);
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.stops += 1;
         Ok(())
     }
 }
@@ -149,6 +200,26 @@ mod tests {
         player.play_chunk(&chunk(960)).unwrap();
         player.play_chunk(&chunk(1_920)).unwrap();
         assert_eq!(player.played_duration_ms(), 180);
+    }
+
+    #[test]
+    fn counting_player_keeps_counters_and_no_samples() {
+        let mut player = CountingPlayer::new();
+        player.play_chunk(&chunk(960)).unwrap();
+        player.play_chunk(&chunk(1_920)).unwrap();
+        assert_eq!(player.played_count(), 2);
+        assert_eq!(player.played_duration_ms(), 180);
+        player.stop().unwrap();
+        player.stop().unwrap();
+        assert_eq!(player.stop_count(), 2);
+    }
+
+    #[test]
+    fn fresh_counting_player_is_empty() {
+        let player = CountingPlayer::new();
+        assert_eq!(player.played_count(), 0);
+        assert_eq!(player.played_duration_ms(), 0);
+        assert_eq!(player.stop_count(), 0);
     }
 
     #[test]

@@ -105,6 +105,50 @@ impl Default for HalfDuplexGate {
     }
 }
 
+/// What the capture ring buffer holds when playback stops.
+///
+/// Playback blocks, so the buffer fills with our own voice. The tail alone
+/// cannot absorb that backlog: a single drained chunk can be longer than
+/// the tail, which leaves the rest of the playback audio queued up for the
+/// transcriber. The whole backlog has to be dropped, partial samples
+/// included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backlog {
+    /// Complete chunks buffered during playback.
+    pub chunks: usize,
+    /// Samples after the last complete chunk. These are dropped too: keeping
+    /// them would splice the tail of our own speech onto the next utterance.
+    pub partial_samples: usize,
+    /// Samples the backlog covers, `chunks * chunk_size + partial_samples`.
+    pub total_samples: usize,
+}
+
+impl Backlog {
+    /// Is there anything to clear?
+    pub fn requires_clear(&self) -> bool {
+        self.total_samples > 0
+    }
+}
+
+/// Split `buffered_samples` into complete chunks and a partial remainder.
+///
+/// A zero `chunk_size` cannot split anything, so the whole buffer counts as
+/// a partial remainder rather than dividing by zero.
+pub fn playback_backlog(buffered_samples: usize, chunk_size: usize) -> Backlog {
+    if chunk_size == 0 {
+        return Backlog {
+            chunks: 0,
+            partial_samples: buffered_samples,
+            total_samples: buffered_samples,
+        };
+    }
+    Backlog {
+        chunks: buffered_samples / chunk_size,
+        partial_samples: buffered_samples % chunk_size,
+        total_samples: buffered_samples,
+    }
+}
+
 // ===== Unit tests ========================================================
 
 #[cfg(test)]
@@ -183,6 +227,67 @@ mod tests {
         let mut gate = HalfDuplexGate::new(0);
         gate.begin_speaking();
         gate.end_speaking();
+        assert!(gate.drain_allowed());
+    }
+
+    // ---- playback_backlog -----------------------------------------------
+
+    #[test]
+    fn empty_buffer_needs_no_clear() {
+        let backlog = playback_backlog(0, 960);
+        assert_eq!((backlog.chunks, backlog.partial_samples), (0, 0));
+        assert!(!backlog.requires_clear());
+    }
+
+    #[test]
+    fn whole_chunks_are_counted_without_a_remainder() {
+        let backlog = playback_backlog(3 * 960, 960);
+        assert_eq!((backlog.chunks, backlog.partial_samples), (3, 0));
+        assert!(backlog.requires_clear());
+    }
+
+    #[test]
+    fn partial_remainder_is_counted_and_dropped() {
+        let backlog = playback_backlog(3 * 960 + 17, 960);
+        assert_eq!((backlog.chunks, backlog.partial_samples), (3, 17));
+        assert_eq!(backlog.total_samples, 3 * 960 + 17);
+    }
+
+    #[test]
+    fn zero_chunk_size_counts_as_a_partial_remainder() {
+        let backlog = playback_backlog(500, 0);
+        assert_eq!((backlog.chunks, backlog.partial_samples), (0, 500));
+        assert_eq!(backlog.total_samples, 500);
+    }
+
+    #[test]
+    fn playback_backlog_never_reaches_the_transcriber() {
+        // The regression: playback blocks, so the buffer fills with our own
+        // voice. Dropping only what the 250 ms tail covers leaves the rest
+        // queued, and a partial chunk survives to be spliced onto the next
+        // utterance.
+        let chunk_size = 960;
+        let buffered = 4 * chunk_size + 17;
+        let backlog = playback_backlog(buffered, chunk_size);
+
+        assert_eq!(backlog.chunks, 4, "four full chunks of echo");
+        assert_eq!(backlog.partial_samples, 17, "plus a partial remainder");
+        assert!(backlog.requires_clear());
+
+        // The runner clears the whole buffer, so nothing is left to hand to
+        // the provider, complete chunks or partial samples.
+        let remaining = buffered - backlog.total_samples;
+        let after_clear = playback_backlog(remaining, chunk_size);
+        assert_eq!(after_clear.chunks, 0, "no chunk reaches the transcriber");
+        assert_eq!(after_clear.partial_samples, 0, "the remainder is gone");
+        assert!(!after_clear.requires_clear());
+
+        // Capture only flows again once the tail has elapsed.
+        let mut gate = HalfDuplexGate::with_default_tail();
+        gate.begin_speaking();
+        gate.end_speaking();
+        assert!(!gate.drain_allowed());
+        gate.advance(DEFAULT_TAIL_MS);
         assert!(gate.drain_allowed());
     }
 
