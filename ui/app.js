@@ -94,6 +94,7 @@ function appendTranslation(text) {
 
 let isListening = false;
 let isStarting = false;
+let isStopping = false;
 
 const languageHint = document.querySelector("#language-hint");
 
@@ -115,6 +116,7 @@ if (sourceLanguage) {
 // of digits out of range all sanitize to "" — and Number("") is 0, which
 // would quietly start a session with a zero chunk window. Reject instead
 // of guessing, and mark the field so the problem is visible.
+//
 function readNumberInput(input, label) {
   const min = Number(input.min);
   const max = Number(input.max);
@@ -150,7 +152,7 @@ function setSessionControls(running) {
 async function startLiveTranscription() {
   // A second click while the first invoke is still in flight would spawn
   // two backend runners; the isListening flag alone lands too late.
-  if (isListening || isStarting) return;
+  if (isListening || isStarting || isStopping) return;
 
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
@@ -162,6 +164,7 @@ async function startLiveTranscription() {
   }
 
   isStarting = true;
+  isStopping = false;
   setStatus("Starting\u2026");
   setLiveError("");
 
@@ -202,16 +205,23 @@ function enableSessionSettings() {
 }
 
 async function stopLiveTranscription() {
-  if (!isListening) return;
+  if (!isListening || isStopping) return;
+
+  // The command returns once the worker has the stop flag, not once it has
+  // exited, so the session is still running at this point. Keep the panel
+  // locked and `isListening` true; the "stopped" status event is what
+  // unlocks the settings and Start.
+  isStopping = true;
+  setStatus("Stopping\u2026");
 
   try {
     const msg = await invoke("stop_live_transcription");
     log("stop_live_transcription:", msg);
-    isListening = false;
-    setSessionControls(false);
+    stopButton.disabled = true;
   } catch (error) {
     // Still listening: leave the controls as they are so Stop stays
     // clickable and the user can retry.
+    isStopping = false;
     log("stop error:", error);
     setLiveError(`Failed to stop: ${error}`);
   }
@@ -240,6 +250,7 @@ function setupEventListener() {
             // Worker has fully exited; let the user adjust settings
             // before pressing Start again.
             isListening = false;
+            isStopping = false;
             setSessionControls(false);
           }
         }
