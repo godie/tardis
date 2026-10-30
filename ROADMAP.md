@@ -17,7 +17,7 @@ Status: `partial` → `partial (orchestration layer shipped)`
 
 What exists:
 
-- `audio::*` covers device listing, microphone capture, chunking, chunk saving, and WAV recording.
+- `audio::*` covers device listing, microphone capture, chunking, chunk saving, WAV recording, and silence endpointing (`audio::endpoint` turns fixed windows into whole utterances).
 - `transcription::LocalTranscriptionProvider` is the real backend contract (file in, text out): `LocalWhisperClient` (Docker `faster-whisper`) and `MockLocalProvider` implement it, and the live runner selects between them through `ProviderKind` / `build_provider`.
 - `transcription::transcriber::Transcriber` exists for in-process `&[f32]` chunk processing; today only `MockTranscriber` implements it and it drives the mock pipelines (`mock-transcribe*`, `mock-translate`).
 - `processor::*` carries the process stage: `Processor` returns `Option<Output>` (translate today, respond later), `build_processor` dispatches, and `MockProcessor` is the deterministic default.
@@ -37,17 +37,17 @@ Next:
 
 ## 2. Turn Real Transcription Into A Live Path
 
-Status: `partial` → `partial (live chunk-by-chunk path shipped)`
+Status: `partial` → `partial (live utterance-by-utterance path shipped)`
 
 What exists:
 
 - `local-transcribe-file` sends a WAV file to a local `faster-whisper` server.
 - `mock-local` proves provider swapping without Docker.
-- `live-local-transcribe` captures from the default microphone, splits audio into chunks, and sends each speech-like chunk through a selected provider via a temporary WAV file. Default provider is `mock-local` so the command works without Docker.
+- `live-local-transcribe` captures from the default microphone in fixed windows, runs them through `audio::endpoint` (`hangover_ms` / `min_speech_ms` / `max_utterance_ms`) so whole utterances reach the provider, and sends each utterance through a selected provider via one temporary WAV file. Default provider is `mock-local` so the command works without Docker.
 
 Gaps:
 
-- The live path is chunk-by-chunk via temporary WAV files, not true streaming: the audio callback delivers samples, but the provider interface is still file-based.
+- The live path is utterance-by-utterance via temporary WAV files, not true streaming: the audio callback delivers samples, but the provider interface is still file-based. Utterance boundaries are decided by volume + hangover, not by a real VAD model.
 - No streaming provider bridge connects microphone capture to the local backend.
 
 Next:
@@ -63,7 +63,7 @@ Status: `partial`
 What exists:
 
 - `processor::processor::Processor` and the mock translate pipeline already define the handoff point.
-- The CLI already proves chunk-by-chunk transcription-to-output flow.
+- The CLI already proves utterance-by-utterance transcription-to-output flow.
 
 Gaps:
 

@@ -17,6 +17,7 @@
 //!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
 //!   cargo run -- app-mock-flow                              -> exercise the mock AppService flow end-to-end (no mic, no Docker)
 //!   cargo run -- mock-voice-flow                            -> full five-stage mock loop: transcript -> translation -> speech -> play (no mic, no Docker, no TTS)
+//!   cargo run -- utterance-test                             -> feed a synthetic frame pattern through the endpointing state machine (no mic)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -62,12 +63,16 @@ fn main() -> Result<()> {
         Some("live-local-transcribe") => run_live_local_transcribe(),
         Some("app-mock-flow") => run_app_mock_flow(),
         Some("mock-voice-flow") => run_mock_voice_flow(),
+        Some("utterance-test") => {
+            audio::endpoint::run_utterance_test();
+            Ok(())
+        }
         Some("settings-default") => run_settings_default(),
         Some("settings-validate") => run_settings_validate(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- mock-voice-flow | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }

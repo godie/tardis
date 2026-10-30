@@ -1,9 +1,9 @@
 # Core pipeline plan: capture → transcribe → process → synthesize → play
 
-Status: **in progress**. PR 1 (`Processor` rename) and PR 2 (mock
-`Synthesizer`/`Player` loop plus the half-duplex gate) are implemented on
-`feat/processor-rename` and `feat/mock-voice-loop`; PR 3 onward is planned
-and unstarted. Each numbered PR below is independently reviewable, stays
+Status: **in progress**. PR 1 (`Processor` rename), PR 2 (mock
+`Synthesizer`/`Player` loop plus the half-duplex gate) and PR 3 (silence
+endpointing and the burst cap) are implemented and merged on `master`;
+PR 4 onward is planned and unstarted. Each numbered PR below is independently reviewable, stays
 green on `cargo check && cargo test`, and adds a manual path
 (`cargo run -- <mode>` or the Tauri shell) so the CPAL/HTTP glue is
 verifiable per `DEVELOPMENT_RULES.md`.
@@ -22,7 +22,7 @@ your sign-off before they are built.
 
 | # | Stage | Status | Where it lives | Notes |
 |---|-------|--------|----------------|-------|
-| 1 | Capture | **real (mic only)** | `src/audio/capture.rs` (`DefaultInput`, `MicInput`), `src/audio/chunker.rs`, `src/audio/mic.rs`, `src/audio/recorder.rs` | CPAL input at the device's default config (f32 samples, device rate and channel count), fixed-window chunking, silence classification in `src/audio/activity.rs`, volume in `src/audio/volume.rs`. Saved WAVs are 16-bit (`config::WAV_BITS_PER_SAMPLE`). No system/loopback source. |
+| 1 | Capture | **real (mic only)** | `src/audio/capture.rs` (`DefaultInput`, `MicInput`), `src/audio/chunker.rs`, `src/audio/mic.rs`, `src/audio/recorder.rs` | CPAL input at the device's default config (f32 samples, device rate and channel count), fixed-window capture plus silence endpointing (hangover / min-speech / burst cap) in `src/audio/endpoint.rs`, silence classification in `src/audio/activity.rs`, volume in `src/audio/volume.rs`. Saved WAVs are 16-bit (`config::WAV_BITS_PER_SAMPLE`). No system/loopback source. |
 | 2 | Transcribe | **real, two contracts** | `src/transcription/transcriber.rs` (`Transcriber`), `src/transcription/local_whisper.rs`, `src/transcription/mock_local.rs`, dispatch in `src/transcription/mod.rs` (`ProviderKind` / `build_provider`) | `mock-local` is a deterministic stub, `local-whisper` is a real HTTP call to the faster-whisper Docker server (`docker/faster-whisper/`). |
 | 3 | Process | **mock only** | `src/translation/translator.rs` (`Translator`), `src/translation/mock.rs` (`MockTranslator`), used inline in `src/transcription/live_local.rs` and `src/app/service.rs` | No LLM client exists anywhere in the tree. `reqwest` is already a dependency (blocking + multipart + json). |
 | 4 | Synthesize | **does not exist** | — | No TTS module, no speech types, no reference in `src/config.rs`. |
@@ -35,7 +35,8 @@ cargo run -- live-local-transcribe  /  Tauri start_live_transcription
   -> transcription::live_local::run_live_local_transcription_with_config_and_events
      -> MicInput (CPAL)              capture
      -> calculate_average_volume     silence gate
-     -> write_chunk_wav              temp WAV per chunk (output/live_chunks/)
+     -> audio::endpoint             utterance boundaries (hangover / min-speech / cap)
+     -> write_chunk_wav              one temp WAV per utterance (output/live_chunks/)
      -> provider.transcribe(path)    transcribe  (LocalTranscriptionProvider)
      -> MockTranslator               process     (constructed inline, line ~173)
      -> app::live_events::*          AppEvent
@@ -107,10 +108,10 @@ work, noted per item.
    constructed *inside* the live loop, which is the actual blocker. §4 now
    states it and points at PR 1 and PR 4.
 
-Verified as still accurate (no action): `AGENTS.md` counts (219 CLI tests,
-28 Tauri tests — both measured), the CPAL 0.18 gotchas, the module layout
-table, and `ROADMAP.md` §2's "chunk-by-chunk via temporary WAV files, not
-true streaming".
+Verified as still accurate (no action): the CPAL 0.18 gotchas, the module
+layout table, and `ROADMAP.md` §2's "utterance-by-utterance via temporary
+WAV files, not true streaming". Test counts move with every PR; `AGENTS.md`
+and `README.md` carry the current number (305 CLI tests, 28 Tauri tests).
 
 ---
 
@@ -610,6 +611,11 @@ to one utterance; PR 3 replaces clock chunks with endpointing so the stall
 is a pause between utterances instead of dropped audio.
 
 ### PR 3 — Silence endpointing and the burst cap (whole utterances, not clock chunks)
+
+**Status.** Implemented and merged: `src/audio/endpoint.rs` (pure, 20 tests),
+the three `AppRuntimeConfig` fields (serde-defaulted so an older
+`runtime.json` still loads), the utterance-based live loop, the settings
+panel fields and `cargo run -- utterance-test`.
 
 **Why (added after your review).** The LLM must receive a whole utterance.
 Today the pipeline cuts on `chunk_duration_ms` and sends one transcript per

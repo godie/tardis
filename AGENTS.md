@@ -64,7 +64,7 @@ go-ahead.
 ```sh
 cargo check                                          # fast type-check only (no tests)
 cargo clippy --all-targets -- -D warnings            # lints, same gate CI runs
-cargo test                                           # 258 unit tests on the CLI workspace
+cargo test                                           # 305 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -95,12 +95,13 @@ src/
   main.rs                  # CLI dispatcher (matches on args.nth(1))
   config.rs                # centralized CLI/audio/pipeline constants
   audio/
-    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, mic, player, recorder, volume
+    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, endpoint, mic, player, recorder, volume
     activity.rs            # pure silence/speech-like classifier, 8 tests
     capture.rs             # shared CPAL device resolution + chunk drain (no tests)
     chunk_recorder.rs      # hound chunk saver + pure WAV helpers, 10 tests
     chunker.rs             # pure chunk-size/drain helpers + CPAL capture loop, 13 tests
     devices.rs             # print_device_info (pure print, no tests)
+    endpoint.rs            # pure endpointing: hangover close, min-speech discard, burst cap, 20 tests
     gate.rs                # HalfDuplexGate: discard capture while speaking + reverb tail, 9 tests
     mic.rs                 # CPAL driver (no tests)
     player.rs              # Player trait + MockPlayer (records, plays nothing), 6 tests
@@ -109,7 +110,7 @@ src/
   transcription/
     mod.rs                 # re-exports: file_pipeline, live_local, local_whisper, mock, mock_local, pipeline, transcriber; ProviderKind + build_provider dispatch, 7 tests
     file_pipeline.rs       # WAV reader + pure i16->f32 helpers, 7 tests
-    live_local.rs          # pure helpers + CPAL live local transcription runner, 9 tests
+    live_local.rs          # pure helpers + utterance-based CPAL live runner, 9 tests
     local_whisper.rs       # LocalWhisperClient: HTTP client for the faster-whisper server, 8 tests
     mock.rs                # mock transcriber logic, 10 tests
     mock_local.rs          # deterministic offline provider for live dev, 5 tests
@@ -126,10 +127,10 @@ src/
   app/
     mod.rs                 # re-exports: config, events, live_events, service, settings_store, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs (incl. Speech) + console formatting, 26 tests
-    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 36 tests
+    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 46 tests
     live_events.rs         # pure event-construction helpers (build_transcript_event, build_speech_event, etc.), 9 tests
     ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 7 tests
-    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 20 tests
+    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 21 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```

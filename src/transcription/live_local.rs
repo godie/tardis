@@ -1,19 +1,18 @@
-//! Live chunk-by-chunk local transcription pipeline.
+//! Live utterance-by-utterance local transcription pipeline.
 //!
-//! Captures audio from the default microphone, splits it into chunks,
-//! classifies each chunk as silence or speech-like, and sends
-//! speech-like chunks through a selected
-//! [`crate::transcription::LocalTranscriptionProvider`] (writing each
-//! chunk to a temporary WAV file first because the provider interface
-//! is file-based). Each transcript is then translated, synthesized by
-//! [`crate::synthesis::MockSynthesizer`], and handed to
-//! [`crate::audio::player::CountingPlayer`], which counts instead of
-//! playing: the whole five-stage loop runs with no TTS service, no
-//! output device, and no permissions. It counts rather than records
-//! because an indefinite session would otherwise hold every rendered
-//! sample in memory.
+//! Captures audio from the default microphone in fixed windows, classifies
+//! each window as silence or speech-like, and runs the windows through
+//! [`crate::audio::endpoint`] so whole utterances — not clock chunks — reach
+//! the provider. Silence only closes an utterance (after `hangover_ms`); it
+//! never becomes a provider call. Each utterance is written to a temporary
+//! WAV file because the provider interface is file-based. Each transcript is
+//! then processed, synthesized by [`crate::synthesis::MockSynthesizer`], and
+//! handed to [`crate::audio::player::CountingPlayer`], which counts instead
+//! of playing: the whole five-stage loop runs with no TTS service, no output
+//! device, and no permissions. It counts rather than records because an
+//! indefinite session would otherwise hold every rendered sample in memory.
 //!
-//! This is **not** true streaming: it is chunk-by-chunk live
+//! This is **not** true streaming: it is utterance-by-utterance live
 //! transcription via temporary WAV files. The default provider is
 //! `mock-local` so the command works without Docker; pass
 //! `--provider local-whisper` to use the self-hosted faster-whisper
@@ -34,10 +33,10 @@
 //!   threshold from centralised [`config`] constants). Used by
 //!   `cargo run -- live-local-transcribe --provider mock-local`.
 //!
-//! Pure helpers (`format_live_chunk_filename`,
-//! `should_transcribe_chunk`, `live_transcription_status_message`)
-//! live in this module so they can be unit-tested without touching
-//! CPAL, Docker, or filesystem I/O.
+//! Pure helpers (`format_live_utterance_filename`,
+//! `should_transcribe_chunk`, `live_utterance_status_message`) live in this
+//! module so they can be unit-tested without touching CPAL, Docker, or
+//! filesystem I/O.
 
 use std::fs;
 use std::io::{self, Write};
@@ -57,6 +56,7 @@ use crate::app::live_events::{
 use crate::audio::activity;
 use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
+use crate::audio::endpoint::{self, EndpointConfig, EndpointDecision, EndpointState};
 use crate::audio::gate::{HalfDuplexGate, playback_backlog};
 use crate::audio::player::{CountingPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
@@ -68,16 +68,16 @@ use crate::transcription;
 
 // ===== Pure helpers (unit-tested) ========================================
 
-/// Format a live-chunk WAV filename with a `live_` prefix and
+/// Format a live-utterance WAV filename with a `live_` prefix and
 /// zero-padded 3-digit index. Indices past 999 grow the width
-/// naturally (e.g. `live_chunk_1234.wav`).
+/// naturally (e.g. `live_utterance_1234.wav`).
 ///
 /// Examples:
-/// - `1` → `"live_chunk_001.wav"`
-/// - `12` → `"live_chunk_012.wav"`
-/// - `123` → `"live_chunk_123.wav"`
-pub fn format_live_chunk_filename(chunk_index: usize) -> String {
-    format!("live_chunk_{chunk_index:03}.wav")
+/// - `1` → `"live_utterance_001.wav"`
+/// - `12` → `"live_utterance_012.wav"`
+/// - `123` → `"live_utterance_123.wav"`
+pub fn format_live_utterance_filename(utterance_index: usize) -> String {
+    format!("live_utterance_{utterance_index:03}.wav")
 }
 
 /// Should a chunk with the given `volume` be sent to the transcription
@@ -90,13 +90,13 @@ pub fn should_transcribe_chunk(volume: f32, threshold: f32) -> bool {
     activity::is_speech_like(volume, threshold)
 }
 
-/// Format a readable status line containing the chunk index and a
+/// Format a readable status line containing the utterance index and a
 /// human-readable status string. Callers append the result to their
 /// log / console output.
 ///
-/// Example: `"[chunk 2] speech-like"`
-pub fn live_transcription_status_message(chunk_index: usize, status: &str) -> String {
-    format!("[chunk {chunk_index}] {status}")
+/// Example: `"[utterance 2] speech-like"`
+pub fn live_utterance_status_message(utterance_index: usize, status: &str) -> String {
+    format!("[utterance {utterance_index}] {status}")
 }
 
 // ===== CPAL-driven runner ================================================
@@ -165,6 +165,10 @@ where
         "chunk:   {} ms ({chunk_size} samples, {sample_rate} Hz, {channels} ch)",
         config.chunk_duration_ms
     );
+    println!(
+        "utter.:  closes after {} ms of silence, needs {} ms of speech, cap {} ms",
+        config.hangover_ms, config.min_speech_ms, config.max_utterance_ms
+    );
     println!("output:  {output_dir}/");
     match seconds {
         Some(s) => println!("duration: {s} s\n"),
@@ -179,8 +183,18 @@ where
     let start = Instant::now();
     let total_duration = seconds.map(Duration::from_secs);
     let tick = Duration::from_millis(config.chunk_duration_ms);
-    let mut chunk_index: usize = 0;
+    let mut utterance_index: usize = 0;
     let threshold = config.volume_threshold;
+    // Endpointing turns fixed capture windows into whole utterances, so the
+    // provider sees one call per turn instead of one per clock chunk.
+    let endpoint_config = EndpointConfig {
+        chunk_duration_ms: config.chunk_duration_ms,
+        hangover_ms: config.hangover_ms,
+        min_speech_ms: config.min_speech_ms,
+        max_utterance_ms: config.max_utterance_ms,
+    };
+    let mut endpoint_state = EndpointState::new();
+    let mut pending_samples: Vec<f32> = Vec::new();
     // The process stage is built, not constructed inline: the same
     // `build_processor` dispatch the service uses, so a real processor
     // slots in without touching this loop.
@@ -219,35 +233,54 @@ where
         thread::sleep(tick);
 
         while let Some(samples) = mic.next_chunk(chunk_size) {
-            chunk_index += 1;
             let avg_volume = calculate_average_volume(&samples);
+            let is_speech = should_transcribe_chunk(avg_volume, threshold);
 
-            if !should_transcribe_chunk(avg_volume, threshold) {
-                // Silence chunks are not events; they would spam
-                // the event stream. Print directly for CLI; skip
-                // entirely for Tauri (the UI shows the last
-                // transcript/translation, not a silence log).
+            // The frame that closes an utterance belongs to it, so buffer
+            // before deciding. A non-speech frame outside an utterance is
+            // never buffered: silence alone must not accumulate.
+            if endpoint_state.is_open() || is_speech {
+                pending_samples.extend_from_slice(&samples);
+            }
+
+            let decision = endpoint::advance(&mut endpoint_state, is_speech, &endpoint_config);
+
+            if decision == EndpointDecision::Discard {
+                // A blip below `min_speech_ms` is noise: no event, no WAV,
+                // no provider call. Print once so the CLI is not silent
+                // about having thrown audio away.
+                pending_samples.clear();
                 if !has_stop_signal {
                     println!(
-                        "{} detected, skipping...",
-                        live_transcription_status_message(chunk_index, "silence")
+                        "{} discarded (below {} ms of speech)",
+                        live_utterance_status_message(utterance_index + 1, "burst"),
+                        endpoint_config.min_speech_ms,
                     );
                     let _ = io::stdout().flush();
                 }
                 continue;
             }
 
-            // Write speech-like chunk to a temporary WAV.
-            let filename = format_live_chunk_filename(chunk_index);
+            // `Continue` keeps accumulating; only a closed utterance is
+            // written, transcribed and synthesized.
+            let EndpointDecision::Utterance { frames } = decision else {
+                continue;
+            };
+            utterance_index += 1;
+            let utterance = std::mem::take(&mut pending_samples);
+
+            // Write the whole utterance to a temporary WAV, once.
+            let filename = format_live_utterance_filename(utterance_index);
             let wav_path = Path::new(output_dir).join(&filename);
 
-            write_chunk_wav(&wav_path, &samples, channels, sample_rate)
-                .with_context(|| format!("write live chunk WAV {}", wav_path.display()))?;
+            write_chunk_wav(&wav_path, &utterance, channels, sample_rate)
+                .with_context(|| format!("write live utterance WAV {}", wav_path.display()))?;
 
             if !has_stop_signal {
                 println!(
-                    "{} | saved {}",
-                    live_transcription_status_message(chunk_index, "speech-like"),
+                    "{} ({} ms) | saved {}",
+                    live_utterance_status_message(utterance_index, "speech"),
+                    endpoint::frames_to_ms(frames, endpoint_config.chunk_duration_ms),
                     wav_path.display(),
                 );
             }
@@ -260,7 +293,7 @@ where
                     // provider name verbatim so the UI displays
                     // exactly what the user selected.
                     on_event(build_transcript_event(
-                        chunk_index,
+                        utterance_index,
                         text.clone(),
                         provider_name.clone(),
                         true,
@@ -276,7 +309,7 @@ where
                         // takes ownership of it.
                         let spoken_text = output.text.clone();
                         on_event(build_output_event(
-                            chunk_index,
+                            utterance_index,
                             output.kind,
                             output.source_text,
                             output.text,
@@ -296,7 +329,7 @@ where
                         if let Some(chunk) = synthesizer.synthesize(&speech) {
                             let duration_ms = chunk_duration_ms(&chunk);
                             on_event(build_speech_event(
-                                chunk_index,
+                                utterance_index,
                                 speech.text,
                                 speech.language,
                                 duration_ms,
@@ -311,11 +344,17 @@ where
                             let playback = player.play_chunk(&chunk);
                             gate.end_speaking();
                             let dropped = mic.clear();
+                            // We could not hear anything while speaking, and
+                            // the buffered audio was our own voice: whatever
+                            // utterance was open is gone with it, so the next
+                            // speech starts a fresh one.
+                            endpoint_state.reset();
+                            pending_samples.clear();
                             let backlog = playback_backlog(dropped, chunk_size);
                             if !has_stop_signal && backlog.requires_clear() {
                                 println!(
                                     "{} dropped buffered playback audio ({} chunk(s), {} partial sample(s))",
-                                    live_transcription_status_message(chunk_index, "half-duplex"),
+                                    live_utterance_status_message(utterance_index, "half-duplex"),
                                     backlog.chunks,
                                     backlog.partial_samples,
                                 );
@@ -327,7 +366,7 @@ where
                             // report it and keep transcribing.
                             if let Err(e) = playback {
                                 on_event(build_error_event(format!(
-                                    "[chunk {chunk_index}] playback error: {e}"
+                                    "[utterance {utterance_index}] playback error: {e}"
                                 )));
                             }
                         }
@@ -335,7 +374,7 @@ where
                 }
                 Err(e) => {
                     on_event(build_error_event(format!(
-                        "[chunk {chunk_index}] transcription error: {e}"
+                        "[utterance {utterance_index}] transcription error: {e}"
                     )));
                 }
             }
@@ -346,7 +385,7 @@ where
             if let Err(e) = fs::remove_file(&wav_path) {
                 eprintln!(
                     "{} warning: could not delete temp WAV {}: {e}",
-                    live_transcription_status_message(chunk_index, "cleanup"),
+                    live_utterance_status_message(utterance_index, "cleanup"),
                     wav_path.display(),
                 );
             }
@@ -358,7 +397,7 @@ where
     // Emit the final event: capture has stopped.
     on_event(AppEvent::StatusChanged(AppStatus::Stopped));
     println!(
-        "\nLive local transcription finished. {chunk_index} chunks processed, {} spoken ({} ms, mock player).",
+        "\nLive local transcription finished. {utterance_index} utterance(s) processed, {} spoken ({} ms, mock player).",
         player.played_count(),
         player.played_duration_ms(),
     );
@@ -428,6 +467,9 @@ where
         source_language: config::DEFAULT_SOURCE_LANGUAGE.to_string(),
         target_language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
         volume_threshold: config::DEFAULT_VOLUME_THRESHOLD,
+        hangover_ms: config::DEFAULT_HANGOVER_MS,
+        min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
+        max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
     };
     run_live_local_transcription_with_config_and_events(
         config,
@@ -464,21 +506,24 @@ pub fn run_live_local_transcription_test(
 mod tests {
     use super::*;
 
-    // ---- format_live_chunk_filename ------------------------------------
+    // ---- format_live_utterance_filename --------------------------------
 
     #[test]
-    fn format_live_chunk_filename_001() {
-        assert_eq!(format_live_chunk_filename(1), "live_chunk_001.wav");
+    fn format_live_utterance_filename_001() {
+        assert_eq!(format_live_utterance_filename(1), "live_utterance_001.wav");
     }
 
     #[test]
-    fn format_live_chunk_filename_012() {
-        assert_eq!(format_live_chunk_filename(12), "live_chunk_012.wav");
+    fn format_live_utterance_filename_012() {
+        assert_eq!(format_live_utterance_filename(12), "live_utterance_012.wav");
     }
 
     #[test]
-    fn format_live_chunk_filename_123() {
-        assert_eq!(format_live_chunk_filename(123), "live_chunk_123.wav");
+    fn format_live_utterance_filename_123() {
+        assert_eq!(
+            format_live_utterance_filename(123),
+            "live_utterance_123.wav"
+        );
     }
 
     // ---- should_transcribe_chunk ---------------------------------------
@@ -498,32 +543,32 @@ mod tests {
         assert!(should_transcribe_chunk(0.02_f32, 0.01_f32));
     }
 
-    // ---- live_transcription_status_message -----------------------------
+    // ---- live_utterance_status_message ----------------------------------
 
     #[test]
-    fn status_message_contains_chunk_index() {
-        let msg = live_transcription_status_message(5, "speech-like");
+    fn status_message_contains_utterance_index() {
+        let msg = live_utterance_status_message(5, "speech");
         assert!(
             msg.contains("5"),
-            "message should contain chunk index 5, got: {msg}"
+            "message should contain utterance index 5, got: {msg}"
         );
     }
 
     #[test]
     fn status_message_contains_status() {
-        let msg = live_transcription_status_message(3, "silence");
+        let msg = live_utterance_status_message(3, "discarded");
         assert!(
-            msg.contains("silence"),
-            "message should contain status 'silence', got: {msg}"
+            msg.contains("discarded"),
+            "message should contain status 'discarded', got: {msg}"
         );
     }
 
     #[test]
     fn status_message_is_readable() {
-        let msg = live_transcription_status_message(2, "speech-like");
+        let msg = live_utterance_status_message(2, "speech");
         assert!(
-            msg.starts_with("[chunk "),
-            "message should start with '[chunk ', got: {msg}"
+            msg.starts_with("[utterance "),
+            "message should start with '[utterance ', got: {msg}"
         );
     }
 }

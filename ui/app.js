@@ -16,6 +16,9 @@ const sourceLanguage = document.querySelector("#source-language");
 const providerSelect = document.querySelector("#provider-select");
 const chunkDurationMsInput = document.querySelector("#chunk-duration-ms");
 const volumeThresholdInput = document.querySelector("#volume-threshold");
+const hangoverMsInput = document.querySelector("#hangover-ms");
+const minSpeechMsInput = document.querySelector("#min-speech-ms");
+const maxUtteranceMsInput = document.querySelector("#max-utterance-ms");
 
 // All session settings live here so Start/Stop, the backend
 // `app-event` listener, and the load-from-backend populator can
@@ -28,6 +31,9 @@ const SESSION_SETTINGS_INPUTS = [
   targetLanguage,
   chunkDurationMsInput,
   volumeThresholdInput,
+  hangoverMsInput,
+  minSpeechMsInput,
+  maxUtteranceMsInput,
 ];
 
 const DEV = true; // Set to false before release to suppress console logs
@@ -163,6 +169,35 @@ function readNumberInput(input, label, { integer = false } = {}) {
 // actionable while a session runs, Start only while it does not, and the
 // settings panel is locked exactly for the duration. A failed or aborted
 // start must not leave the panel locked with Stop live.
+// The endpointing pair has one cross-field rule the Backend also enforces:
+// a cap below the minimum would flush every burst before it could qualify,
+// so the session would transcribe nothing. Check it before starting instead
+// of letting the backend rejection look like a random failure.
+function readEndpointInputs() {
+  const hangover = readNumberInput(hangoverMsInput, "Pause before closing", { integer: true });
+  const minSpeech = readNumberInput(minSpeechMsInput, "Minimum speech", { integer: true });
+  const maxUtterance = readNumberInput(maxUtteranceMsInput, "Maximum utterance", {
+    integer: true,
+  });
+  const firstBad = [hangover, minSpeech, maxUtterance].find((result) => !result.ok);
+  if (firstBad) return firstBad;
+  if (maxUtterance.value <= 0 || maxUtterance.value < minSpeech.value) {
+    maxUtteranceMsInput.setAttribute("aria-invalid", "true");
+    return {
+      ok: false,
+      message: "Maximum utterance must be greater than 0 and at least the minimum speech length.",
+    };
+  }
+  maxUtteranceMsInput.removeAttribute("aria-invalid");
+  return {
+    ok: true,
+    value: maxUtterance.value,
+    hangover_ms: hangover.value,
+    min_speech_ms: minSpeech.value,
+    max_utterance_ms: maxUtterance.value,
+  };
+}
+
 function setSessionControls(running) {
   startButton.disabled = running;
   startButton.dataset.state = running ? "busy" : "idle";
@@ -182,10 +217,12 @@ async function startLiveTranscription() {
 
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
-  const problem = [chunk, threshold].find((result) => !result.ok);
+  const endpointing = readEndpointInputs();
+  const problem = [chunk, threshold, endpointing].find((result) => !result.ok);
   if (problem) {
     setLiveError(problem.message);
-    (chunk.ok ? volumeThresholdInput : chunkDurationMsInput).focus();
+    const firstInvalid = document.querySelector('[aria-invalid="true"]');
+    if (firstInvalid) firstInvalid.focus();
     return;
   }
 
@@ -204,6 +241,9 @@ async function startLiveTranscription() {
     target_language: targetLanguage.value,
     chunk_duration_ms: chunk.value,
     volume_threshold: threshold.value,
+    hangover_ms: endpointing.hangover_ms,
+    min_speech_ms: endpointing.min_speech_ms,
+    max_utterance_ms: endpointing.max_utterance_ms,
   };
 
   try {
@@ -370,6 +410,15 @@ async function loadFromBackendSettings() {
     if (Number.isFinite(defaults.volume_threshold)) {
       volumeThresholdInput.value = String(defaults.volume_threshold);
     }
+    if (Number.isFinite(defaults.hangover_ms)) {
+      hangoverMsInput.value = String(defaults.hangover_ms);
+    }
+    if (Number.isFinite(defaults.min_speech_ms)) {
+      minSpeechMsInput.value = String(defaults.min_speech_ms);
+    }
+    if (Number.isFinite(defaults.max_utterance_ms)) {
+      maxUtteranceMsInput.value = String(defaults.max_utterance_ms);
+    }
   }
 
   try {
@@ -414,8 +463,10 @@ async function saveCurrentSettings() {
   // and let the field stay as the user typed it.
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
-  if (!chunk.ok || !threshold.ok) {
-    log("skipping settings save:", (chunk.ok ? threshold : chunk).message);
+  const endpointing = readEndpointInputs();
+  if (!chunk.ok || !threshold.ok || !endpointing.ok) {
+    const bad = [chunk, threshold, endpointing].find((result) => !result.ok);
+    log("skipping settings save:", bad.message);
     return;
   }
 
@@ -425,6 +476,9 @@ async function saveCurrentSettings() {
     target_language: targetLanguage.value,
     chunk_duration_ms: chunk.value,
     volume_threshold: threshold.value,
+    hangover_ms: endpointing.hangover_ms,
+    min_speech_ms: endpointing.min_speech_ms,
+    max_utterance_ms: endpointing.max_utterance_ms,
   };
   try {
     await invoke("save_runtime_settings", { config });

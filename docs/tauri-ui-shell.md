@@ -138,11 +138,13 @@ stack; the UI is a thin caller of the same Rust provider.
 ## What is live (connected)
 
 - `Start Listening` spawns a background thread that captures audio
-  from the default microphone, chunks it using the requested chunk
-  size, classifies each chunk with the requested threshold, and
-  transcribes speech-like chunks through the selected provider.
+  from the default microphone in the requested window, classifies each
+  window with the requested threshold, groups windows into utterances
+  with the endpointing settings, and transcribes each finished utterance
+  through the selected provider.
 - Settings panel: provider / source language / target language /
-  chunk duration / volume threshold are populated from
+  chunk duration / volume threshold / pause before closing / minimum
+  speech / maximum utterance are populated from
   `tardis::app::config::AppRuntimeConfig::default()` on first load
   **or** from the previously-saved
   `<OS config dir>/tardis/runtime.json` (via
@@ -169,8 +171,11 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
 | `transcription_provider` | `"mock-local"` | one of [`tardis::app::config::supported_transcription_providers`] | selects the file-based transcription backend |
 | `source_language` | `"en"` | non-empty | BCP-47-ish source code piped to the translator |
 | `target_language` | `"es"` | non-empty | BCP-47-ish target code piped to the translator |
-| `chunk_duration_ms` | `1000` | `[250, 5000]` | per-chunk window for the live pipeline |
+| `chunk_duration_ms` | `1000` | `[250, 5000]` | capture window the live runner drains; also the endpointing frame |
 | `volume_threshold` | `0.01` | `[0.0, 1.0]` | silence/speech threshold (same scale as `audio::volume::calculate_average_volume`) |
+| `hangover_ms` | `400` | `[0, 5000]` | pause tolerated inside one utterance before it closes |
+| `min_speech_ms` | `200` | `[0, 5000]` | shorter bursts are discarded: no transcript, no provider call |
+| `max_utterance_ms` | `15000` | `(0, 60000]`, at least `min_speech_ms` | burst cap: a speaker who never pauses is flushed at this length |
 
 ### Manual test: `mock-local` provider (default, no Docker)
 
@@ -179,7 +184,8 @@ and consumed by `tardis::transcription::live_local::run_live_local_transcription
 3. Check `source_language` = `en` and `target_language` = `es`.
 4. Click **Start Listening**. The status pill flips to `Listening`.
 5. Speak into the default microphone. The transcript panel shows
-   `mock transcript for live_chunk_NNN.wav` per chunk; the
+   `mock transcript for live_utterance_NNN.wav` once per utterance
+   (one line per finished turn, not per capture window); the
    translation panel shows the deterministic mock translation.
 6. Click **Stop**. The status pill flips to `Stopped`, and the next
    Start works without re-launching the shell.
