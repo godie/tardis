@@ -49,14 +49,19 @@ use anyhow::{Context, Result};
 
 use crate::app::config::AppRuntimeConfig;
 use crate::app::events::{AppEvent, AppStatus, format_app_event_for_console};
-use crate::app::live_events::{build_error_event, build_output_event, build_transcript_event};
+use crate::app::live_events::{
+    build_error_event, build_output_event, build_speech_event, build_transcript_event,
+};
 use crate::audio::activity;
 use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
+use crate::audio::gate::HalfDuplexGate;
+use crate::audio::player::{MockPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::processor::processor::ProcessMode;
 use crate::processor::{DEFAULT_PROCESSOR_NAME, build_processor};
+use crate::synthesis::{MockSynthesizer, Speech, Synthesizer, chunk_duration_ms};
 use crate::transcription;
 
 // ===== Pure helpers (unit-tested) ========================================
@@ -182,6 +187,12 @@ where
         source_language: config.source_language.clone(),
         target_language: config.target_language.clone(),
     };
+    let synthesizer = MockSynthesizer::new();
+    let mut player = MockPlayer::new();
+    let mut gate = HalfDuplexGate::with_default_tail();
+    // Duration of one drained/captured frame batch, for the gate's tail.
+    let captured_ms = chunk_size as u64 * 1_000 / (sample_rate as u64 * channels as u64);
+    let target_lang = config.target_language.clone();
     let has_stop_signal = should_stop.is_some();
 
     loop {
@@ -259,6 +270,10 @@ where
                     // language pair reaches the translation panel,
                     // not the hardcoded en/es.
                     if let Some(output) = processor.process(&text, &process_mode) {
+                        // The rendered text is both the UI payload and the
+                        // thing to speak, so keep a copy before the event
+                        // takes ownership of it.
+                        let spoken_text = output.text.clone();
                         on_event(build_output_event(
                             chunk_index,
                             output.kind,
@@ -268,6 +283,42 @@ where
                             output.target_language,
                             output.is_final,
                         ));
+
+                        // Synthesize + speak. `None` from synthesis means
+                        // "nothing to say": emit no speech event and do not
+                        // touch the player, so silence never reaches the
+                        // wire as a zero-length utterance.
+                        let speech = Speech {
+                            text: spoken_text,
+                            language: target_lang.clone(),
+                        };
+                        if let Some(chunk) = synthesizer.synthesize(&speech) {
+                            let duration_ms = chunk_duration_ms(&chunk);
+                            on_event(build_speech_event(
+                                chunk_index,
+                                speech.text,
+                                speech.language,
+                                duration_ms,
+                                chunk.is_final,
+                            ));
+
+                            // Half duplex: stop listening while we speak,
+                            // then drop the buffered playback audio and the
+                            // reverb tail so the pipeline cannot transcribe
+                            // its own voice.
+                            gate.begin_speaking();
+                            let playback = player.play_chunk(&chunk);
+                            gate.end_speaking();
+                            discard_blocked_capture(&mic, chunk_size, tick, captured_ms, &mut gate);
+
+                            // A playback failure must not kill the session:
+                            // report it and keep transcribing.
+                            if let Err(e) = playback {
+                                on_event(build_error_event(format!(
+                                    "[chunk {chunk_index}] playback error: {e}"
+                                )));
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -294,12 +345,44 @@ where
 
     // Emit the final event: capture has stopped.
     on_event(AppEvent::StatusChanged(AppStatus::Stopped));
-    println!("\nLive local transcription finished. {chunk_index} chunks processed.");
+    println!(
+        "\nLive local transcription finished. {chunk_index} chunks processed, {} spoken ({} ms, mock player).",
+        player.played_count(),
+        player.played_duration_ms(),
+    );
 
     // Clean up the output directory if empty.
     let _ = fs::remove_dir(output_dir);
 
     Ok(())
+}
+
+/// Drop captured audio until the gate allows draining again.
+///
+/// Runs **after** playback returned (`end_speaking`), so the `speaking`
+/// flag is already false and only the reverb tail keeps the gate closed.
+/// Everything the ring buffer collected during playback is drained here
+/// and thrown away — that is the "clear the buffer on end_speaking" half
+/// of the half-duplex rule; the pure decision lives in
+/// [`crate::audio::gate::HalfDuplexGate::drain_allowed`].
+fn discard_blocked_capture(
+    mic: &MicInput,
+    chunk_size: usize,
+    tick: Duration,
+    captured_ms: u64,
+    gate: &mut HalfDuplexGate,
+) {
+    while !gate.drain_allowed() {
+        if mic.next_chunk(chunk_size).is_some() {
+            gate.advance(captured_ms);
+        } else {
+            // Nothing buffered: wait one tick and let the tail elapse.
+            // `captured_ms` is 0 for a degenerate config, so fall back to
+            // the tick length to guarantee progress.
+            thread::sleep(tick);
+            gate.advance(captured_ms.max(tick.as_millis() as u64));
+        }
+    }
 }
 
 /// Back-compat wrapper around

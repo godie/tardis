@@ -4,7 +4,7 @@ TARDIS has four working surfaces:
 
 - A Rust CLI for audio capture and chunking
 - A file-based transcription provider backed by self-hosted `faster-whisper`
-- A mock process stage that carries each transcript through to an output line (translate mode)
+- A mock process stage that carries each transcript through to an output line (translate mode) and, from PR 2, a mock synthesize/play loop
 - A Tauri desktop shell that runs the same backend
 
 The roadmap tracks what exists and the shortest path to a usable desktop product.
@@ -21,7 +21,8 @@ What exists:
 - `transcription::LocalTranscriptionProvider` is the real backend contract (file in, text out): `LocalWhisperClient` (Docker `faster-whisper`) and `MockLocalProvider` implement it, and the live runner selects between them through `ProviderKind` / `build_provider`.
 - `transcription::transcriber::Transcriber` exists for in-process `&[f32]` chunk processing; today only `MockTranscriber` implements it and it drives the mock pipelines (`mock-transcribe*`, `mock-translate`).
 - `processor::*` carries the process stage: `Processor` returns `Option<Output>` (translate today, respond later), `build_processor` dispatches, and `MockProcessor` is the deterministic default.
-- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockProcessor` without CPAL/Docker/fs. Pure-logic coverage (`config` 36, `events` 23, `state` 12, `service` 15) totals 86 unit tests.
+- `synthesis::*` + `audio::player` complete the loop with `Synthesizer` / `Player` contracts and deterministic mocks; `AppEvent::Speech` reports the rendered duration.
+- `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockProcessor` without CPAL/Docker/fs; `cargo run -- mock-voice-flow` runs the same stages through the `Speech` event. Pure-logic coverage (`config` 36, `events` 26, `state` 12, `service` 15) totals 89 unit tests.
 - Provider selection is surfaced end to end: `transcription_provider` on `AppRuntimeConfig` (default `mock-local`, validated against `ProviderKind`), `#provider-select` built from `get_supported_transcription_providers`, and `--provider <name>` on the CLI.
 
 Gaps:

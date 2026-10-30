@@ -7,6 +7,7 @@ const statusIndicator = document.querySelector("#status-indicator");
 const statusAnnouncer = document.querySelector("#status-announcer");
 const transcriptPanel = document.querySelector("#transcript-content");
 const translationPanel = document.querySelector("#translation-content");
+const speechStatus = document.querySelector("#speech-status");
 const liveError = document.querySelector("#live-error");
 const startButton = document.querySelector("#start-button");
 const stopButton = document.querySelector("#stop-button");
@@ -88,6 +89,24 @@ function appendTranscript(text) {
 function appendTranslation(text) {
   translationPanel.textContent = text;
   translationPanel.classList.remove("muted");
+}
+
+// The speech line reports what the backend rendered and asked the
+// player to speak. `duration_ms` comes from the same pure helper the
+// CLI prints, so both surfaces agree to the millisecond.
+function showSpokenAudio(text, language, durationMs) {
+  if (!speechStatus || !text) return;
+  const seconds = (Number(durationMs) / 1000).toFixed(1);
+  speechStatus.textContent = `Spoken · ${seconds} s · ${language} — ${text}`;
+  speechStatus.dataset.state = "spoken";
+  speechStatus.hidden = false;
+}
+
+function clearSpokenAudio() {
+  if (!speechStatus) return;
+  speechStatus.hidden = true;
+  speechStatus.textContent = "Spoken audio appears here once a chunk is synthesized.";
+  delete speechStatus.dataset.state;
 }
 
 // ===== Live transcription via Tauri events ================================
@@ -174,6 +193,9 @@ async function startLiveTranscription() {
   isStopping = false;
   setStatus("Starting\u2026");
   setLiveError("");
+  // A new session starts with no spoken line: the previous run's
+  // duration would otherwise look like it belongs to this session.
+  clearSpokenAudio();
 
   // Build a single AppRuntimeConfig-shaped object from the settings panel.
   const config = {
@@ -274,6 +296,10 @@ function setupEventListener() {
         if (payload.text) {
           appendTranslation(payload.text);
         }
+        break;
+      }
+      case "speech": {
+        showSpokenAudio(payload.text, payload.target_language, payload.duration_ms);
         break;
       }
       case "error": {
