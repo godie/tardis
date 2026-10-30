@@ -117,16 +117,23 @@ if (sourceLanguage) {
 // would quietly start a session with a zero chunk window. Reject instead
 // of guessing, and mark the field so the problem is visible.
 //
-function readNumberInput(input, label) {
+// `integer` mirrors the backend type: `chunk_duration_ms` deserializes as
+// a Rust `u64`, so 250.5 passes a range check and then fails to
+// deserialize the whole config. The step attribute does not catch it:
+// `valueAsNumber` keeps the fraction.
+function readNumberInput(input, label, { integer = false } = {}) {
   const min = Number(input.min);
   const max = Number(input.max);
   const value = input.valueAsNumber;
-  if (input.value.trim() === "" || !Number.isFinite(value) || value < min || value > max) {
+  const outOfRange =
+    input.value.trim() === "" || !Number.isFinite(value) || value < min || value > max;
+  if (outOfRange || (integer && !Number.isInteger(value))) {
     input.setAttribute("aria-invalid", "true");
     const decimals = input.step.includes(".") ? " (use a dot for decimals)" : "";
+    const kind = integer ? "a whole number" : "a number";
     return {
       ok: false,
-      message: `${label} must be a number from ${min} to ${max}${decimals}.`,
+      message: `${label} must be ${kind} from ${min} to ${max}${decimals}.`,
     };
   }
   input.removeAttribute("aria-invalid");
@@ -154,7 +161,7 @@ async function startLiveTranscription() {
   // two backend runners; the isListening flag alone lands too late.
   if (isListening || isStarting || isStopping) return;
 
-  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
   const problem = [chunk, threshold].find((result) => !result.ok);
   if (problem) {
@@ -379,7 +386,7 @@ async function saveCurrentSettings() {
   // Persisting an out-of-range or empty box would store a config the
   // backend rejects on the next start; keep the last good values on disk
   // and let the field stay as the user typed it.
-  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
   if (!chunk.ok || !threshold.ok) {
     log("skipping settings save:", (chunk.ok ? threshold : chunk).message);
