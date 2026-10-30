@@ -78,11 +78,21 @@ cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
 cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
 cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
 cargo run -- mock-voice-flow                         # five-stage mock loop: transcript -> translation -> speech -> play (no mic, no Docker, no TTS)
-cargo run -- live-local-transcribe                    # 10 s, chunk-by-chunk live transcription via AppEvents (default mock-local)
+cargo run -- utterance-test                          # endpointing state machine over a synthetic frame pattern (no mic)
+cargo run -- live-local-transcribe                    # 10 s, utterance-by-utterance live transcription via AppEvents (default mock-local)
 cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
 cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription + runtime settings
 cargo test --manifest-path src-tauri/Cargo.toml       # 28 Tauri shell unit tests (pure helpers + LiveSessionState + SessionCleanupGuard)
+npm run test:e2e                                     # Playwright specs in ui/tests (fake __TAURI__ bridge, real ui/ assets)
 ```
+
+The Playwright suite covers the shell's frontend lifecycle (Start sends a full
+`AppRuntimeConfig`, the panel locks, Stop releases on the `stopped` event,
+`transcript` / `output` / `speech` payloads render). It injects a fake
+`window.__TAURI__` bridge, so the Rust commands and the real window stay
+manual: `tauri-driver` does not support macOS. Add a spec on `ui/tests/` when
+the frontend gains a state transition worth asserting; do not assert on pixel
+layout.
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
 permission, and disk I/O. Unit tests never touch these. Always run

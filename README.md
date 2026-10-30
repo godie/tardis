@@ -68,7 +68,9 @@ Run once per fresh checkout.
    npm run test:e2e
    ```
 
-> **Note**: there are no Playwright specs yet, so step 4 exits 0 thanks to the `--pass-with-no-tests` flag the `test:e2e` script carries; drop the flag (or move it into a future `playwright.config.js` as `passWithNoTests: true`) on the first PR that lands specs.
+The suite lives in [`ui/tests/`](ui/tests) and is configured by [`playwright.config.js`](playwright.config.js), which serves `ui/` over plain HTTP with `ui/tests/serve.mjs` (no dependencies, nothing written to disk). `session.spec.js` starts and stops a session and asserts the lifecycle the shell owns: the full `AppRuntimeConfig` is sent on Start (endpointing fields included), the settings panel locks for the duration, Stop only releases it once the backend reports `stopped`, the `transcript` / `output` / `speech` payloads land in their panels, a double Start does not spawn two sessions, and an impossible endpointing pair is rejected before reaching the backend.
+
+> **Scope**: the tests inject a fake `window.__TAURI__` bridge before the page scripts run, so they exercise the real `ui/` HTML/CSS/JS, not the Rust commands. The window itself is not automated because `tauri-driver` does not support macOS; the Rust side is covered by `cargo test --manifest-path src-tauri/Cargo.toml` and the manual flow in [`docs/tauri-ui-shell.md`](docs/tauri-ui-shell.md).
 
 ### Run the desktop UI (Tauri)
 
