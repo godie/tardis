@@ -63,6 +63,7 @@ go-ahead.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
+cargo clippy --all-targets -- -D warnings            # lints, same gate CI runs
 cargo test                                           # 258 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
@@ -84,7 +85,7 @@ cargo test --manifest-path src-tauri/Cargo.toml       # 28 Tauri shell unit test
 
 `cargo run -- <mode>` is the only way to exercise CPAL glue, mic
 permission, and disk I/O. Unit tests never touch these. Always run
-`cargo check && cargo test` before asking the user to commit.
+`cargo check && cargo clippy --all-targets -- -D warnings && cargo test` before asking the user to commit.
 
 ## File layout
 

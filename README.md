@@ -245,6 +245,8 @@ GitHub Actions runs on every pull request and on every push to `master` (the def
 | Formatting | `cargo fmt --check` |
 | Compilation | `cargo check` |
 | Tauri compilation | `cargo check --manifest-path src-tauri/Cargo.toml` |
+| Lints | `cargo clippy --all-targets -- -D warnings` |
+| Lints (Tauri) | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` |
 | Unit tests | `cargo test` |
 
 CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mic`, `record-5s`, etc.); those remain local validation only. CPAL streams, microphones, Docker providers, and Tauri runtime are not exercised in CI.
