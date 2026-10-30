@@ -10,6 +10,8 @@
 //! Tests live in `#[cfg(test)] mod tests` per AGENTS.md
 //! conventions; the helpers here are pure (no I/O, no CPAL).
 
+use crate::processor::processor::OutputKind;
+
 /// Coarse-grained lifecycle state of the app.
 ///
 /// `Stopped` and `Error` are terminal sinks; `Idle` and
@@ -65,14 +67,14 @@ pub fn is_terminal_status(status: AppStatus) -> bool {
 
 /// Pure helper: stable kind tag for an [`AppEvent`] variant.
 ///
-/// Returns one of `"status"`, `"transcript"`, `"translation"`,
-/// or `"error"`. Useful for prefixing console output without
-/// matching on every variant at every call site.
+/// Returns one of `"status"`, `"transcript"`, `"output"`,
+/// or `"error"`. Useful for prefixing console output
+/// without matching on every variant at every call site.
 pub fn app_event_kind(event: &AppEvent) -> &'static str {
     match event {
         AppEvent::StatusChanged(_) => "status",
         AppEvent::Transcript(_) => "transcript",
-        AppEvent::Translation(_) => "translation",
+        AppEvent::Output(_) => "output",
         AppEvent::Error(_) => "error",
     }
 }
@@ -92,10 +94,14 @@ pub fn format_app_event_for_console(event: &AppEvent) -> String {
                 t.chunk_index, t.provider, t.text
             )
         }
-        AppEvent::Translation(t) => {
+        AppEvent::Output(o) => {
             format!(
-                "[chunk {}][translation {}->{}] {}",
-                t.chunk_index, t.source_language, t.target_language, t.translated_text
+                "[chunk {}][output {} {}->{}] {}",
+                o.chunk_index,
+                o.kind.as_label(),
+                o.source_language,
+                o.target_language,
+                o.text
             )
         }
         AppEvent::Error(e) => {
@@ -130,13 +136,20 @@ pub struct AppTranscriptEvent {
     pub is_final: bool,
 }
 
-/// Per-call translation event emitted after a successful
-/// [`crate::translation::Translator::translate_text`] roundtrip.
+/// Per-call output event emitted after a successful
+/// [`crate::processor::Processor::process`] roundtrip.
+///
+/// Carries [`OutputKind`] so the event layer never has to infer which mode
+/// produced the line from the language pair or from config that may have
+/// changed since.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AppTranslationEvent {
+pub struct AppOutputEvent {
     pub chunk_index: usize,
+    /// Which mode produced this line (`translate` or `respond`).
+    pub kind: OutputKind,
     pub source_text: String,
-    pub translated_text: String,
+    /// Rendered output (was `translated_text`).
+    pub text: String,
     pub source_language: String,
     pub target_language: String,
     pub is_final: bool,
@@ -159,13 +172,13 @@ pub struct AppErrorEvent {
 ///
 /// `AppState`'s mutators return a single [`AppEvent`] per call;
 /// `AppService` returns `Vec<AppEvent>` so a multi-step
-/// operation (`run_mock_text_flow`) can emit a transcript and a
-/// translation event from one invocation.
+/// operation (`run_mock_text_flow`) can emit a transcript and an
+/// output (or speech) event from one invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
     StatusChanged(AppStatus),
     Transcript(AppTranscriptEvent),
-    Translation(AppTranslationEvent),
+    Output(AppOutputEvent),
     Error(AppErrorEvent),
 }
 
@@ -251,10 +264,11 @@ mod tests {
 
     #[test]
     fn translation_events_are_comparable() {
-        let a = AppTranslationEvent {
+        let a = AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "hello".to_string(),
-            translated_text: "[mock es] mock translation: \"hello\"".to_string(),
+            text: "[mock es] mock translation: \"hello\"".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
@@ -299,10 +313,11 @@ mod tests {
             provider: "p".to_string(),
             is_final: true,
         });
-        let translation = AppEvent::Translation(AppTranslationEvent {
+        let translation = AppEvent::Output(AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "x".to_string(),
-            translated_text: "y".to_string(),
+            text: "y".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
@@ -331,15 +346,16 @@ mod tests {
 
     #[test]
     fn app_event_kind_translation() {
-        let e = AppEvent::Translation(AppTranslationEvent {
+        let e = AppEvent::Output(AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "hi".to_string(),
-            translated_text: "hola".to_string(),
+            text: "hola".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
         });
-        assert_eq!(app_event_kind(&e), "translation");
+        assert_eq!(app_event_kind(&e), "output");
     }
 
     #[test]
@@ -409,10 +425,11 @@ mod tests {
 
     #[test]
     fn format_translation_event_includes_languages() {
-        let e = AppEvent::Translation(AppTranslationEvent {
+        let e = AppEvent::Output(AppOutputEvent {
             chunk_index: 2,
+            kind: OutputKind::Translate,
             source_text: "hello".to_string(),
-            translated_text: "hola".to_string(),
+            text: "hola".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
@@ -425,11 +442,12 @@ mod tests {
     }
 
     #[test]
-    fn format_translation_event_includes_translated_text() {
-        let e = AppEvent::Translation(AppTranslationEvent {
+    fn format_translation_event_includes_text() {
+        let e = AppEvent::Output(AppOutputEvent {
             chunk_index: 1,
+            kind: OutputKind::Translate,
             source_text: "hello".to_string(),
-            translated_text: "[mock es] mock translation: \"hello\"".to_string(),
+            text: "[mock es] mock translation: \"hello\"".to_string(),
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,

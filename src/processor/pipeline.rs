@@ -4,12 +4,13 @@
 //! `chunk_duration_ms` chunks via the shared `audio::chunker` helpers,
 //! routes each chunk through a [`Transcriber`] (mock today), and,
 //! when speech is detected, forwards the resulting text through a
-//! [`Translator`] (mock today). Prints a transcript line + translation
-//! line per chunk, or a silence-skip line if no speech was detected.
+//! [`Processor`] (mock today) in [`ProcessMode::Translate`]. Prints a
+//! transcript line + output line per chunk, or a silence-skip line if no
+//! speech was detected.
 //!
-//! Both the `Transcriber` and `Translator` traits stay audio-agnostic;
-//! the capture stream comes from `audio::capture`. To swap in real impls,
-//! change only the `MockTranscriber::new(...)` / `MockTranslator::new()`
+//! Both the `Transcriber` and `Processor` traits stay audio-agnostic; the
+//! capture stream comes from `audio::capture`. To swap in real impls,
+//! change only the `MockTranscriber::new(...)` / `MockProcessor::new()`
 //! constructions at the top of `run_mock_translate_test`. The capture loop,
 //! drain loop, and print format stay the same.
 
@@ -21,18 +22,17 @@ use anyhow::Result;
 
 use crate::audio::capture::MicInput;
 use crate::config::DEFAULT_VOLUME_THRESHOLD;
+use crate::processor::MockProcessor;
+use crate::processor::processor::{ProcessMode, Processor};
 use crate::transcription::mock::MockTranscriber;
 use crate::transcription::transcriber::Transcriber;
-use crate::translation::mock::MockTranslator;
-use crate::translation::translator::Translator;
 
-/// Run the (today MockTranscriber + MockTranslator) translation
-/// pipeline for `seconds` of mic capture, splitting on
-/// `chunk_duration_ms` chunks. Each chunk is first run through the
-/// `Transcriber`; if it yields `Some(transcript)`, that text is then
-/// passed to the `Translator` and both a transcript line and a
-/// translation line are printed. Otherwise a silence-skip line is
-/// printed.
+/// Run the (today MockTranscriber + MockProcessor) translation pipeline for
+/// `seconds` of mic capture, splitting on `chunk_duration_ms` chunks. Each
+/// chunk is first run through the `Transcriber`; if it yields
+/// `Some(transcript)`, that text is then passed to the `Processor` and both
+/// a transcript line and a translation line are printed. Otherwise a
+/// silence-skip line is printed.
 pub fn run_mock_translate_test(
     seconds: u64,
     chunk_duration_ms: u64,
@@ -52,7 +52,11 @@ pub fn run_mock_translate_test(
     );
 
     let transcriber = MockTranscriber::new(DEFAULT_VOLUME_THRESHOLD);
-    let translator = MockTranslator::new();
+    let processor = MockProcessor::new();
+    let mode = ProcessMode::Translate {
+        source_language: source_language.to_string(),
+        target_language: target_language.to_string(),
+    };
 
     mic.play()?;
     println!("Capturing for {seconds} seconds...");
@@ -72,22 +76,17 @@ pub fn run_mock_translate_test(
             match transcriber.transcribe_chunk(chunk_index, &chunk) {
                 Some(result) => {
                     // MockTranscriber guarantees non-empty text and
-                    // MockTranslator only returns None for empty /
-                    // whitespace input, so a translation must exist.
+                    // MockProcessor only returns None for empty /
+                    // whitespace input, so an output must exist.
                     // If a future transcriber yields "", the panic
                     // message names the trait contract that broke.
-                    let translation = translator
-                        .translate_text(&result.text, source_language, target_language)
-                        .expect(
-                            "non-empty transcript must yield Some translation \
-                             (MockTranslator contract violated)",
-                        );
+                    let output = processor.process(&result.text, &mode).expect(
+                        "non-empty transcript must yield Some output \
+                         (MockProcessor contract violated)",
+                    );
                     translated_chunks += 1;
                     println!("[chunk {}] transcript: {}", chunk_index, result.text);
-                    println!(
-                        "[chunk {}] translation: {}",
-                        chunk_index, translation.translated_text
-                    );
+                    println!("[chunk {}] translation: {}", chunk_index, output.text);
                 }
                 None => {
                     silence_chunks += 1;

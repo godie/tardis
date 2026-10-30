@@ -2,7 +2,8 @@
 //!
 //! Exposes the audio capture / volume / activity helpers, the
 //! centralised configuration constants, and the transcription +
-//! translation abstractions that the CLI binary ([`tardis::main`])
+//! processor + synthesis abstractions that the CLI binary
+//! ([`tardis::main`])
 //! and the desktop Tauri shell
 //! (`tardis-ui-shell`) both depend on, so the same Rust logic powers
 //! both surfaces without duplication.
@@ -15,5 +16,5 @@
 pub mod app;
 pub mod audio;
 pub mod config;
+pub mod processor;
 pub mod transcription;
-pub mod translation;

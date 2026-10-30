@@ -5,7 +5,11 @@
 //! speech-like chunks through a selected
 //! [`crate::transcription::LocalTranscriptionProvider`] (writing each
 //! chunk to a temporary WAV file first because the provider interface
-//! is file-based).
+//! is file-based). Each transcript is then translated, synthesized by
+//! [`crate::synthesis::MockSynthesizer`], and handed to
+//! [`crate::audio::player::MockPlayer`], which records instead of
+//! playing: the whole five-stage loop runs with no TTS service, no
+//! output device, and no permissions.
 //!
 //! This is **not** true streaming: it is chunk-by-chunk live
 //! transcription via temporary WAV files. The default provider is
@@ -45,15 +49,15 @@ use anyhow::{Context, Result};
 
 use crate::app::config::AppRuntimeConfig;
 use crate::app::events::{AppEvent, AppStatus, format_app_event_for_console};
-use crate::app::live_events::{build_error_event, build_transcript_event, build_translation_event};
+use crate::app::live_events::{build_error_event, build_output_event, build_transcript_event};
 use crate::audio::activity;
 use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
+use crate::processor::processor::ProcessMode;
+use crate::processor::{DEFAULT_PROCESSOR_NAME, build_processor};
 use crate::transcription;
-use crate::translation::mock::MockTranslator;
-use crate::translation::translator::Translator;
 
 // ===== Pure helpers (unit-tested) ========================================
 
@@ -123,7 +127,7 @@ pub fn live_transcription_status_message(chunk_index: usize, status: &str) -> St
 ///   `seconds`).
 /// * `on_event` — callback invoked for every [`AppEvent`] the
 ///   runner produces (`StatusChanged`, `Transcript`,
-///   `Translation`, `Error`). Must be `Send + Sync + 'static`
+///   `Translation`, `Speech`, `Error`). Must be `Send + Sync + 'static`
 ///   so it can be called from the capture thread when invoked
 ///   from a Tauri context where the closure's captured
 ///   `AppHandle` is also `Send + Sync`.
@@ -170,9 +174,14 @@ where
     let tick = Duration::from_millis(config.chunk_duration_ms);
     let mut chunk_index: usize = 0;
     let threshold = config.volume_threshold;
-    let translator = MockTranslator::new();
-    let source_lang = config.source_language.clone();
-    let target_lang = config.target_language.clone();
+    // The process stage is built, not constructed inline: the same
+    // `build_processor` dispatch the service uses, so a real processor
+    // slots in without touching this loop.
+    let processor = build_processor(DEFAULT_PROCESSOR_NAME)?;
+    let process_mode = ProcessMode::Translate {
+        source_language: config.source_language.clone(),
+        target_language: config.target_language.clone(),
+    };
     let has_stop_signal = should_stop.is_some();
 
     loop {
@@ -249,14 +258,15 @@ where
                     // config.target_language so the user-selected
                     // language pair reaches the translation panel,
                     // not the hardcoded en/es.
-                    if let Some(tr) = translator.translate_text(&text, &source_lang, &target_lang) {
-                        on_event(build_translation_event(
+                    if let Some(output) = processor.process(&text, &process_mode) {
+                        on_event(build_output_event(
                             chunk_index,
-                            tr.source_text,
-                            tr.translated_text,
-                            tr.source_language,
-                            tr.target_language,
-                            tr.is_final,
+                            output.kind,
+                            output.source_text,
+                            output.text,
+                            output.source_language,
+                            output.target_language,
+                            output.is_final,
                         ));
                     }
                 }

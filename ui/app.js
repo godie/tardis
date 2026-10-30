@@ -94,6 +94,7 @@ function appendTranslation(text) {
 
 let isListening = false;
 let isStarting = false;
+let isStopping = false;
 
 const languageHint = document.querySelector("#language-hint");
 
@@ -101,7 +102,7 @@ function updateLanguageHint() {
   const source = document.querySelector("#source-language").value;
   const target = document.querySelector("#target-language").value;
   if (languageHint) {
-    languageHint.textContent = `During live transcription, translation uses ${source} \u2192 ${target}. The mock translator produces deterministic placeholder output.`;
+    languageHint.textContent = `During live transcription, the process stage renders output in ${target} from ${source}. The mock processor produces deterministic placeholder output.`;
   }
 }
 
@@ -115,16 +116,24 @@ if (sourceLanguage) {
 // of digits out of range all sanitize to "" — and Number("") is 0, which
 // would quietly start a session with a zero chunk window. Reject instead
 // of guessing, and mark the field so the problem is visible.
-function readNumberInput(input, label) {
+//
+// `integer` mirrors the backend type: `chunk_duration_ms` deserializes as
+// a Rust `u64`, so 250.5 passes a range check and then fails to
+// deserialize the whole config. The step attribute does not catch it:
+// `valueAsNumber` keeps the fraction.
+function readNumberInput(input, label, { integer = false } = {}) {
   const min = Number(input.min);
   const max = Number(input.max);
   const value = input.valueAsNumber;
-  if (input.value.trim() === "" || !Number.isFinite(value) || value < min || value > max) {
+  const outOfRange =
+    input.value.trim() === "" || !Number.isFinite(value) || value < min || value > max;
+  if (outOfRange || (integer && !Number.isInteger(value))) {
     input.setAttribute("aria-invalid", "true");
     const decimals = input.step.includes(".") ? " (use a dot for decimals)" : "";
+    const kind = integer ? "a whole number" : "a number";
     return {
       ok: false,
-      message: `${label} must be a number from ${min} to ${max}${decimals}.`,
+      message: `${label} must be ${kind} from ${min} to ${max}${decimals}.`,
     };
   }
   input.removeAttribute("aria-invalid");
@@ -150,9 +159,9 @@ function setSessionControls(running) {
 async function startLiveTranscription() {
   // A second click while the first invoke is still in flight would spawn
   // two backend runners; the isListening flag alone lands too late.
-  if (isListening || isStarting) return;
+  if (isListening || isStarting || isStopping) return;
 
-  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
   const problem = [chunk, threshold].find((result) => !result.ok);
   if (problem) {
@@ -162,6 +171,7 @@ async function startLiveTranscription() {
   }
 
   isStarting = true;
+  isStopping = false;
   setStatus("Starting\u2026");
   setLiveError("");
 
@@ -202,16 +212,23 @@ function enableSessionSettings() {
 }
 
 async function stopLiveTranscription() {
-  if (!isListening) return;
+  if (!isListening || isStopping) return;
+
+  // The command returns once the worker has the stop flag, not once it has
+  // exited, so the session is still running at this point. Keep the panel
+  // locked and `isListening` true; the "stopped" status event is what
+  // unlocks the settings and Start.
+  isStopping = true;
+  setStatus("Stopping\u2026");
 
   try {
     const msg = await invoke("stop_live_transcription");
     log("stop_live_transcription:", msg);
-    isListening = false;
-    setSessionControls(false);
+    stopButton.disabled = true;
   } catch (error) {
     // Still listening: leave the controls as they are so Stop stays
     // clickable and the user can retry.
+    isStopping = false;
     log("stop error:", error);
     setLiveError(`Failed to stop: ${error}`);
   }
@@ -240,6 +257,7 @@ function setupEventListener() {
             // Worker has fully exited; let the user adjust settings
             // before pressing Start again.
             isListening = false;
+            isStopping = false;
             setSessionControls(false);
           }
         }
@@ -252,9 +270,9 @@ function setupEventListener() {
         }
         break;
       }
-      case "translation": {
-        if (payload.translated_text) {
-          appendTranslation(payload.translated_text);
+      case "output": {
+        if (payload.text) {
+          appendTranslation(payload.text);
         }
         break;
       }
@@ -368,7 +386,7 @@ async function saveCurrentSettings() {
   // Persisting an out-of-range or empty box would store a config the
   // backend rejects on the next start; keep the last good values on disk
   // and let the field stay as the user typed it.
-  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration");
+  const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
   if (!chunk.ok || !threshold.ok) {
     log("skipping settings save:", (chunk.ok ? threshold : chunk).message);

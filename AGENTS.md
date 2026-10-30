@@ -63,7 +63,7 @@ go-ahead.
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
-cargo test                                           # 219 unit tests on the CLI workspace
+cargo test                                           # 258 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -93,7 +93,7 @@ src/
   main.rs                  # CLI dispatcher (matches on args.nth(1))
   config.rs                # centralized CLI/audio/pipeline constants
   audio/
-    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, mic, recorder, volume
+    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, gate, mic, recorder, volume
     activity.rs            # pure silence/speech-like classifier, 8 tests
     capture.rs             # shared CPAL device resolution + chunk drain (no tests)
     chunk_recorder.rs      # hound chunk saver + pure WAV helpers, 10 tests
@@ -110,12 +110,12 @@ src/
     mock.rs                # mock transcriber logic, 10 tests
     mock_local.rs          # deterministic offline provider for live dev, 5 tests
     pipeline.rs            # live CPAL transcription pipeline (no tests)
-    transcriber.rs         # transcription trait + result types
-  translation/
-    mod.rs                 # re-exports: mock, pipeline, translator
-    mock.rs                # mock translator logic, 10 tests
-    pipeline.rs            # live CPAL translation pipeline (no tests)
-    translator.rs          # translation trait + result types
+    transcriber.rs         # in-process &[f32] transcription trait + result types (mock pipelines only)
+  processor/
+    mod.rs                 # ProcessorKind + build_processor dispatch, 6 tests
+    mock.rs                # MockProcessor (MockTranslator's string, frozen), 12 tests
+    pipeline.rs            # live CPAL translate pipeline (no tests)
+    processor.rs           # Processor trait + Output / OutputKind / ProcessMode, 3 tests
   app/
     mod.rs                 # re-exports: config, events, live_events, service, settings_store, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs + console formatting, 23 tests
@@ -140,11 +140,44 @@ When you add a module, mirror an existing one above:
 When you change file structure, update `DEVELOPMENT_RULES.md`'s
 existing-coverage table in the same commit.
 
-Real transcription backends must land behind the existing
-`transcription::transcriber::Transcriber` abstraction so the audio
-capture and file-pipeline surfaces stay unchanged. `faster-whisper`,
-`whisper.cpp`, and local OpenAI Whisper are reasonable future provider
-options, but do not implement them unless the user explicitly asks.
+There are **two** transcription abstractions, and they are not
+interchangeable:
+
+- `transcription::LocalTranscriptionProvider` (`src/transcription/mod.rs`,
+  `transcribe(&self, file_path: &str) -> Result<String>`): file in, text
+  out. This is what the real backends implement — `LocalWhisperClient`
+  (`local_whisper.rs`) and `MockLocalProvider` (`mock_local.rs`) — and what
+  the live runner (`live_local.rs`) calls through `ProviderKind` /
+  `build_provider`. New HTTP/sidecar backends go here.
+- `transcription::transcriber::Transcriber` (`transcriber.rs`,
+  `transcribe_chunk(&self, chunk_index: usize, samples: &[f32]) ->
+  Option<TranscriptionResult>`): in-process sample slice, no container,
+  `None` = skip the chunk. Today only `MockTranscriber` implements it, and
+  it drives the mock pipelines (`transcription/pipeline.rs`,
+  `transcription/file_pipeline.rs`, `processor/pipeline.rs`) and the
+  `mock-transcribe*` CLI modes. It cannot express a provider that needs a
+  WAV/HTTP boundary, so do not claim real backends "land behind" it.
+
+`faster-whisper`, `whisper.cpp`, and local OpenAI Whisper are reasonable
+future provider options, but do not implement them unless the user
+explicitly asks.
+
+## Process stage: `Processor`, not `Translator`
+
+The stage between transcription and speech is `processor::processor::Processor`
+(`process(&self, text: &ProcessMode) -> Option<Output>`). Translation is one
+mode of it, not a stage of its own: respond mode answers as the host through
+the same trait. `None` is a normal outcome (empty input, or a decision rule
+that says "stay silent"), not an error.
+
+- Pick an implementation with `processor::build_processor(name)`, mirroring
+  `transcription::build_provider`. `DEFAULT_PROCESSOR_NAME` is the only place
+  the default string lives.
+- The runner builds the stage and passes it in; `AppService::with_processor`
+  is the equivalent injection point for the text-only mock flow. Do not
+  construct a concrete impl inside a loop.
+- `MockProcessor::process`'s rendered string is frozen: changing it is a
+  user-visible output change and belongs to a provider PR, not a refactor.
 
 ## UI event bridge: Tauri and backend
 

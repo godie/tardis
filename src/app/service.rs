@@ -22,10 +22,10 @@
 //! observe divergent `last_transcript` values.
 
 use super::config::{AppRuntimeConfig, validate_runtime_config};
-use super::events::{AppEvent, AppStatus, AppTranscriptEvent, AppTranslationEvent};
+use super::events::{AppEvent, AppOutputEvent, AppStatus, AppTranscriptEvent};
 use super::state::AppState;
-use crate::translation::mock::MockTranslator;
-use crate::translation::translator::Translator;
+use crate::processor::processor::{ProcessMode, Processor};
+use crate::processor::{DEFAULT_PROCESSOR_NAME, build_processor};
 
 /// `run_mock_text_flow` is not driven by CPAL chunks, so it
 /// synthesises a single transcript at chunk index `1`. Kept as
@@ -36,28 +36,56 @@ const SYNTHETIC_CHUNK_INDEX: usize = 1;
 
 /// App-facing orchestration entry point.
 ///
-/// Holds an [`AppState`] and routes pure-text flow calls through
-/// the existing [`crate::translation::mock::MockTranslator`].
+/// Holds an [`AppState`] and routes pure-text flow calls through an
+/// injected [`Processor`]. Constructing the stage is the caller's job
+/// (`new` uses the default one, `with_processor` takes an explicit one),
+/// which keeps this layer free of provider knowledge and lets tests
+/// swap the stage without touching the config surface.
 ///
-/// Derives `Debug` (so tests can use `Result::unwrap_err()`
-/// freely on the [`Self::new`] validation path) but does
-/// **not** derive `Clone`; see the module-level note on
-/// Tauri state-split risk.
-#[derive(Debug)]
+/// Implements `Debug` manually (the boxed trait object is not `Debug`)
+/// so tests can use `Result::unwrap_err()` freely on the [`Self::new`]
+/// validation path. It deliberately does **not** implement `Clone`; see
+/// the module-level note on Tauri state-split risk.
 pub struct AppService {
     state: AppState,
+    /// Process stage. The `app/` layer still owns no handle: it holds a
+    /// boxed contract whose impl owns whatever I/O it needs.
+    processor: Box<dyn Processor>,
+}
+
+impl std::fmt::Debug for AppService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppService")
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AppService {
-    /// Construct an [`AppService`] from an [`AppRuntimeConfig`].
+    /// Construct an [`AppService`] from an [`AppRuntimeConfig`], using the
+    /// default (mock) process stage.
     ///
-    /// Runs [`validate_runtime_config`] before constructing
-    /// state so any downstream consumer can rely on the config
-    /// in `state.config()` being valid.
+    /// Runs [`validate_runtime_config`] before constructing state so any
+    /// downstream consumer can rely on the config in `state.config()`
+    /// being valid.
     pub fn new(config: AppRuntimeConfig) -> Result<Self, String> {
+        let processor = build_processor(DEFAULT_PROCESSOR_NAME)
+            .map_err(|e| format!("could not build the default processor: {e}"))?;
+        Self::with_processor(config, processor)
+    }
+
+    /// Construct an [`AppService`] with an explicit process stage.
+    ///
+    /// This is the injection point PR 4 (real LLM) and the respond-mode PR
+    /// build on: same config surface, different stage.
+    pub fn with_processor(
+        config: AppRuntimeConfig,
+        processor: Box<dyn Processor>,
+    ) -> Result<Self, String> {
         validate_runtime_config(&config)?;
         Ok(Self {
             state: AppState::new(config),
+            processor,
         })
     }
 
@@ -96,16 +124,16 @@ impl AppService {
     /// 1. If `transcript_text` is empty or whitespace-only,
     ///    **silently skip**: return an empty `Vec<AppEvent>`
     ///    and leave state untouched. This mirrors
-    ///    [`MockTranslator`]'s "skip on empty" philosophy and
+    ///    [`MockProcessor`]'s "skip on empty" philosophy and
     ///    avoids forcing future UI shells to render
     ///    "empty transcript" toasts every capture tick.
     /// 2. Otherwise, build an [`AppTranscriptEvent`] with the
     ///    active provider name (from `state.config`) and store
     ///    + emit it via [`AppState::apply_transcript`].
     /// 3. Route the **same `transcript_text`** through
-    ///    [`MockTranslator`] with the configured language pair;
+    ///    [`MockProcessor`] with the configured language pair;
     ///    if the translator returns a translation, store + emit
-    ///    it via [`AppState::apply_translation`].
+    ///    it via [`AppState::apply_output`].
     /// 4. Return the 1-or-2 emitted events in chronological
     ///    order (transcript first, translation second).
     ///
@@ -127,23 +155,23 @@ impl AppService {
         };
         events.push(self.state.apply_transcript(transcript_event));
 
-        // 2. Route through MockTranslator and emit translation
+        // 2. Route through the injected processor and emit the output
         //    (if any).
-        let provider = MockTranslator::new();
-        if let Some(translation) = provider.translate_text(
-            transcript_text,
-            &self.state.config.source_language,
-            &self.state.config.target_language,
-        ) {
-            let translation_event = AppTranslationEvent {
+        let mode = ProcessMode::Translate {
+            source_language: self.state.config.source_language.clone(),
+            target_language: self.state.config.target_language.clone(),
+        };
+        if let Some(output) = self.processor.process(transcript_text, &mode) {
+            let output_event = AppOutputEvent {
                 chunk_index: SYNTHETIC_CHUNK_INDEX,
-                source_text: translation.source_text.clone(),
-                translated_text: translation.translated_text.clone(),
-                source_language: translation.source_language.clone(),
-                target_language: translation.target_language.clone(),
-                is_final: translation.is_final,
+                kind: output.kind,
+                source_text: output.source_text.clone(),
+                text: output.text.clone(),
+                source_language: output.source_language.clone(),
+                target_language: output.target_language.clone(),
+                is_final: output.is_final,
             };
-            events.push(self.state.apply_translation(translation_event));
+            events.push(self.state.apply_output(output_event));
         }
 
         events
@@ -208,7 +236,7 @@ mod tests {
         let state = service.state();
         assert_eq!(state.status, AppStatus::Idle);
         assert!(state.last_transcript.is_none());
-        assert!(state.last_translation.is_none());
+        assert!(state.last_output.is_none());
     }
 
     // ---- start_listening_mock ----------------------------------------
@@ -249,11 +277,11 @@ mod tests {
             other => panic!("event[0] must be Transcript, got: {other:?}"),
         }
         match &events[1] {
-            AppEvent::Translation(t) => {
+            AppEvent::Output(t) => {
                 assert_eq!(t.chunk_index, SYNTHETIC_CHUNK_INDEX);
                 assert_eq!(t.source_text, "mock transcript: speech detected");
-                assert!(t.translated_text.contains("mock"));
-                assert!(t.translated_text.contains("es"));
+                assert!(t.text.contains("mock"));
+                assert!(t.text.contains("es"));
                 assert!(t.is_final);
             }
             other => panic!("event[1] must be Translation, got: {other:?}"),
@@ -268,16 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn run_mock_text_flow_updates_last_translation() {
+    fn run_mock_text_flow_updates_last_output() {
         let mut service = service_with_default_config();
         service.run_mock_text_flow("hello");
-        let last_translation = service
+        let last_output = service
             .state()
-            .last_translation
+            .last_output
             .as_deref()
-            .expect("last_translation must be set after run_mock_text_flow");
-        assert!(last_translation.contains("hello"));
-        assert!(last_translation.contains("es"));
+            .expect("last_output must be set after run_mock_text_flow");
+        assert!(last_output.contains("hello"));
+        assert!(last_output.contains("es"));
     }
 
     #[test]
@@ -290,7 +318,7 @@ mod tests {
         let mut service = AppService::new(cfg).expect("config must validate");
         let events = service.run_mock_text_flow("hello");
         let translation = match &events[1] {
-            AppEvent::Translation(t) => t,
+            AppEvent::Output(t) => t,
             other => panic!("event[1] must be Translation, got: {other:?}"),
         };
         assert_eq!(translation.source_language, "en");
@@ -325,7 +353,7 @@ mod tests {
         // State must remain untouched so the empty-input path
         // is observably a no-op.
         assert!(service.state().last_transcript.is_none());
-        assert!(service.state().last_translation.is_none());
+        assert!(service.state().last_output.is_none());
         assert_eq!(service.state().status, AppStatus::Idle);
     }
 
@@ -335,7 +363,7 @@ mod tests {
         let events = service.run_mock_text_flow("\t  \n");
         assert!(events.is_empty());
         assert!(service.state().last_transcript.is_none());
-        assert!(service.state().last_translation.is_none());
+        assert!(service.state().last_output.is_none());
     }
 
     // ---- full lifecycle through AppService ----------------------------
@@ -350,7 +378,7 @@ mod tests {
         let e2 = service.run_mock_text_flow("hello");
         assert_eq!(e2.len(), 2);
         assert!(matches!(e2[0], AppEvent::Transcript(_)));
-        assert!(matches!(e2[1], AppEvent::Translation(_)));
+        assert!(matches!(e2[1], AppEvent::Output(_)));
 
         let e3 = service.stop_listening();
         assert_eq!(e3, vec![AppEvent::StatusChanged(AppStatus::Stopped)]);

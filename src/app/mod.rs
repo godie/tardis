@@ -4,7 +4,7 @@
 //!
 //! `CLI command or Tauri command`
 //!   `-> AppService / backend orchestration layer`
-//!   `-> audio/transcription/translation modules`
+//!   `-> audio / transcription / processor / synthesis modules`
 //!   `-> AppEvent outputs`
 //!
 //! Both frontends consume the layer today. The mock flows go through
