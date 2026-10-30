@@ -18,7 +18,7 @@ use crate::app::events::AppEvent;
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct UiAppEvent {
     /// Always present: `"status"`, `"transcript"`, `"output"`,
-    /// or `"error"`.
+    /// `"speech"`, or `"error"`.
     pub kind: String,
     /// Present for `status` events: `"listening"`, `"stopped"`,
     /// `"idle"`, or `"error"`.
@@ -30,13 +30,13 @@ pub struct UiAppEvent {
     /// Present for `transcript` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Present for `transcript` and `output` events.
+    /// Present for `transcript`, `output` and `speech` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Present for `translation` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_language: Option<String>,
-    /// Present for `output` events.
+    /// Present for `output` / `speech` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_language: Option<String>,
     /// Present for `output` events: which mode produced the line
@@ -49,6 +49,10 @@ pub struct UiAppEvent {
     /// Present for `transcript` and `translation` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_final: Option<bool>,
+    /// Present for `speech` events: rendered audio length in
+    /// milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// Convert a backend [`AppEvent`] into a serializable
@@ -68,6 +72,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             output_kind: None,
             message: None,
             is_final: None,
+            duration_ms: None,
         },
         AppEvent::Transcript(t) => UiAppEvent {
             kind: "transcript".to_string(),
@@ -80,6 +85,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             output_kind: None,
             message: None,
             is_final: Some(t.is_final),
+            duration_ms: None,
         },
         AppEvent::Output(o) => UiAppEvent {
             kind: "output".to_string(),
@@ -92,6 +98,23 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             output_kind: Some(o.kind.as_label().to_string()),
             message: None,
             is_final: Some(o.is_final),
+            duration_ms: None,
+        },
+        AppEvent::Speech(s) => UiAppEvent {
+            kind: "speech".to_string(),
+            status: None,
+            chunk_index: Some(s.chunk_index),
+            provider: None,
+            text: Some(s.text.clone()),
+            source_language: None,
+            // `target_language` carries the spoken language so the
+            // frontend can reuse the same field it already reads for
+            // output events.
+            target_language: Some(s.language.clone()),
+            output_kind: None,
+            message: None,
+            is_final: Some(s.is_final),
+            duration_ms: Some(s.duration_ms),
         },
         AppEvent::Error(e) => UiAppEvent {
             kind: "error".to_string(),
@@ -104,6 +127,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             output_kind: None,
             message: Some(e.message.clone()),
             is_final: None,
+            duration_ms: None,
         },
     }
 }
@@ -113,7 +137,9 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::events::{AppErrorEvent, AppOutputEvent, AppStatus, AppTranscriptEvent};
+    use crate::app::events::{
+        AppErrorEvent, AppOutputEvent, AppSpeechEvent, AppStatus, AppTranscriptEvent,
+    };
     use crate::processor::processor::OutputKind;
 
     // ---- app_event_to_ui_event -----------------------------------------
@@ -183,6 +209,45 @@ mod tests {
         assert!(ui.status.is_none());
         assert!(ui.text.is_none());
         assert!(ui.chunk_index.is_none());
+    }
+
+    #[test]
+    fn speech_event_maps_text_language_and_duration() {
+        let e = AppEvent::Speech(AppSpeechEvent {
+            chunk_index: 2,
+            text: "hola".to_string(),
+            language: "es".to_string(),
+            duration_ms: 1_240,
+            is_final: true,
+        });
+        let ui = app_event_to_ui_event(&e);
+        assert_eq!(ui.kind, "speech");
+        assert_eq!(ui.chunk_index, Some(2));
+        assert_eq!(ui.text.as_deref(), Some("hola"));
+        assert_eq!(ui.target_language.as_deref(), Some("es"));
+        assert_eq!(ui.duration_ms, Some(1_240));
+        assert_eq!(ui.is_final, Some(true));
+        // Non-applicable fields are None.
+        assert!(ui.provider.is_none());
+        assert!(ui.source_language.is_none());
+        assert!(ui.output_kind.is_none());
+        assert!(ui.message.is_none());
+    }
+
+    #[test]
+    fn speech_event_json_has_no_translation_fields() {
+        let e = AppEvent::Speech(AppSpeechEvent {
+            chunk_index: 1,
+            text: "hola".to_string(),
+            language: "es".to_string(),
+            duration_ms: 60,
+            is_final: true,
+        });
+        let json = serde_json::to_string(&app_event_to_ui_event(&e)).expect("must serialize");
+        assert!(json.contains(r#""kind":"speech""#));
+        assert!(json.contains(r#""duration_ms":60"#));
+        assert!(!json.contains("output_kind"));
+        assert!(!json.contains("provider"));
     }
 
     #[test]

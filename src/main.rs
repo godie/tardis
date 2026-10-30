@@ -16,6 +16,7 @@
 //!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
 //!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
 //!   cargo run -- app-mock-flow                              -> exercise the mock AppService flow end-to-end (no mic, no Docker)
+//!   cargo run -- mock-voice-flow                            -> full five-stage mock loop: transcript -> translation -> speech -> play (no mic, no Docker, no TTS)
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
@@ -28,14 +29,21 @@ use std::time::{Duration, Instant};
 use tardis::{
     app::{
         config::AppRuntimeConfig,
-        events::{AppEvent, status_label},
+        events::{AppEvent, format_app_event_for_console, status_label},
+        live_events::{build_output_event, build_speech_event, build_transcript_event},
         service::AppService,
         settings_store,
     },
-    audio, config, processor, transcription,
+    audio,
+    audio::player::{MockPlayer, Player},
+    config, processor,
+    processor::processor::ProcessMode,
+    processor::{DEFAULT_PROCESSOR_NAME, build_processor},
+    synthesis::{MockSynthesizer, Speech, Synthesizer, chunk_duration_ms},
+    transcription,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::StreamTrait;
 
 fn main() -> Result<()> {
@@ -53,12 +61,13 @@ fn main() -> Result<()> {
         Some("local-transcribe-file") => run_local_transcribe_file(),
         Some("live-local-transcribe") => run_live_local_transcribe(),
         Some("app-mock-flow") => run_app_mock_flow(),
+        Some("mock-voice-flow") => run_mock_voice_flow(),
         Some("settings-default") => run_settings_default(),
         Some("settings-validate") => run_settings_validate(),
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- mock-voice-flow | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -222,6 +231,104 @@ fn run_app_mock_flow() -> Result<()> {
     println!("final status:     {}", status_label(state.status));
     println!("last_transcript:  {:?}", state.last_transcript);
     println!("last_output: {:?}", state.last_output);
+    println!("\n=== done ===");
+    Ok(())
+}
+
+/// Manual smoke test for the full five-stage mock loop:
+/// transcript -> translation -> synthesis -> playback.
+///
+/// What it does:
+/// 1. Takes the canonical mock phrase as the transcript (the capture
+///    and transcribe stages collapse into that literal; both real
+///    stages are exercised by their own modes).
+/// 2. Runs it through [`MockProcessor`] with the default language
+///    pair from [`AppRuntimeConfig::default`].
+/// 3. Synthesizes the rendered text with [`MockSynthesizer`] and hands
+///    the chunk to [`MockPlayer`], which records instead of playing.
+/// 4. Prints one console line per event, using the same
+///    [`format_app_event_for_console`] the live pipeline uses.
+///
+/// What it deliberately does **not** do: open the microphone, reach
+/// Docker, call a TTS service, or make a sound. It is the cheapest way
+/// to confirm the stage contracts line up (`speech` event included)
+/// on a machine with no audio hardware at all.
+fn run_mock_voice_flow() -> Result<()> {
+    println!("=== mock-voice-flow (five-stage mock loop: text -> speech) ===\n");
+
+    let config = AppRuntimeConfig::default();
+    let transcript_text = "mock transcript: speech detected";
+
+    let processor = build_processor(DEFAULT_PROCESSOR_NAME)?;
+    let mode = ProcessMode::Translate {
+        source_language: config.source_language.clone(),
+        target_language: config.target_language.clone(),
+    };
+    let synthesizer = MockSynthesizer::new();
+    let mut player = MockPlayer::new();
+    let mut events: Vec<AppEvent> = Vec::with_capacity(3);
+
+    // 1. Transcript (capture + transcribe).
+    events.push(build_transcript_event(
+        1,
+        transcript_text.to_string(),
+        config.transcription_provider.clone(),
+        true,
+    ));
+
+    // 2. Process (translate mode; `build_processor` dispatch).
+    let output = processor
+        .process(transcript_text, &mode)
+        .ok_or_else(|| anyhow!("mock processor returned no output for a non-empty transcript"))?;
+    let spoken_text = output.text.clone();
+    events.push(build_output_event(
+        1,
+        output.kind,
+        output.source_text,
+        output.text,
+        output.source_language,
+        output.target_language,
+        output.is_final,
+    ));
+
+    // 3. Synthesize + 4. play. Synthesis returning `None` is a normal
+    //    "nothing to say"; for the canonical phrase it must not happen,
+    //    so treat it as a contract violation here.
+    let speech = Speech {
+        text: spoken_text,
+        language: config.target_language.clone(),
+    };
+    let chunk = synthesizer
+        .synthesize(&speech)
+        .ok_or_else(|| anyhow!("mock synthesizer returned no audio for non-empty speech"))?;
+    let duration_ms = chunk_duration_ms(&chunk);
+    player
+        .play_chunk(&chunk)
+        .context("mock player failed to accept the chunk")?;
+    events.push(build_speech_event(
+        1,
+        speech.text,
+        speech.language,
+        duration_ms,
+        chunk.is_final,
+    ));
+
+    println!();
+    for event in &events {
+        println!("{}", format_app_event_for_console(event));
+    }
+
+    println!("\n=== summary ===");
+    println!("provider:  {}", config.transcription_provider);
+    println!(
+        "languages: {} -> {}",
+        config.source_language, config.target_language
+    );
+    println!(
+        "spoken:    {} chunk(s), {} ms via mock player (nothing audible)",
+        player.played_count(),
+        player.played_duration_ms(),
+    );
     println!("\n=== done ===");
     Ok(())
 }
