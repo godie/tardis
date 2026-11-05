@@ -12,7 +12,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, capture window, volume threshold, utterance boundaries) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
-- `cargo test` runs 361 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 38 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
+- `cargo test` covers the pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
 
 ## Stack
 

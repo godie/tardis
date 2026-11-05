@@ -17,8 +17,15 @@ boundary cases, the equality edges, and any clamping/saturation behaviour
 relevant to the float math. Tests run via `cargo test`.
 
 If a behaviour is hard to test in isolation, factor it into a pure helper
-and test that. Leave the impure glue (`build_input_stream`, file IO,
-mutex-wrapped shared buffers) for manual checks.
+and test that. Leave the hardware glue (`build_input_stream`, microphone
+permission, mutex-wrapped audio buffers) for manual checks. File I/O is not
+exempt: when it owns logic worth pinning, test it against a temp directory,
+as `settings_store` and the Tauri history writer do.
+
+f32 boundaries are the trap in this codebase. Assert on exact values, not on
+accumulations: `vec![0.01_f32; 1000]` sums slightly above `0.01` because of
+rounding drift and takes the wrong branch. Use a single-sample slab, as
+`transcription::mock::tests::volume_equal_to_threshold_returns_none` does.
 
 ### 2. Never unit test CPAL, real microphones, permissions, or physical devices
 
@@ -36,6 +43,24 @@ update the mode docs at the top of that file, and update the table below.
 Modes exit on their own (a fixed window + drain) and must clean up CPAL
 streams on exit so they can be re-run.
 
+## Validation matrix
+
+Run the row for every area the change touches. A change that spans areas runs
+every matching row. Green here is the price of asking the user to commit.
+
+| Area touched | Gate |
+| --- | --- |
+| Rust library or CLI (`src/`) | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` |
+| Tauri crate (`src-tauri/`) | the `src/` row, plus `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` |
+| Frontend (`ui/`, including `ui/tests/`) | the `src-tauri/` row, plus `npm run test:e2e` |
+| CPAL, Docker, or a real model | the rows above, plus the manual `cargo run -- <mode>` named in that module's row below. Unit tests never cover this. |
+| Docs only (`*.md`) | none. Check that the links and command names still resolve. |
+
+Record the numbers in the PR body, next to the command that produced them.
+Keep them out of docs and source comments, where they drift within a week.
+Only when the change touches code or tests: a docs-only PR has nothing to
+count.
+
 ## Existing coverage
 
 The modules below follow this split. When you add a new module,
@@ -47,7 +72,7 @@ mirror one of these rows.
 | `audio::volume` (avg / threshold / i16 / u16) | `tests` in `src/audio/volume.rs` | `cargo run -- mic`, `mic-5s` |
 | `audio::activity` (silence vs speech-like classification) | `tests` in `src/audio/activity.rs` | `cargo run -- mic`, `mock-transcribe`, `mock-translate`, `mock-transcribe-file output/chunks/chunk_001.wav` |
 | `audio::chunker` (chunk-size + zero-size guard + drain helpers) | `tests` in `src/audio/chunker.rs` | `cargo run -- chunk-test` |
-| `audio::capture` (`DefaultInput` + `MicInput`: device resolution, f32 stream, chunk drain) | n/a (CPAL + hardware) | every capture mode: `chunk-test`, `record-5s`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe` |
+| `audio::capture` (device resolution, `mono_mix_weights` energy-based downmix, chunk drain) | `mono_mix_weights` tests in `src/audio/capture.rs`; the CPAL stream itself has none | every capture mode: `chunk-test`, `record-5s`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe` |
 | `audio::chunk_recorder` (chunk filename + f32->i16 WAV helpers) | `tests` in `src/audio/chunk_recorder.rs` | `cargo run -- save-chunks-test` |
 | `audio::recorder::record_default_mic_to_wav_for_seconds` | n/a (hound + filesystem glue) | `cargo run -- record-5s` |
 | `audio::mic` (`start_default_mic_capture`: CPAL stream builder + volume logging) | n/a (CPAL + hardware) | `cargo run -- mic`, `mic-5s` |
@@ -83,7 +108,7 @@ mirror one of these rows.
 | `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `app::events` (AppEvent / AppStatus / payload structs incl. `AppSpeechEvent` / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow`, `mock-voice-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
-| `app::service` (AppService, reuses `MockTranslator`, no CPAL/Docker/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
+| `app::service` (AppService, injected `Processor`, no CPAL/Docker/HTTP/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_speech_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe`, `mock-voice-flow` |
 | `app::ui_events` (UiAppEvent + app_event_to_ui_event, incl. `speech` / `duration_ms`) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
@@ -100,9 +125,9 @@ mirror one of these rows.
 3. Wire it into `src/main.rs` as a new `cargo run -- <mode>` arm, update
    the mode docs at the top of the file, and add a matching row to the
    table above with the mode name(s) and the test location.
-4. Run `cargo check && cargo test` to confirm the new pure-helper tests
-   are wired up. Run `cargo run -- <mode>` by hand to confirm the
-   hardware glue still works end-to-end.
+4. Run the [validation matrix](#validation-matrix) for the areas you
+   touched, then `cargo run -- <mode>` by hand to confirm the hardware glue
+   still works end-to-end.
 
 ## When to refactor
 

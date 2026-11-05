@@ -111,8 +111,8 @@ work, noted per item.
 
 Verified as still accurate (no action): the CPAL 0.18 gotchas, the module
 layout table, and `ROADMAP.md` §2's "utterance-by-utterance via temporary
-WAV files, not true streaming". Test counts move with every PR; `AGENTS.md`
-and `README.md` carry the current number (305 CLI tests, 28 Tauri tests).
+WAV files, not true streaming". Test counts move with every PR, so they live
+in the PR body and not in the docs.
 
 ---
 
