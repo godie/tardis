@@ -1,4 +1,5 @@
 # TARDIS v1
+> Transcription And Real-time Dual-input Interpretation System
 
 TARDIS is a Rust-first foundation for a future desktop app that listens to audio, transcribes it, and translates it locally. Today the repository ships a working CLI audio pipeline, a file-based local transcription provider backed by `faster-whisper`, mock translation flows, and a Tauri shell that drives the same backend from a desktop UI.
 
@@ -342,6 +343,39 @@ Design constraints that shape the codebase:
 - CPAL and file I/O glue should remain small and manually verifiable.
 - Real backends should fit behind existing transcription and translation abstractions.
 - The Tauri shell should reuse the backend rather than fork its own audio pipeline.
+
+## Skills for agent workflows
+
+The PR gate in [AGENTS.md](AGENTS.md#before-opening-a-pr) calls three skills.
+All three ship in this repo under [`.opencode/skills/`](.opencode/skills/), so
+a clone is enough to run the gate:
+
+| Skill | What it does | Path |
+| --- | --- | --- |
+| `no-ai-slop` | prose pass over the PR body, commit messages and new docs | [`.opencode/skills/no-ai-slop`](.opencode/skills/no-ai-slop) |
+| `ponytail-review` | quality review of the diff: logic, safety, load, tests, dead code | [`.opencode/skills/ponytail-review`](.opencode/skills/ponytail-review) |
+| `caveman-review` | second, compressed local review; one line per finding | [`.opencode/skills/caveman-review`](.opencode/skills/caveman-review) |
+
+Nothing to install for those: OpenCode discovers
+`.opencode/skills/<name>/SKILL.md` from the repo. If the same skill is also
+installed globally, keep one copy so the two do not drift; the project copy
+wins inside this repo.
+
+Two more are per machine, not per repo:
+
+```sh
+# Qodo CLI: PR review, and the qodo-review / qodo-review-resolver skills
+curl -fsSL https://get.qodo.ai | sh
+qodo setup                    # log in and activate the skills for your agents
+qodo skills list              # confirm qodo-review is installed
+
+# The rest of ponytail (audit, debt, help, gain), if you want it
+# add to ~/.config/opencode/opencode.json:
+#   "plugin": ["@dietrichgebert/ponytail"]
+```
+
+Provenance and the update procedure for the vendored copies are in
+[`.opencode/skills/README.md`](.opencode/skills/README.md).
 
 ## Related Docs
 
