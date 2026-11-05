@@ -322,7 +322,7 @@ where
                     // A blip below `min_speech_ms` is noise: no event, no
                     // WAV, no provider call. Print once so neither the CLI
                     // nor the Tauri shell's stdout is silent about having
-                    // thrown audio away — the shell's log is where a
+                    // thrown audio away. The shell's log is where a
                     // "nothing gets transcribed" report gets debugged.
                     pending_samples.clear();
                     println!(
