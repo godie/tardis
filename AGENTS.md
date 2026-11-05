@@ -1,216 +1,192 @@
 # AGENTS.md
 
-Operational handbook for AI agents working on this repo. Sibling of
-`DEVELOPMENT_RULES.md` covers *what* to test; this file covers
-*how* to work here: build/test commands, layout, CPAL 0.18 gotchas,
-commit style, working conventions, things NOT to do.
+Operational handbook for agents working in this repo. `DEVELOPMENT_RULES.md`
+covers what to test and where coverage lives; this file covers how to work
+here: commands, layout, stage contracts, CPAL gotchas, commit style, and the
+gate before a PR.
 
-## Product direction: core pipeline first
+Scope: everything under `tardis/`, including `src-tauri/` and `ui/`. The
+roadmap and the PR-by-PR plan live in
+[`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md).
 
-TARDIS started as a real-time translator. Translation is now one
-**mode** of a general voice pipeline, not the product itself. Finish
-the core loop before adding features:
+Precedence: an explicit user request beats this file. When a rule here
+contradicts the code, the code wins: correct the rule in the same change that
+made it wrong.
+
+The stage contracts, the no-async rule, the secrets rules and the validation
+matrix are invariants. File names, module inventories and command lists are
+current detail, not doctrine. When detail and code disagree, update the detail
+instead of bending the code to match it.
+
+## Starting a session
+
+If the agent offers skills named `caveman` and `ponytail`, enable both at
+their `full` level before touching code. How that is done is agent-specific;
+use whatever command or setting that agent documents.
+
+If one of them is unavailable, note it once at the start of the session and
+continue. A missing convenience skill is not a blocker, does not belong in the
+PR report, and is not a reason to install anything.
+
+## Product direction: one loop, five stages
 
 ```
 capture audio -> transcribe -> process (LLM) -> synthesize -> play
 ```
 
-Every use case runs these same five stages. Only the `process` stage
-differs, and the difference is configuration, not a separate pipeline:
+Every use case runs the same five stages. Only `process` differs, and the
+difference is configuration, not a separate pipeline:
 
 | Mode | Prompt intent | Output language | When it acts |
 | --- | --- | --- | --- |
 | `translate` | Restate the segment in the target language, add nothing | target (differs from source) | Every speech segment |
 | `respond` | Answer as the host, using session context | same as input | Only when the decision step says so |
 
-Target shape for the code (land incrementally, each step with mocks first):
+Invariants:
 
-- **`Processor` replaces `Translator`.** `translation::translator::Translator`
-  becomes the `translate` implementation of a general `Processor` trait
-  that returns `Result<Option<Output>>`: `Ok(None)` is deliberate silence
-  (normal in `respond` mode), `Err` is a failure the runner turns into an
-  error event. Both modes share one LLM client and differ only in
-  prompt and acting rule.
-- **New stage traits: `Synthesizer` (TTS) and `Player` (audio out).**
-  Follow the `Transcriber` pattern: object-safe trait, a deterministic
-  mock, then real providers behind it (e.g. a local TTS server in
-  Docker, like `faster-whisper`). Voice cloning (KittenTTS 2) is a later
-  `Synthesizer` provider, not a core requirement.
-- **`AppRuntimeConfig` gains a `mode`:** `Translate { source, target }`
-  or `Respond { language, policy }`.
-- **`AppEvent` generalizes:** `Translation` becomes `Output`, and a
-  `Speech` event covers the synthesize/play stages.
-- **Decision step (respond mode only)** sits inside the `respond`
-  processor. Start with a deterministic rule (host named + question)
-  before any LLM classifier. Never auto-speak commitments (dates,
-  agreements, opinions); suggest them to the host instead.
-
-Core completion order:
-
-1. `Synthesizer` + `Player` mocks so the full loop runs end to end.
-2. Real LLM `Processor` in `translate` mode.
-3. Real TTS provider.
-4. `respond` mode with the minimal decision rule.
-5. System-audio capture (loopback) as a second source next to the mic,
-   and output to a virtual input device for calls.
-
-Latency becomes the constraint once the LLM and TTS stages are real.
-The current sync traits and temp-WAV chunking are fine for steps 1–2;
-move to a streaming interface between stages before step 4. Per the
-rules below, adding an async runtime still needs the user's explicit
-go-ahead.
+- **No async runtime.** The stages are synchronous and object-safe, and
+  `reqwest::blocking` is what the providers use. Adding `tokio`, `async-trait`
+  or a background executor needs the user's explicit go-ahead, in its own PR.
+- **No new provider or desktop surface without a go-ahead.** Extend the
+  existing stage traits and the existing Tauri shell; do not start a parallel
+  path.
+- **`respond` mode never speaks a commitment** (dates, money, agreements,
+  opinions). It suggests them to the host instead. Two layers enforce it:
+  classify the request, then validate the generated reply.
+- **Mocks first.** Every stage keeps a deterministic mock, so the whole loop
+  runs with no microphone, no Docker and no model. A stage that loses its mock
+  breaks the offline path: restore it, or explain why in the change or the PR
+  description.
 
 ## Build + test
 
 ```sh
 cargo check                                          # fast type-check only (no tests)
 cargo clippy --all-targets -- -D warnings            # lints, same gate CI runs
-cargo test                                           # 361 unit tests on the CLI workspace
-cargo run                                            # default = `devices`
+cargo test                                           # CLI workspace unit tests
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
-cargo run -- mic-5s                                  # capture 5 s, exit
-cargo run -- record-5s                               # write 5 s WAV to output/mic_test.wav
-cargo run -- chunk-test                              # 10 s of capture, 1 s chunks
-cargo run -- mock-transcribe                         # 10 s, mock transcript per chunk
-cargo run -- save-chunks-test                        # 10 s, save 1 s chunks to output/chunks/
-cargo run -- mock-transcribe-file output/chunks/chunk_001.wav
-                                                     # run mock transcription over a saved WAV
-cargo run -- mock-translate                          # 10 s, mock transcript + translation per chunk
-cargo run -- app-mock-flow                           # sync smoke for AppService + AppEvent stream (no mic, no Docker)
-cargo run -- mock-voice-flow                         # five-stage mock loop: transcript -> translation -> speech -> play (no mic, no Docker, no TTS)
-cargo run -- utterance-test                          # endpointing state machine over a synthetic frame pattern (no mic)
-cargo run -- live-local-transcribe                    # 10 s, utterance-by-utterance live transcription via AppEvents (default mock-local)
-cargo run -- live-local-transcribe --provider local-whisper  # same with Docker provider
-cargo run --manifest-path src-tauri/Cargo.toml        # open Tauri UI shell with live transcription + runtime settings
-cargo test --manifest-path src-tauri/Cargo.toml       # 28 Tauri shell unit tests (pure helpers + LiveSessionState + SessionCleanupGuard)
-npm run test:e2e                                     # Playwright specs in ui/tests (fake __TAURI__ bridge, real ui/ assets)
+cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]
+cargo run -- app-mock-flow                           # AppService + AppEvent smoke, no mic
+cargo run -- mock-voice-flow                         # five-stage mock loop, no mic/Docker/TTS
+cargo run -- llm-translate-text "text"               # one LLM round-trip, no mic
+cargo run --manifest-path src-tauri/Cargo.toml       # open the Tauri shell
+cargo test --manifest-path src-tauri/Cargo.toml      # Tauri command + pure-helper tests
+npm run test:e2e                                     # Playwright specs in ui/tests
 ```
+
+The full surface, including the one-shot capture modes and the settings
+helpers, is the CLI table in [`README.md#cli-modes`](README.md#cli-modes) and
+the doc header of `src/main.rs`.
+
+What to run before asking the user to commit is the
+[validation matrix](DEVELOPMENT_RULES.md#validation-matrix), keyed by the area
+you touched.
+
+Test counts belong in the PR body, as evidence of what actually ran, and
+nowhere else. In a reader-facing doc or a source comment they drift within a
+week and nobody updates them. A PR that touches no code and no tests reports
+no count: nothing ran that a number would describe.
 
 The Playwright suite covers the shell's frontend lifecycle (Start sends a full
 `AppRuntimeConfig`, the panel locks, Stop releases on the `stopped` event,
 `transcript` / `output` / `speech` payloads render). It injects a fake
 `window.__TAURI__` bridge, so the Rust commands and the real window stay
-manual: `tauri-driver` does not support macOS. Add a spec on `ui/tests/` when
-the frontend gains a state transition worth asserting; do not assert on pixel
-layout.
+manual: `tauri-driver` does not support macOS. Add a spec under `ui/tests/`
+when the frontend gains a state transition worth asserting; do not assert on
+pixel layout.
 
-`cargo run -- <mode>` is the only way to exercise CPAL glue, mic
-permission, and disk I/O. Unit tests never touch these. Always run
-`cargo check && cargo clippy --all-targets -- -D warnings && cargo test` before asking the user to commit.
+CPAL glue and microphone permission are exercised only by
+`cargo run -- <mode>`. Disk I/O is not in that bucket: path handling and
+record formatting get temp-dir tests where they own logic worth pinning.
 
 ## File layout
 
-```
-src/
-  main.rs                  # CLI dispatcher (matches on args.nth(1))
-  config.rs                # centralized CLI/audio/pipeline constants
-  audio/
-    mod.rs                 # re-exports: activity, capture, chunk_recorder, chunker, devices, endpoint, mic, player, recorder, volume
-    activity.rs            # pure silence/speech-like classifier, 8 tests
-    capture.rs             # shared CPAL device resolution + chunk drain (no tests)
-    chunk_recorder.rs      # hound chunk saver + pure WAV helpers, 10 tests
-    chunker.rs             # pure chunk-size/drain helpers + CPAL capture loop, 13 tests
-    devices.rs             # print_device_info (pure print, no tests)
-    endpoint.rs            # pure endpointing: hangover close, min-speech discard, burst cap, 20 tests
-    gate.rs                # HalfDuplexGate: discard capture while speaking + reverb tail, 9 tests
-    mic.rs                 # CPAL driver (no tests)
-    player.rs              # Player trait + MockPlayer (records, plays nothing), 6 tests
-    recorder.rs            # CPAL + hound driver (no tests)
-    volume.rs              # pure volume helpers, 14 tests
-  transcription/
-    mod.rs                 # re-exports: file_pipeline, live_local, local_whisper, mock, mock_local, pipeline, transcriber; ProviderKind + build_provider dispatch, 7 tests
-    file_pipeline.rs       # WAV reader + pure i16->f32 helpers, 7 tests
-    live_local.rs          # pure helpers + utterance-based CPAL live runner, 9 tests
-    local_whisper.rs       # LocalWhisperClient: HTTP client for the faster-whisper server, 8 tests
-    mock.rs                # mock transcriber logic, 10 tests
-    mock_local.rs          # deterministic offline provider for live dev, 5 tests
-    pipeline.rs            # live CPAL transcription pipeline (no tests)
-    transcriber.rs         # in-process &[f32] transcription trait + result types (mock pipelines only)
-  synthesis/
-    mod.rs                 # Synthesizer trait + Speech / AudioChunk + chunk_duration_ms, 7 tests
-    mock.rs                # MockSynthesizer (deterministic square wave), 8 tests
-  processor/
-    mod.rs                 # ProcessorKind + build_processor dispatch, 7 tests
-    llm.rs                 # LlmProcessor (OpenAI-compatible HTTP), Secret redaction, request/parse helpers, 14 tests
-    mock.rs                # MockProcessor (MockTranslator's string, frozen), 12 tests
-    pipeline.rs            # live CPAL translate pipeline (no tests)
-    prompt.rs              # translate system prompt + <transcript> wrapper, 5 tests
-    processor.rs           # Processor trait + Output / OutputKind / ProcessMode, 3 tests
-  app/
-    mod.rs                 # re-exports: config, events, history, live_events, service, settings_store, state, ui_events
-    events.rs              # AppStatus + AppEvent stream + payload structs (incl. Speech) + console formatting, 26 tests
-    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 55 tests
-    history.rs             # append-only JSONL records: format_record + is_recordable, 8 tests
-    live_events.rs         # pure event-construction helpers (build_transcript_event, build_speech_event, etc.), 10 tests
-    ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 7 tests
-    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 23 tests
-    state.rs               # AppState mutators + Default, 12 tests
-    service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
-```
+One Rust crate plus a Tauri crate and a static frontend:
 
-The `app/` layer holds the config and event types that the CLI modes and
-the Tauri shell share. It never opens CPAL/Docker/HTTP/filesystem handles
-on its own; real captures are wired into it from outside the layer.
+- `src/audio/` capture and output: CPAL drivers, chunking, endpointing, the
+  half-duplex gate, the `Player` trait.
+- `src/transcription/` the two transcription contracts and their providers
+  (`mock-local`, `local-whisper`).
+- `src/processor/` the process stage: `Processor`, the mock, the LLM client,
+  the prompt.
+- `src/synthesis/` the `Synthesizer` trait and its mock.
+- `src/app/` config, events, state, orchestration, settings and history.
+- `src/main.rs` the CLI dispatcher; `src/config.rs` the shared constants.
+- `src-tauri/` the desktop shell: commands, session lifecycle, file paths.
+- `ui/` static HTML/JS/CSS plus the Playwright specs.
 
-When you add a module, mirror an existing one above:
-- **Pure helpers** live in their own file with `#[cfg(test)] mod tests`
-  so boundary behaviour is unit-testable.
-- **CPAL/file I/O glue** that calls them sits next to them with *no*
-  tests, exercised only by `cargo run -- <mode>`.
+`DEVELOPMENT_RULES.md` owns the module-by-module coverage table. Do not copy
+it here; it goes stale the first week.
 
-When you change file structure, update `DEVELOPMENT_RULES.md`'s
-existing-coverage table in the same commit.
+When you add a module, mirror an existing one:
 
-There are **two** transcription abstractions, and they are not
-interchangeable:
+- **Pure helpers** live in their own file with `#[cfg(test)] mod tests`, so
+  boundary behaviour is unit-testable.
+- **Hardware glue** (CPAL, microphone permission) gets no unit tests. Verify
+  it with `cargo run -- <mode>`.
+- **File and path logic** is testable when it is worth pinning: path handling,
+  atomic writes, partial appends. `app::settings_store` and the Tauri history
+  writer prove theirs with temp directories. A pure formatter (`app::history`)
+  needs none: it takes a string and returns one.
+
+## The `app/` layer
+
+`app/` holds the config, event and orchestration types that the CLI and the
+Tauri shell share. It never opens CPAL, Docker or HTTP handles, and it never
+decides a filesystem path.
+
+Two deliberate exceptions, both taking a path from the caller:
+
+- `settings_store` reads and writes the settings file with an atomic
+  write-then-rename.
+- `history` formats JSONL records; the Tauri crate owns the file and writes
+  them.
+
+Anything else in `app/` that reaches for the filesystem is a bug.
+
+## Two transcription abstractions, not interchangeable
 
 - `transcription::LocalTranscriptionProvider` (`src/transcription/mod.rs`,
-  `transcribe(&self, file_path: &str) -> Result<String>`): file in, text
-  out. This is what the real backends implement — `LocalWhisperClient`
-  (`local_whisper.rs`) and `MockLocalProvider` (`mock_local.rs`) — and what
-  the live runner (`live_local.rs`) calls through `ProviderKind` /
-  `build_provider`. New HTTP/sidecar backends go here.
+  `transcribe(&self, file_path: &str) -> Result<String>`): file in, text out.
+  The real backends implement it (`LocalWhisperClient`, `MockLocalProvider`),
+  and the live runner calls it through `ProviderKind` / `build_provider`. New
+  HTTP or sidecar backends go here.
 - `transcription::transcriber::Transcriber` (`transcriber.rs`,
   `transcribe_chunk(&self, chunk_index: usize, samples: &[f32]) ->
   Option<TranscriptionResult>`): in-process sample slice, no container,
-  `None` = skip the chunk. Today only `MockTranscriber` implements it, and
-  it drives the mock pipelines (`transcription/pipeline.rs`,
-  `transcription/file_pipeline.rs`, `processor/pipeline.rs`) and the
-  `mock-transcribe*` CLI modes. It cannot express a provider that needs a
-  WAV/HTTP boundary, so do not claim real backends "land behind" it.
+  `None` skips the chunk. Only `MockTranscriber` implements it, and it drives
+  the mock pipelines and the `mock-transcribe*` modes. It cannot express a
+  provider that needs a WAV/HTTP boundary, so do not claim real backends
+  "land behind" it.
 
-`faster-whisper`, `whisper.cpp`, and local OpenAI Whisper are reasonable
-future provider options, but do not implement them unless the user
-explicitly asks.
+## Process stage: `Processor`
 
-## Process stage: `Processor`, not `Translator`
-
-The stage between transcription and speech is `processor::processor::Processor`
-(`process(&self, text: &ProcessMode) -> Result<Option<Output>>`). Translation
-is one mode of it, not a stage of its own: respond mode answers as the host
-through the same trait. `Ok(None)` is a normal outcome (empty input, or a
-decision rule that says "stay silent"); `Err` is a failure, and the runner
-emits `AppEvent::Error` for it instead of letting it look like silence.
+`processor::processor::Processor` is
+`process(&self, text, &ProcessMode) -> anyhow::Result<Option<Output>>`.
+Translation is one mode of it; respond mode answers as the host through the
+same trait. `Ok(None)` means deliberate silence (empty input, or a decision
+rule that says "stay silent"). `Err` is a failure, and the runner emits
+`AppEvent::Error` for it. Never collapse those two into one `None`.
 
 - Pick an implementation with `processor::build_processor(name)`, mirroring
   `transcription::build_provider`. `DEFAULT_PROCESSOR_NAME` is the only place
   the default string lives.
 - The runner builds the stage and passes it in; `AppService::with_processor`
-  is the equivalent injection point for the text-only mock flow. Do not
-  construct a concrete impl inside a loop.
-- `MockProcessor::process`'s rendered string is frozen: changing it is a
-  user-visible output change and belongs to a provider PR, not a refactor.
+  is the injection point for the text-only mock flow. Do not construct a
+  concrete implementation inside a loop.
+- `MockProcessor`'s rendered string is frozen: changing it is a user-visible
+  output change and belongs to a provider PR, not a refactor.
 
-## UI event bridge: Tauri and backend
+## UI event bridge
 
-The backend `AppEvent` stream is the source of truth; the Tauri
-shell and the CLI both consume it. The bridge is:
+The backend `AppEvent` stream is the source of truth; the Tauri shell and the
+CLI both consume it.
 
 ```
 CLI / Tauri command
-  -> audio/transcription/translation modules
-  -> AppEvent (instantiated in src/app/events.rs)
+  -> audio / transcription / processor modules
+  -> AppEvent (src/app/events.rs)
        // CLI prints via format_app_event_for_console
        // Tauri converts via app_event_to_ui_event
   -> UiAppEvent (src/app/ui_events.rs, serde-serializable)
@@ -218,126 +194,173 @@ CLI / Tauri command
   -> Frontend listener in ui/app.js (switch on payload.kind)
 ```
 
-- **Pure mapping, fully unit-tested.** `UiAppEvent` and
-  `app_event_to_ui_event` live in `src/app/ui_events.rs` with
-  five unit tests covering each `AppEvent` variant. Any
-  future Tauri-frontend protocol change is a serialisation
-  tweak on this struct, **not** a redesign of the backend
-  event surface.
+- **The mapping is pure and unit-tested.** `UiAppEvent` and
+  `app_event_to_ui_event` carry every variant. A change that only reshapes
+  what the UI already shows is a serialisation change on this struct. A new
+  domain concept needs a new `AppEvent` variant and a matching `UiAppEvent`,
+  which is a deliberate change to the event surface.
 - **Provider selection is validated in the backend.**
-  `start_live_transcription` takes an optional `AppRuntimeConfig`,
-  normalizes and validates it (provider name included) before touching
-  shared state, and falls back to `AppRuntimeConfig::default()` when the
-  UI sends none. The frontend rebuilds `<select id="provider-select">`
-  from `get_supported_transcription_providers`.
-- **Session lifecycle is worker-owned.** The worker thread
-  spawned by `start_live_transcription` holds a clone of the
-  `Arc<LiveSessionState>` managed state and resets both
-  `is_running` and `stop_signal` in a `SessionCleanupGuard`
-  RAII guard. `Drop` runs on normal return, `Err`, and panic, so
-  the next `start_live_transcription` call is unblocked even
-  if the worker crashed mid-loop.
-- **Tauri runtime + session behavior is manual-tested.** No
-  unit test exercises the bound to Tauri's command runtime,
-  `AppHandle::emit`, or the cross-thread `Arc<LiveSessionState>`
-  ownership pattern. The typed signature enforces part of it (the
-  `tauri::State<'_, Arc<LiveSessionState>>` argument forces consumers to
-  clone), and `SessionCleanupGuard`'s `Drop` performs the reset; the pure
-  parts are unit-tested in isolation. The wiring itself is verified locally by
-  `cargo run --manifest-path src-tauri/Cargo.toml` and the
-  manual flow described in `docs/tauri-ui-shell.md`.
+  `start_live_transcription` takes an optional `AppRuntimeConfig`, normalizes
+  and validates it (provider and processor names included) before touching
+  shared state, and falls back to `AppRuntimeConfig::default()` when the UI
+  sends none. Both dropdowns are rebuilt from the backend's lists.
+- **Session lifecycle is worker-owned.** The worker thread holds a clone of
+  the `Arc<LiveSessionState>` managed state and resets `is_running` and
+  `stop_signal` in a `SessionCleanupGuard`. `Drop` runs on normal return,
+  `Err` and panic, so the next start is unblocked even if the worker crashed.
+- **The Tauri runtime and the real window are manual-tested.** No unit test
+  exercises `AppHandle::emit` or the cross-thread ownership pattern. The pure
+  parts are unit-tested; the wiring is verified with
+  `cargo run --manifest-path src-tauri/Cargo.toml` and the flow in
+  `docs/tauri-ui-shell.md`.
+
+## Secrets and logs
+
+- Provider keys come from the environment (`TARDIS_LLM_API_KEY`). Do not add a
+  key to `AppRuntimeConfig`: from there it reaches `runtime.json`, an
+  `AppEvent` and a `UiAppEvent` payload. Never put a real key value in a test
+  fixture; use an obvious dummy such as `sk-test`.
+- Wrap a key in `processor::llm::Secret` and run every error path through
+  `redact_secret` before it reaches `stderr` or an event.
+- Never print a request header, a full request body, or a raw provider error
+  that may echo either.
+- Do not log transcripts or rendered output beyond the session history file
+  the user already asked for.
 
 ## CPAL 0.18 gotchas (verified while building the pipeline)
 
-- `cpal::StreamConfig::sample_rate` is `u32` **directly**, not a tuple
-  struct. Do not write `config.sample_rate.0`; it fails with
-  *"u32 is a primitive type and therefore doesn't have fields"*.
+- `cpal::StreamConfig::sample_rate` is `u32` **directly**, not a tuple struct.
+  `config.sample_rate.0` fails with *"u32 is a primitive type and therefore
+  doesn't have fields"*.
 - `cpal::StreamConfig` is `Copy`. Pass it via `*config` to
   `device.build_input_stream(...)`.
-- `device.name()` is gone in CPAL 0.18. Use `{}` / `to_string()`
-  because `Device` implements `Display`.
+- `device.name()` is gone in 0.18. Use `{}` / `to_string()`; `Device`
+  implements `Display`.
 - `host.input_devices()` and `host.output_devices()` return
-  `Result<Devices, _>`; propagate with `?`, do not `.unwrap()`.
-- `cpal::Sample`, `cpal::SizedSample`, and `cpal::FromSample` are at
-  the crate root (re-exported from `dasp_sample`). `i16::from_sample(s)`
-  is identity for I16, centers for U16 (`(s as i32 - 0x8000) as i16`),
-  and clamps+scales for F32. Prefer it over hand-rolled `pcm_to_i16`
-  when writing i16 WAVs.
-- `cpal::ChannelCount` is `u16`; `cpal::SampleRate` is a plain `u32`
-  (not a tuple struct here).
-- The audio callback runs on the OS audio thread. Avoid allocation,
-  long mutex holds, and `println!` inside the callback. Pure
-  decisions should live outside the callback; pass them as a closure
-  if they need chunked data.
-- Hold the `Arc<Mutex<…>>` lock only long enough to push/drain. Drop
-  the `cpal::Stream` before locking for the final drain so the callback
-  cannot race with the writer.
+  `Result<Devices, _>`; propagate with `?`.
+- `cpal::Sample`, `cpal::SizedSample` and `cpal::FromSample` are at the crate
+  root. `i16::from_sample(s)` is identity for I16, centers for U16, and
+  clamps+scales for F32; prefer it over hand-rolled `pcm_to_i16`.
+- `cpal::ChannelCount` is `u16`; `cpal::SampleRate` is a plain `u32`.
+- The audio callback runs on the OS audio thread: no allocation, no
+  `println!`, no long mutex holds. Pure decisions live outside the callback.
+- Hold the `Arc<Mutex<…>>` lock only long enough to push or drain, and drop
+  the `cpal::Stream` before the final drain so the callback cannot race.
+- Multichannel devices: fold to mono with `audio::capture::mono_mix_weights`
+  before the volume gate. Averaging every channel makes a 16-channel loopback
+  device read as silence.
 
 ## Commit style
 
-Conventional Commits. Subject ≤ 50 chars (hard cap 72), no trailing
-period. Body only for non-obvious "why".
+Conventional Commits. Aim for a 50-character subject; 72 is the hard cap that
+git and GitHub truncate past. No trailing period. Body only for the "why" the
+diff cannot show. If the subject does not fit, consider whether the commit is
+doing two things, but do not split it for the character count alone.
 
 | Type | Use for |
 | --- | --- |
-| `feat(<scope>)` | new user-facing capability (CLI mode, new module) |
+| `feat(<scope>)` | new user-facing capability (CLI mode, module, provider) |
 | `refactor(<scope>)` | restructure with no user-visible change |
 | `fix(<scope>)` | bug fix |
-| `test(<scope>)` | new or corrected unit tests |
-| `docs` | doc-only change (`DEVELOPMENT_RULES.md`, `AGENTS.md`) |
-| `chore` | tooling / ignore-file / dep bumps |
+| `test(<scope>)` | new or corrected tests |
+| `docs` | doc-only change |
+| `chore` | tooling, ignore files, dependency bumps |
 
-`<scope>` is conventionally `audio`, `transcription`, or `cli`.
-Recent shape: `git log --oneline -10`.
+`<scope>` is one of `audio`, `transcription`, `processor`, `app`, `tauri`,
+`ui`, `cli`. Recent shape: `git log --oneline -10`.
 
-Do not embed "Generated with …" / AI attribution trailers unless the
-user has set that convention locally. Don't commit on your own unless
-the user explicitly asks.
+Do not embed "Generated with …" or AI attribution trailers unless the user
+has set that convention locally. Do not commit unless the user asks.
 
 ## Working conventions
 
-- A failing test in the pure-helper surface is a real bug. Don't widen
-  the assertion to make it pass. Confirm the behaviour is correct
-  first.
-- For f32 boundaries (e.g. `avg <= threshold`), do not rely on
-  `vec![0.01_f32; 1000]`. The 1000 f32 additions accumulate drift and
-  land slightly above 0.01, taking the wrong branch. Use a single-sample
-  slab so the round-trip is exact. Canonical fix:
-  `transcription::mock::tests::volume_equal_to_threshold_returns_none`.
+- A failing test in the pure-helper surface is a real bug. Do not widen the
+  assertion to make it pass; confirm the behaviour is correct first.
+- f32 boundaries (`avg <= threshold`): assert on exact values, not on
+  accumulations. The canonical case is in `DEVELOPMENT_RULES.md`.
 - For per-chunk drivers, reuse `audio::chunker`'s
   `calculate_chunk_size_samples` / `has_complete_chunk` / `drain_chunk`
-  rather than re-deriving them.
-- Holding a `Mutex<Instant>` inside the audio callback is fine for a
-  CLI demo (zero contention). For production, swap to a lock-free
-  channel + printer thread.
-- Adding a new module? Mirror an existing row in
-  `DEVELOPMENT_RULES.md`'s table in the same commit. Stale tables are
-  a bug.
-- Adding a settings file format? Reuse `src/app/settings_store::settings_file_path`
-  and the `SettingsStoreError` enum so failures surface the same way
-  across CLI and Tauri callers. New fields on `AppRuntimeConfig`
-  should land in one commit alongside a `padded_*` / `legacy_*` /
-  `corrupt_*` test in `src/app/settings_store.rs` so the load path
-  can never silently accept a forward-incompatible file.
+  instead of re-deriving them.
+- Holding a `Mutex<Instant>` inside the audio callback is fine for a CLI demo.
+  For production, move to a lock-free channel plus a printer thread.
+- Any change to the persisted settings format, whether a new field, a rename
+  or a migration, reuses `src/app/settings_store::settings_file_path` and
+  `SettingsStoreError`, lands the field with `#[serde(default)]`, and adds a
+  `legacy_*` plus a `padded_*` / `corrupt_*` test in the same commit.
+- Prefer deleting code to adding it. If an abstraction has one implementation
+  and no planned second one, it does not need to exist yet.
+
+## Before opening a PR
+
+Nothing leaves the machine with a red gate. A failing pipeline in the PR is
+not new information: it means the checks were never run. Run them locally,
+where a side effect costs minutes instead of a CI run plus a review round.
+
+The local reviews exist for the same reason, one step earlier. An issue found
+here costs nothing; the same issue found after the PR is open costs a review
+cycle, and review cycles cost time and money. The gates scale with the change,
+so a typo fix does not pay for a feature review.
+
+| Change | Gates |
+| --- | --- |
+| Docs only | 2 |
+| One-line fix, no new surface | 1 and 2 |
+| Feature or refactor | all of them |
+| More than 20 files | split first, then run this list per PR |
+
+Neither local review is a hard dependency. If the skill is not installed, run
+its checklist by hand and say in the PR which one you did. A missing review
+never blocks the PR; an unreported skip does.
+
+A finding you decide not to fix belongs in the PR body with the reason.
+
+1. **Validation matrix** for the areas you touched
+   ([DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md#validation-matrix)). For code
+   or test changes, paste the resulting counts into the PR body next to each
+   command. A docs-only PR reports no counts.
+2. **Prose pass** with the `no-ai-slop` skill: PR body, commit messages, and
+   the doc comments this PR adds. Cut em-dash asides, bold mid-sentence,
+   tables that carry three bullets, and claims the diff does not support.
+3. **Overengineering pass.** For each new abstraction, ask what breaks if it
+   is deleted. If the answer is "nothing", delete it.
+4. **SOLID / KISS / YAGNI refactor** of what the PR implements. Single
+   responsibility per module, no option or flag nobody asked for, no interface
+   with one caller.
+5. **`ponytail-review`** over the change, and fix the findings. Review the
+   working tree with `git diff`, or the commit if the user already asked for
+   one. If the skill is unavailable, do the pass yourself: correctness, safety
+   under real load, tests for the risky paths, dead code, and whether every
+   line earns its place.
+6. **`caveman-review`** as a second read, for a feature or refactor. A small
+   fix only needs it when step 5 found something. If the two disagree, say why
+   in the PR; if you skip this step, say so too.
+7. **Atomic commits.** One logical change per commit, conventional subject,
+   build green at each commit that others may bisect to.
+8. **At most 20 files per PR.** A feature that touches more is split by
+   feature or by domain (audio, processor, app, tauri, ui) into stacked PRs
+   that each land green. Two exceptions, both explained in the body: a
+   mechanical rename, and a change whose parts cannot build or be reviewed
+   separately. The exception is for splitting that is impossible, not merely
+   inconvenient.
+
+The three review skills ship in [`.agents/skills/`](.agents/skills/). An
+agent that reads project skills finds them there; one that reads only a global
+directory runs `scripts/install-skills.sh`. See
+[`README.md#skills-for-agent-workflows`](README.md#skills-for-agent-workflows).
+
+The same applies to a PR opened by the user: check the list before pushing, and
+report what you skipped.
 
 ## Things NOT to do
 
-- `device.name()` is gone in CPAL 0.18. Use `{}` / `to_string()`.
-- `config.sample_rate.0` does not compile; `sample_rate` is a plain `u32` in 0.18.
-- Don't allocate, print, or block for long inside the audio callback.
+- Don't unit-test CPAL streams, microphone hardware or permissions. Split the
+  logic into pure helpers, test those, and verify the rest manually with
+  `cargo run -- <mode>`.
 - Don't `.unwrap()` `host.input_devices()` / `output_devices()` /
-  `device.default_input_config()`. Use `?` with a clear `anyhow!` /
-  `Context` chain.
-- Don't unit-test CPAL streams, mic hardware, or permissions. Split
-  logic into pure helpers, test those, then verify the rest manually
-  via `cargo run -- <mode>`.
+  `device.default_input_config()`. Use `?` with an `anyhow!` / `Context`
+  chain.
 - Don't commit `output/mic_test.wav`. `.gitignore` excludes `/output`.
-- Don't add `Todo: …` code paths, `unwrap()`-filled stubs, or dead
-  `#[allow(dead_code)]` on functions that should be removed rather
-  than silenced.
-- Don't add a new desktop-UI surface, async runtime, or transcription
-  provider unless the user explicitly asks. The Tauri shell
-  (`src-tauri/`) and the `local-whisper` provider already exist; extend
-  them instead of starting parallel paths.
-- Don't order `mod audio;` twice in `main.rs`; that produces
-  `audio is defined multiple times`.
+- Don't leave `Todo: …` paths, `unwrap()`-filled stubs, or
+  `#[allow(dead_code)]` on functions that should be removed.
+- Don't add an async runtime, a new provider, or a new desktop-UI surface
+  unless the user asks. See the CPAL section for the version-specific traps.

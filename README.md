@@ -1,4 +1,5 @@
 # TARDIS v1
+> Transcription And Real-time Dual-input Interpretation System
 
 TARDIS is a Rust-first foundation for a future desktop app that listens to audio, transcribes it, and translates it locally. Today the repository ships a working CLI audio pipeline, a file-based local transcription provider backed by `faster-whisper`, mock translation flows, and a Tauri shell that drives the same backend from a desktop UI.
 
@@ -12,7 +13,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, capture window, volume threshold, utterance boundaries) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
-- `cargo test` runs 361 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 38 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
+- `cargo test` covers the pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
 
 ## Stack
 
@@ -342,6 +343,49 @@ Design constraints that shape the codebase:
 - CPAL and file I/O glue should remain small and manually verifiable.
 - Real backends should fit behind existing transcription and translation abstractions.
 - The Tauri shell should reuse the backend rather than fork its own audio pipeline.
+
+## Skills for agent workflows
+
+The PR gate in [AGENTS.md](AGENTS.md#before-opening-a-pr) calls three skills.
+They live in this repo under [`.agents/skills/`](.agents/skills/), which is
+the agent-agnostic project layout: any agent that reads project skills finds
+them without an install step.
+
+| Skill | What it does | Path |
+| --- | --- | --- |
+| `no-ai-slop` | prose pass over the PR body, commit messages and new docs | [`.agents/skills/no-ai-slop`](.agents/skills/no-ai-slop) |
+| `ponytail-review` | quality review of the diff: logic, safety, load, tests, dead code | [`.agents/skills/ponytail-review`](.agents/skills/ponytail-review) |
+| `caveman-review` | second, compressed local review; one line per finding | [`.agents/skills/caveman-review`](.agents/skills/caveman-review) |
+
+An agent that only reads a global skills directory gets them from the
+installer. It links by default, so the repo copy stays the only copy:
+
+```sh
+scripts/install-skills.sh                              # -> ~/.agents/skills
+scripts/install-skills.sh --target ~/.claude/skills
+scripts/install-skills.sh --target ~/.config/opencode/skills
+scripts/install-skills.sh --copy                       # copy instead of link
+```
+
+If the same skill is installed globally as well, keep one copy so the two do
+not drift. If one is missing, the gate falls back to doing that pass by hand;
+[AGENTS.md](AGENTS.md#before-opening-a-pr) says what to report.
+
+Two more are per machine, not per repo:
+
+```sh
+# Qodo CLI: PR review, and the qodo-review / qodo-review-resolver skills
+curl -fsSL https://get.qodo.ai | sh
+qodo setup                    # log in and activate the skills for your agents
+qodo skills list              # confirm qodo-review is installed
+
+# The rest of ponytail (audit, debt, help, gain), if you want it
+# add to ~/.config/opencode/opencode.json:
+#   "plugin": ["@dietrichgebert/ponytail"]
+```
+
+Provenance and the update procedure for the vendored copies are in
+[`.agents/skills/README.md`](.agents/skills/README.md).
 
 ## Related Docs
 
