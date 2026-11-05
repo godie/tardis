@@ -20,14 +20,13 @@ instead of bending the code to match it.
 
 ## Starting a session
 
-If the agent has skills named `caveman` and `ponytail`, turn both on at `full`
-level before touching code, using whatever mechanism that agent provides: a
-slash command (`/caveman full`, `/ponytail full`), an explicit skill
-invocation, or a config toggle.
+If the agent offers skills named `caveman` and `ponytail`, enable both at
+their `full` level before touching code. How that is done is agent-specific;
+use whatever command or setting that agent documents.
 
-Neither is a requirement. If one is missing, say so once at the start of the
-session and continue. It does not belong in the PR report, and nothing gets
-installed just to satisfy this section.
+If one of them is unavailable, note it once at the start of the session and
+continue. A missing convenience skill is not a blocker, does not belong in the
+PR report, and is not a reason to install anything.
 
 ## Product direction: one loop, five stages
 
@@ -56,7 +55,8 @@ Invariants:
   classify the request, then validate the generated reply.
 - **Mocks first.** Every stage keeps a deterministic mock, so the whole loop
   runs with no microphone, no Docker and no model. A stage that loses its mock
-  breaks the offline path: restore it or say why in the plan.
+  breaks the offline path: restore it, or explain why in the change or the PR
+  description.
 
 ## Build + test
 
@@ -125,9 +125,10 @@ When you add a module, mirror an existing one:
   boundary behaviour is unit-testable.
 - **Hardware glue** (CPAL, microphone permission) gets no unit tests. Verify
   it with `cargo run -- <mode>`.
-- **File I/O** is testable when it owns logic worth pinning: path handling,
+- **File and path logic** is testable when it is worth pinning: path handling,
   atomic writes, partial appends. `app::settings_store` and the Tauri history
-  writer use temp directories to prove it.
+  writer prove theirs with temp directories. A pure formatter (`app::history`)
+  needs none: it takes a string and returns one.
 
 ## The `app/` layer
 
@@ -253,8 +254,8 @@ CLI / Tauri command
 
 Conventional Commits. Aim for a 50-character subject; 72 is the hard cap that
 git and GitHub truncate past. No trailing period. Body only for the "why" the
-diff cannot show. If the subject does not fit in 50, the change is probably
-two commits.
+diff cannot show. If the subject does not fit, consider whether the commit is
+doing two things, but do not split it for the character count alone.
 
 | Type | Use for |
 | --- | --- |
@@ -331,9 +332,10 @@ A finding you decide not to fix belongs in the PR body with the reason.
    build green at each commit that others may bisect to.
 8. **At most 20 files per PR.** A feature that touches more is split by
    feature or by domain (audio, processor, app, tauri, ui) into stacked PRs
-   that each land green. A mechanical rename is the exception, and the PR body
-   has to say so. If splitting would leave the base branch unbuildable, stack
-   the PRs and merge them in order.
+   that each land green. Two exceptions, both explained in the body: a
+   mechanical rename, and a change whose parts cannot build or be reviewed
+   separately. The exception is for splitting that is impossible, not merely
+   inconvenient.
 
 The three review skills ship in [`.agents/skills/`](.agents/skills/). An
 agent that reads project skills finds them there; one that reads only a global
