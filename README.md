@@ -96,7 +96,7 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 
 | Command | Purpose | Auto-exit |
 | --- | --- | --- |
-| `cargo run -- devices` | Print host, input devices, output devices, and defaults. | Yes |
+| `cargo run -- devices` | Print host, input devices, output devices, and defaults. Add `--output` to print only the output devices, the preflight for picking a `--device` substring. | Yes |
 | `cargo run -- mic` | Capture from the default microphone continuously. | No |
 | `cargo run -- mic-5s` | Capture from the default microphone for 5 seconds. | Yes |
 | `cargo run -- record-5s` | Record 5 seconds to `output/mic_test.wav`. | Yes |
@@ -106,7 +106,8 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Defaults are `mock-local` and `mock`, so it runs with no Docker and no model. Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <substring>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Speech`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Defaults are `mock-local`, `mock` and `mock`, so it runs with no Docker, no TTS server and no sound device. `--synthesizer piper` speaks replies through the local Piper server; pair it with `--device` to pick a non-default output device. Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes (or Ctrl+C) |
+| `cargo run -- say-text "<text>"` | One TTS round-trip with no microphone, session or LLM: the same `LocalHttpSynthesizer` + `CpalPlayer` the live loop uses, one request, the sentence out of the speakers. Needs the Piper container up (`docker compose -f docker/piper/docker-compose.yml up -d`) and an output device. | Yes |
 | `cargo run -- llm-translate-text "<text>"` | One LLM round-trip with no microphone, TTS or capture: the same translate prompt the live loop uses, one request, the rendered line on stdout. Use it to check `TARDIS_LLM_API_KEY`, base URL and model before wiring live capture. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
@@ -170,6 +171,31 @@ cargo run -- live-local-transcribe --processor llm
 thread: a cold 7B model stalls the loop (default timeout 20 s). Streaming
 needs the explicit go-ahead described in
 [docs/core-pipeline-plan.md](docs/core-pipeline-plan.md) §4.2.
+
+## Synthesis Providers (TTS)
+
+The synthesis stage picks a `Synthesizer` with `synthesizer_provider`
+(`mock` or `piper`, default `mock`) in `runtime.json` and
+`--synthesizer` on the CLI. Both implement the same
+`synthesis::Synthesizer` contract. When the provider is `piper` the
+loop also opens a real output device (`CpalPlayer`); `player_device`
+(or `--device`) selects it by case-insensitive substring, or leaves
+the OS default.
+
+| Provider | Selector | What it does |
+| --- | --- | --- |
+| Deterministic tone | `--synthesizer mock` (default) | Renders a fixed square wave whose length is a pure function of the text. No network, no sound device. |
+| Local Piper HTTP server | `--synthesizer piper` | Posts the text to `http://localhost:5002/synthesize` and parses the 22050 Hz WAV reply. Needs the Docker container running; a dead server surfaces as an error event, never as silence. |
+
+```bash
+docker compose -f docker/piper/docker-compose.yml up -d
+cargo run -- say-text "hola desde tardis"
+cargo run -- devices --output          # pick a player_device substring
+cargo run -- live-local-transcribe --synthesizer piper
+```
+
+See [docker/piper/README.md](docker/piper/README.md) for health checks,
+voice selection and privacy notes.
 
 ## Tauri UI Shell Setup
 
