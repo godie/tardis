@@ -292,8 +292,14 @@ has set that convention locally. Do not commit unless the user asks.
 
 ## Before opening a PR
 
-The gates scale with the change, so a typo fix does not pay for a feature
-review.
+Nothing leaves the machine with a red gate. A failing pipeline in the PR is
+not new information: it means the checks were never run. Run them locally,
+where a side effect costs minutes instead of a CI run plus a review round.
+
+The local reviews exist for the same reason, one step earlier. An issue found
+here costs nothing; the same issue found after the PR is open costs a review
+cycle, and review cycles cost time and money. The gates scale with the change,
+so a typo fix does not pay for a feature review.
 
 | Change | Gates |
 | --- | --- |
