@@ -18,6 +18,17 @@ matrix are invariants. File names, module inventories and command lists are
 current detail, not doctrine. When detail and code disagree, update the detail
 instead of bending the code to match it.
 
+## Starting a session
+
+If the agent has skills named `caveman` and `ponytail`, turn both on at `full`
+level before touching code, using whatever mechanism that agent provides: a
+slash command (`/caveman full`, `/ponytail full`), an explicit skill
+invocation, or a config toggle.
+
+Neither is a requirement. If one is missing, say so once at the start of the
+session and continue. It does not belong in the PR report, and nothing gets
+installed just to satisfy this section.
+
 ## Product direction: one loop, five stages
 
 ```
