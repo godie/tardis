@@ -23,6 +23,7 @@
 
 use super::config::{AppRuntimeConfig, validate_runtime_config};
 use super::events::{AppEvent, AppOutputEvent, AppStatus, AppTranscriptEvent};
+use super::live_events::build_error_event;
 use super::state::AppState;
 use crate::processor::processor::{ProcessMode, Processor};
 use crate::processor::{DEFAULT_PROCESSOR_NAME, build_processor};
@@ -164,17 +165,25 @@ impl AppService {
             source_language: self.state.config.source_language.clone(),
             target_language: self.state.config.target_language.clone(),
         };
-        if let Some(output) = self.processor.process(transcript_text, &mode) {
-            let output_event = AppOutputEvent {
-                chunk_index: SYNTHETIC_CHUNK_INDEX,
-                kind: output.kind,
-                source_text: output.source_text.clone(),
-                text: output.text.clone(),
-                source_language: output.source_language.clone(),
-                target_language: output.target_language.clone(),
-                is_final: output.is_final,
-            };
-            events.push(self.state.apply_output(output_event));
+        match self.processor.process(transcript_text, &mode) {
+            Ok(Some(output)) => {
+                let output_event = AppOutputEvent {
+                    chunk_index: SYNTHETIC_CHUNK_INDEX,
+                    kind: output.kind,
+                    source_text: output.source_text.clone(),
+                    text: output.text.clone(),
+                    source_language: output.source_language.clone(),
+                    target_language: output.target_language.clone(),
+                    is_final: output.is_final,
+                };
+                events.push(self.state.apply_output(output_event));
+            }
+            // Deliberate silence: nothing to render, nothing to say.
+            Ok(None) => {}
+            // A failing processor must be visible in the event stream: the
+            // transcript arrived, so the operator expects an output or a
+            // reason.
+            Err(e) => events.push(build_error_event(format!("processor error: {e}"))),
         }
 
         events

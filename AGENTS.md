@@ -27,8 +27,9 @@ Target shape for the code (land incrementally, each step with mocks first):
 
 - **`Processor` replaces `Translator`.** `translation::translator::Translator`
   becomes the `translate` implementation of a general `Processor` trait
-  that returns `Option<Output>`; `None` is the normal result in
-  `respond` mode. Both modes share one LLM client and differ only in
+  that returns `Result<Option<Output>>`: `Ok(None)` is deliberate silence
+  (normal in `respond` mode), `Err` is a failure the runner turns into an
+  error event. Both modes share one LLM client and differ only in
   prompt and acting rule.
 - **New stage traits: `Synthesizer` (TTS) and `Player` (audio out).**
   Follow the `Transcriber` pattern: object-safe trait, a deterministic
@@ -64,7 +65,7 @@ go-ahead.
 ```sh
 cargo check                                          # fast type-check only (no tests)
 cargo clippy --all-targets -- -D warnings            # lints, same gate CI runs
-cargo test                                           # 305 unit tests on the CLI workspace
+cargo test                                           # 361 unit tests on the CLI workspace
 cargo run                                            # default = `devices`
 cargo run -- devices                                 # list host + I/O devices, exit
 cargo run -- mic                                     # capture until Ctrl+C
@@ -130,17 +131,20 @@ src/
     mod.rs                 # Synthesizer trait + Speech / AudioChunk + chunk_duration_ms, 7 tests
     mock.rs                # MockSynthesizer (deterministic square wave), 8 tests
   processor/
-    mod.rs                 # ProcessorKind + build_processor dispatch, 6 tests
+    mod.rs                 # ProcessorKind + build_processor dispatch, 7 tests
+    llm.rs                 # LlmProcessor (OpenAI-compatible HTTP), Secret redaction, request/parse helpers, 14 tests
     mock.rs                # MockProcessor (MockTranslator's string, frozen), 12 tests
     pipeline.rs            # live CPAL translate pipeline (no tests)
+    prompt.rs              # translate system prompt + <transcript> wrapper, 5 tests
     processor.rs           # Processor trait + Output / OutputKind / ProcessMode, 3 tests
   app/
-    mod.rs                 # re-exports: config, events, live_events, service, settings_store, state, ui_events
+    mod.rs                 # re-exports: config, events, history, live_events, service, settings_store, state, ui_events
     events.rs              # AppStatus + AppEvent stream + payload structs (incl. Speech) + console formatting, 26 tests
-    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 46 tests
-    live_events.rs         # pure event-construction helpers (build_transcript_event, build_speech_event, etc.), 9 tests
+    config.rs              # AppRuntimeConfig + validate_runtime_config + normalize_runtime_config, 55 tests
+    history.rs             # append-only JSONL records: format_record + is_recordable, 8 tests
+    live_events.rs         # pure event-construction helpers (build_transcript_event, build_speech_event, etc.), 10 tests
     ui_events.rs           # UiAppEvent serializable payloads + app_event_to_ui_event converter, 7 tests
-    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 21 tests
+    settings_store.rs      # settings_file_path + atomic save_to_path + load_from_path_or_default + SettingsStoreError, 23 tests
     state.rs               # AppState mutators + Default, 12 tests
     service.rs             # AppService orchestrator (reuses MockTranslator), 15 tests
 ```
@@ -183,10 +187,11 @@ explicitly asks.
 ## Process stage: `Processor`, not `Translator`
 
 The stage between transcription and speech is `processor::processor::Processor`
-(`process(&self, text: &ProcessMode) -> Option<Output>`). Translation is one
-mode of it, not a stage of its own: respond mode answers as the host through
-the same trait. `None` is a normal outcome (empty input, or a decision rule
-that says "stay silent"), not an error.
+(`process(&self, text: &ProcessMode) -> Result<Option<Output>>`). Translation
+is one mode of it, not a stage of its own: respond mode answers as the host
+through the same trait. `Ok(None)` is a normal outcome (empty input, or a
+decision rule that says "stay silent"); `Err` is a failure, and the runner
+emits `AppEvent::Error` for it instead of letting it look like silence.
 
 - Pick an implementation with `processor::build_processor(name)`, mirroring
   `transcription::build_provider`. `DEFAULT_PROCESSOR_NAME` is the only place

@@ -61,8 +61,8 @@ use crate::audio::gate::{HalfDuplexGate, playback_backlog};
 use crate::audio::player::{CountingPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
+use crate::processor::build_processor;
 use crate::processor::processor::{ProcessMode, Processor};
-use crate::processor::{DEFAULT_PROCESSOR_NAME, build_processor};
 use crate::synthesis::{AudioChunk, MockSynthesizer, Speech, Synthesizer, chunk_duration_ms};
 use crate::transcription;
 use crate::transcription::LocalTranscriptionProvider;
@@ -109,6 +109,18 @@ pub enum StopFlush {
     Drop,
 }
 
+/// Why capture stopped, which decides whether the pending utterance is
+/// still worth processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopCause {
+    /// The CLI timer ran out: flush the last turn.
+    TimerExpired,
+    /// The user pressed Stop (or the shell shut the session down): drop it.
+    /// One more transcription + model request after cancellation would make
+    /// shutdown take another full timeout for audio the user just stopped.
+    StopSignal,
+}
+
 /// Decide what happens to the pending utterance when capture stops.
 ///
 /// Capture can be interrupted mid-utterance (the stop signal, the CLI
@@ -122,7 +134,12 @@ pub fn stop_flush(
     state: &EndpointState,
     config: &EndpointConfig,
     pending_samples: usize,
+    cause: StopCause,
 ) -> StopFlush {
+    // An explicit Stop must not start another request.
+    if cause == StopCause::StopSignal {
+        return StopFlush::Drop;
+    }
     match endpoint::finish(state, config) {
         EndpointDecision::Utterance { frames } if pending_samples > 0 => {
             StopFlush::Speak { frames }
@@ -188,6 +205,12 @@ where
 
     let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());
+    println!("processor: {}", config.processor_provider);
+    // Build every stage that can fail *before* the session announces
+    // Listening: a processor that cannot be constructed (bad LLM client,
+    // future provider config) must not leave the shell in a listening
+    // state it never gets out of.
+    let processor = build_processor(&config.processor_provider)?;
 
     // `None` in the config means "whatever the OS calls default"; a name that
     // no longer exists falls back to the default inside `MicInput`.
@@ -243,10 +266,8 @@ where
     };
     let mut endpoint_state = EndpointState::new();
     let mut pending_samples: Vec<f32> = Vec::new();
-    // The process stage is built, not constructed inline: the same
-    // `build_processor` dispatch the service uses, so a real processor
-    // slots in without touching this loop.
-    let processor = build_processor(DEFAULT_PROCESSOR_NAME)?;
+    // The process stage is built above, with the other stages, so a
+    // construction failure happens before the session announces Listening.
     let process_mode = ProcessMode::Translate {
         source_language: config.source_language.clone(),
         target_language: config.target_language.clone(),
@@ -333,6 +354,15 @@ where
                     let _ = io::stdout().flush();
                 }
                 EndpointDecision::Utterance { frames } => {
+                    // Stop was pressed while this utterance was queued: do
+                    // not start another (possibly slow) model request after
+                    // cancellation. The audio is dropped, not flushed.
+                    if let Some(ref flag) = should_stop
+                        && flag.load(Ordering::Relaxed)
+                    {
+                        pending_samples.clear();
+                        break;
+                    }
                     utterance_index += 1;
                     let utterance = std::mem::take(&mut pending_samples);
                     if stages.run(utterance_index, frames, &utterance, &mut speaker)? {
@@ -346,9 +376,23 @@ where
         }
     }
 
-    // Capture can stop mid-utterance (the stop signal, the CLI timer). Flush
-    // what was captured so the last turn is not silently dropped.
-    match stop_flush(&endpoint_state, &endpoint_config, pending_samples.len()) {
+    // Capture can stop mid-utterance. A timer-driven end (CLI) flushes the
+    // last turn so it is not silently dropped; an explicit Stop drops it,
+    // because the user asked the session to end and a queued utterance
+    // would make shutdown wait for another full model timeout.
+    let stop_cause = if let Some(ref flag) = should_stop
+        && flag.load(Ordering::Relaxed)
+    {
+        StopCause::StopSignal
+    } else {
+        StopCause::TimerExpired
+    };
+    match stop_flush(
+        &endpoint_state,
+        &endpoint_config,
+        pending_samples.len(),
+        stop_cause,
+    ) {
         StopFlush::Speak { frames } => {
             utterance_index += 1;
             let utterance = std::mem::take(&mut pending_samples);
@@ -516,49 +560,63 @@ where
                     duration_ms,
                 ));
 
-                let Some(output) = self.processor.process(&text, self.process_mode) else {
-                    return false;
-                };
+                match self.processor.process(&text, self.process_mode) {
+                    Ok(Some(output)) => {
+                        // The rendered text is both the UI payload and the
+                        // thing to speak, so keep a copy before the event
+                        // takes ownership.
+                        let spoken_text = output.text.clone();
+                        (self.on_event)(build_output_event(
+                            utterance_index,
+                            output.kind,
+                            output.source_text,
+                            output.text,
+                            output.source_language,
+                            output.target_language,
+                            output.is_final,
+                        ));
 
-                // The rendered text is both the UI payload and the thing to
-                // speak, so keep a copy before the event takes ownership.
-                let spoken_text = output.text.clone();
-                (self.on_event)(build_output_event(
-                    utterance_index,
-                    output.kind,
-                    output.source_text,
-                    output.text,
-                    output.source_language,
-                    output.target_language,
-                    output.is_final,
-                ));
+                        // `None` from synthesis means "nothing to say": emit
+                        // no speech event and do not touch the player, so
+                        // silence never reaches the wire as a zero-length
+                        // utterance.
+                        let speech = Speech {
+                            text: spoken_text,
+                            language: self.target_language.to_string(),
+                        };
+                        let Some(chunk) = self.synthesizer.synthesize(&speech) else {
+                            return false;
+                        };
 
-                // `None` from synthesis means "nothing to say": emit no
-                // speech event and do not touch the player, so silence never
-                // reaches the wire as a zero-length utterance.
-                let speech = Speech {
-                    text: spoken_text,
-                    language: self.target_language.to_string(),
-                };
-                let Some(chunk) = self.synthesizer.synthesize(&speech) else {
-                    return false;
-                };
+                        let duration_ms = chunk_duration_ms(&chunk);
+                        (self.on_event)(build_speech_event(
+                            utterance_index,
+                            speech.text,
+                            speech.language,
+                            duration_ms,
+                            chunk.is_final,
+                        ));
 
-                let duration_ms = chunk_duration_ms(&chunk);
-                (self.on_event)(build_speech_event(
-                    utterance_index,
-                    speech.text,
-                    speech.language,
-                    duration_ms,
-                    chunk.is_final,
-                ));
-
-                if let Err(e) = speaker.speak(utterance_index, &chunk) {
-                    (self.on_event)(build_error_event(format!(
-                        "[utterance {utterance_index}] playback error: {e}"
-                    )));
+                        if let Err(e) = speaker.speak(utterance_index, &chunk) {
+                            (self.on_event)(build_error_event(format!(
+                                "[utterance {utterance_index}] playback error: {e}"
+                            )));
+                        }
+                        true
+                    }
+                    // Deliberate silence: the transcript already went out and
+                    // there is nothing to render.
+                    Ok(None) => false,
+                    // A failing processor is reported, not swallowed: the
+                    // user heard/read a transcript and deserves to know why
+                    // no translation followed.
+                    Err(e) => {
+                        (self.on_event)(build_error_event(format!(
+                            "[utterance {utterance_index}] processor error: {e}"
+                        )));
+                        false
+                    }
                 }
-                true
             }
             Err(e) => {
                 (self.on_event)(build_error_event(format!(
@@ -615,6 +673,7 @@ fn discard_blocked_capture(
 /// full [`AppRuntimeConfig`].
 pub fn run_live_local_transcription_with_events<F>(
     provider_name: &str,
+    processor_name: &str,
     seconds: u64,
     chunk_duration_ms: u64,
     should_stop: Option<Arc<AtomicBool>>,
@@ -625,6 +684,7 @@ where
 {
     let config = AppRuntimeConfig {
         transcription_provider: provider_name.to_string(),
+        processor_provider: processor_name.to_string(),
         chunk_duration_ms,
         source_language: config::DEFAULT_SOURCE_LANGUAGE.to_string(),
         target_language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
@@ -649,11 +709,13 @@ where
 /// Preserves the exact same output behaviour the CLI expects.
 pub fn run_live_local_transcription_test(
     provider_name: &str,
+    processor_name: &str,
     seconds: u64,
     chunk_duration_ms: u64,
 ) -> Result<()> {
     run_live_local_transcription_with_events(
         provider_name,
+        processor_name,
         seconds,
         chunk_duration_ms,
         None,
@@ -768,7 +830,7 @@ mod tests {
         // One 1 s window of speech is a kept utterance; the samples buffered
         // for it must reach the stages rather than be thrown away.
         assert_eq!(
-            stop_flush(&state, &cfg, 16_000),
+            stop_flush(&state, &cfg, 16_000, StopCause::TimerExpired),
             StopFlush::Speak { frames: 1 }
         );
     }
@@ -787,7 +849,7 @@ mod tests {
         );
 
         assert_eq!(
-            stop_flush(&state, &cfg, 48_000),
+            stop_flush(&state, &cfg, 48_000, StopCause::TimerExpired),
             StopFlush::Speak { frames: 3 }
         );
     }
@@ -804,7 +866,10 @@ mod tests {
         );
         assert!(state.is_open());
 
-        assert_eq!(stop_flush(&state, &cfg, 1_600), StopFlush::Drop);
+        assert_eq!(
+            stop_flush(&state, &cfg, 1_600, StopCause::TimerExpired),
+            StopFlush::Drop
+        );
     }
 
     #[test]
@@ -812,7 +877,10 @@ mod tests {
         let cfg = endpoint_config(1_000, 400, 200);
         let state = EndpointState::new();
 
-        assert_eq!(stop_flush(&state, &cfg, 0), StopFlush::Drop);
+        assert_eq!(
+            stop_flush(&state, &cfg, 0, StopCause::TimerExpired),
+            StopFlush::Drop
+        );
     }
 
     #[test]
@@ -823,6 +891,27 @@ mod tests {
         let mut state = EndpointState::new();
         endpoint::advance(&mut state, true, &cfg);
 
-        assert_eq!(stop_flush(&state, &cfg, 0), StopFlush::Drop);
+        assert_eq!(
+            stop_flush(&state, &cfg, 0, StopCause::TimerExpired),
+            StopFlush::Drop
+        );
+    }
+
+    #[test]
+    fn stop_flush_drops_the_open_utterance_on_an_explicit_stop() {
+        // Same state that speaks on a timer expiry: pressing Stop means "end
+        // now", so a queued utterance must not start another model request.
+        let cfg = endpoint_config(1_000, 400, 200);
+        let mut state = EndpointState::new();
+        endpoint::advance(&mut state, true, &cfg);
+
+        assert_eq!(
+            stop_flush(&state, &cfg, 16_000, StopCause::StopSignal),
+            StopFlush::Drop
+        );
+        assert_eq!(
+            stop_flush(&state, &cfg, 16_000, StopCause::TimerExpired),
+            StopFlush::Speak { frames: 1 }
+        );
     }
 }

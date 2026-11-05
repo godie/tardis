@@ -319,6 +319,7 @@ mod tests {
 
         let cfg = AppRuntimeConfig {
             transcription_provider: "local-whisper".to_string(),
+            processor_provider: "llm".to_string(),
             source_language: "fr".to_string(),
             target_language: "it".to_string(),
             chunk_duration_ms: 750,
@@ -595,6 +596,36 @@ mod tests {
             cfg.max_utterance_ms,
             crate::config::DEFAULT_MAX_UTTERANCE_MS
         );
+    }
+
+    #[test]
+    fn legacy_json_without_processor_provider_loads_as_mock() {
+        // `runtime.json` written before the LLM processor existed has no
+        // `processor_provider` key. The field is `#[serde(default)]`, so an
+        // existing user file keeps loading and keeps the old behaviour.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "hangover_ms": 400,
+  "min_speech_ms": 200,
+  "max_utterance_ms": 15000
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("legacy JSON must still load");
+        assert_eq!(cfg.processor_provider, "mock");
+    }
+
+    #[test]
+    fn round_trip_preserves_the_llm_processor() {
+        let config = AppRuntimeConfig {
+            processor_provider: "llm".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        let json = serialize_runtime_config(&config).expect("serialize must succeed");
+        let loaded = deserialize_runtime_config(&json).expect("llm config must load");
+        assert_eq!(loaded.processor_provider, "llm");
     }
 
     #[test]

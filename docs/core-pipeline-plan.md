@@ -1,9 +1,10 @@
 # Core pipeline plan: capture → transcribe → process → synthesize → play
 
 Status: **in progress**. PR 1 (`Processor` rename), PR 2 (mock
-`Synthesizer`/`Player` loop plus the half-duplex gate) and PR 3 (silence
-endpointing and the burst cap) are implemented and merged on `master`;
-PR 4 onward is planned and unstarted. Each numbered PR below is independently reviewable, stays
+`Synthesizer`/`Player` loop plus the half-duplex gate), PR 3 (silence
+endpointing and the burst cap) and PR 4 (real LLM `Processor`, translate
+mode) are implemented and merged on `master`; PR 5 onward is planned and
+unstarted. Each numbered PR below is independently reviewable, stays
 green on `cargo check && cargo test`, and adds a manual path
 (`cargo run -- <mode>` or the Tauri shell) so the CPAL/HTTP glue is
 verifiable per `DEVELOPMENT_RULES.md`.
@@ -156,22 +157,23 @@ pub enum OutputKind { Translate, Respond }
 
 /// Synchronous, object-safe, no IO in the signature.
 ///
-/// `None` is a normal outcome, not an error: empty/whitespace transcript,
+/// `Ok(None)` is a deliberate silent result: empty/whitespace transcript,
 /// translate-mode no-op, or a respond-mode decision that says "do not
-/// act". The runner skips synthesis entirely on `None`.
+/// act". `Err` is a failure the operator must see. The runner skips
+/// synthesis either way; only `Err` produces an `AppEvent::Error`.
 pub trait Processor {
-    fn process(&self, transcript: &str, mode: &ProcessMode) -> Option<Output>;
+    fn process(&self, transcript: &str, mode: &ProcessMode) -> anyhow::Result<Option<Output>>;
 }
 ```
 
 Deliberate choices:
 
-- **`Option<Output>`, not `Result`.** The `Translator` contract already
-  uses `Option` for "nothing to do"; a failure that the user must see is a
-  `Result` concern that belongs to the *provider impl* (it can log or
-  surface through the runner's error event). Keeping the trait
-  `Option`-only preserves the existing call-site shape and keeps
-  `MockProcessor` a two-line function.
+- **`Result<Option<Output>>`.** PR 1 shipped `Option<Output>`, on the
+  theory that a provider could "surface failures through the runner's
+  error event" without a `Result`. PR 4's code review showed it could not:
+  a failed request and a deliberate silence both arrived as `None`, so a
+  model that stopped answering was reported as silence. The two outcomes
+  now have two types. `MockProcessor` still reads as a two-line function.
 - **`mode` is passed per call, not stored in the impl.** The same
   processor instance serves both modes, so translation and response differ
   only in prompt, output language, and acting rule. A mode switch becomes a
@@ -486,9 +488,10 @@ AI attribution trailers.
 
 **Why first (reordered after your review).** It gives the loop its final
 shape *before* anything is built on it: `Processor::process(&self, text,
-&ProcessMode) -> Option<Output>`, `OutputKind`, `ProcessorKind` /
-`build_processor`, and `AppEvent::Output`. The mock voice loop then lands on
-the real seam instead of being migrated twice.
+&ProcessMode) -> Result<Option<Output>>` (PR 1 shipped `Option<Output>`;
+PR 4's review made the failure channel explicit, see §2.2), `OutputKind`,
+`ProcessorKind` / `build_processor`, and `AppEvent::Output`. The mock voice
+loop then lands on the real seam instead of being migrated twice.
 
 **Files.** `src/translation/` → `src/processor/` (`mod.rs`,
 `translator.rs` → `processor.rs`, `mock.rs` keeping `MockProcessor`'s output
@@ -689,6 +692,22 @@ monologue mid-word — accepted, because the alternative is unbounded memory;
 by construction, which §4's streaming design has to remove.
 
 ### PR 4 — Real LLM `Processor`, translate mode
+
+**Status.** Implemented: `src/processor/llm.rs` + `src/processor/prompt.rs`,
+`ProcessorKind::Llm`, `processor_provider` on `AppRuntimeConfig` (serde-defaulted),
+the processor dropdown in the shell, and `cargo run -- llm-translate-text "<text>"`.
+
+**Review follow-up.** The code review changed four things, all in the same PR:
+
+- `Processor::process` returns `Result<Option<Output>>` (§2.2): a failed
+  request and a deliberate silence are no longer the same `None`, and the
+  runner emits `AppEvent::Error` for `Err` while still skipping synthesis.
+- An empty model reply is an `Err`, not a silent `None`.
+- Responses are read with a 64 KiB cap and failed bodies reach diagnostics
+  only as a truncated excerpt (`truncate_for_log`).
+- The processor is constructed before capture starts and before the
+  session announces `Listening`; an explicit Stop drops the pending
+  utterance (`StopCause::StopSignal`) instead of making one more request.
 
 **Files.** `src/processor/llm.rs`, `src/processor/prompt.rs`,
 `src/processor/mod.rs` (`ProcessorKind`, `build_processor`),

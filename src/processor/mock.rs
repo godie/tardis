@@ -26,22 +26,22 @@ impl MockProcessor {
 }
 
 impl Processor for MockProcessor {
-    fn process(&self, text: &str, mode: &ProcessMode) -> Option<Output> {
+    fn process(&self, text: &str, mode: &ProcessMode) -> anyhow::Result<Option<Output>> {
         if text.trim().is_empty() {
-            return None;
+            return Ok(None);
         }
         let ProcessMode::Translate {
             source_language,
             target_language,
         } = mode;
-        Some(Output {
+        Ok(Some(Output {
             kind: OutputKind::Translate,
             source_text: text.to_string(),
             text: format!("[mock {target_language}] mock translation: \"{text}\""),
             source_language: source_language.clone(),
             target_language: target_language.clone(),
             is_final: true,
-        })
+        }))
     }
 }
 
@@ -57,7 +57,9 @@ mod tests {
     }
 
     fn process(text: &str, source: &str, target: &str) -> Option<Output> {
-        MockProcessor::new().process(text, &translate(source, target))
+        MockProcessor::new()
+            .process(text, &translate(source, target))
+            .expect("MockProcessor never fails")
     }
 
     #[test]

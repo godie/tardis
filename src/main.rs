@@ -12,7 +12,8 @@
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
-//!   cargo run -- live-local-transcribe [--provider <name>] -> chunk-by-chunk live transcription (default mock-local)
+//!   cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] -> utterance-by-utterance live transcription (defaults: mock-local, mock)
+//!   cargo run -- llm-translate-text "<text>"                 -> one real LLM round-trip, no mic (needs the LLM server)
 //!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
 //!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
 //!   cargo run -- app-mock-flow                              -> exercise the mock AppService flow end-to-end (no mic, no Docker)
@@ -61,6 +62,7 @@ fn main() -> Result<()> {
         Some("mock-translate") => run_mock_translate(),
         Some("local-transcribe-file") => run_local_transcribe_file(),
         Some("live-local-transcribe") => run_live_local_transcribe(),
+        Some("llm-translate-text") => run_llm_translate_text(),
         Some("app-mock-flow") => run_app_mock_flow(),
         Some("mock-voice-flow") => run_mock_voice_flow(),
         Some("utterance-test") => {
@@ -72,7 +74,7 @@ fn main() -> Result<()> {
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -285,7 +287,7 @@ fn run_mock_voice_flow() -> Result<()> {
 
     // 2. Process (translate mode; `build_processor` dispatch).
     let output = processor
-        .process(transcript_text, &mode)
+        .process(transcript_text, &mode)?
         .ok_or_else(|| anyhow!("mock processor returned no output for a non-empty transcript"))?;
     let spoken_text = output.text.clone();
     events.push(build_output_event(
@@ -433,6 +435,7 @@ fn run_live_local_transcribe() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut provider_name = "mock-local".to_string();
+    let mut processor_name = processor::DEFAULT_PROCESSOR_NAME.to_string();
 
     // [0] = binary path, [1] = "live-local-transcribe"; start at [2].
     let mut i = 2;
@@ -442,15 +445,25 @@ fn run_live_local_transcribe() -> Result<()> {
             i += 1;
             if i >= args.len() {
                 return Err(anyhow!(
-                    "--provider requires a value (e.g. --provider mock-local)\nUsage: cargo run -- live-local-transcribe [--provider <name>]"
+                    "--provider requires a value (e.g. --provider mock-local)\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
                 ));
             }
             provider_name = args[i].clone();
         } else if let Some(value) = arg.strip_prefix("--provider=") {
             provider_name = value.to_string();
+        } else if arg == "--processor" {
+            i += 1;
+            if i >= args.len() {
+                return Err(anyhow!(
+                    "--processor requires a value (e.g. --processor llm)\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
+                ));
+            }
+            processor_name = args[i].clone();
+        } else if let Some(value) = arg.strip_prefix("--processor=") {
+            processor_name = value.to_string();
         } else {
             return Err(anyhow!(
-                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>]"
+                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
             ));
         }
         i += 1;
@@ -458,9 +471,39 @@ fn run_live_local_transcribe() -> Result<()> {
 
     transcription::live_local::run_live_local_transcription_test(
         &provider_name,
+        &processor_name,
         config::DEFAULT_PIPELINE_TEST_SECONDS,
         config::DEFAULT_CHUNK_DURATION_MS,
     )
+}
+
+/// One LLM round-trip with no microphone and no TTS.
+///
+/// Use it to check `TARDIS_LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL`
+/// against a working server before wiring live capture: the same prompt the
+/// loop uses, one request, the translation on stdout.
+fn run_llm_translate_text() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let text = args.get(2).ok_or_else(|| {
+        anyhow!(
+            "llm-translate-text requires a text argument\nUsage: cargo run -- llm-translate-text \"<text>\""
+        )
+    })?;
+    let processor = build_processor("llm")?;
+    let mode = ProcessMode::Translate {
+        source_language: config::DEFAULT_SOURCE_LANGUAGE.to_string(),
+        target_language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
+    };
+    match processor.process(text, &mode) {
+        Ok(Some(output)) => {
+            println!("{}", output.text);
+            Ok(())
+        }
+        Ok(None) => Err(anyhow!(
+            "the llm processor produced no output for non-empty input"
+        )),
+        Err(err) => Err(err.context("the llm processor failed")),
+    }
 }
 
 fn run_local_transcribe_file() -> Result<()> {

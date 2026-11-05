@@ -16,6 +16,7 @@ const stopButton = document.querySelector("#stop-button");
 const targetLanguage = document.querySelector("#target-language");
 const sourceLanguage = document.querySelector("#source-language");
 const providerSelect = document.querySelector("#provider-select");
+const processorSelect = document.querySelector("#processor-select");
 const inputDeviceSelect = document.querySelector("#input-device");
 const chunkDurationMsInput = document.querySelector("#chunk-duration-ms");
 const volumeThresholdInput = document.querySelector("#volume-threshold");
@@ -30,6 +31,7 @@ const maxUtteranceMsInput = document.querySelector("#max-utterance-ms");
 // field names a 1:1 cross-check for serde.
 const SESSION_SETTINGS_INPUTS = [
   providerSelect,
+  processorSelect,
   inputDeviceSelect,
   sourceLanguage,
   targetLanguage,
@@ -307,6 +309,7 @@ async function startLiveTranscription() {
   // Build a single AppRuntimeConfig-shaped object from the settings panel.
   const config = {
     transcription_provider: providerSelect.value,
+    processor_provider: processorSelect.value,
     source_language: sourceLanguage.value,
     target_language: targetLanguage.value,
     chunk_duration_ms: chunk.value,
@@ -495,6 +498,9 @@ async function loadFromBackendSettings() {
     if (typeof defaults.transcription_provider === "string") {
       providerSelect.value = defaults.transcription_provider;
     }
+    if (typeof defaults.processor_provider === "string") {
+      processorSelect.value = defaults.processor_provider;
+    }
     if (typeof defaults.source_language === "string") {
       sourceLanguage.value = defaults.source_language;
     }
@@ -588,6 +594,25 @@ async function loadFromBackendSettings() {
   // preference into null on the next save.
   keepSavedDevice();
 
+  try {
+    const processors = await invoke("get_supported_processor_providers");
+    if (Array.isArray(processors) && processors.length > 0) {
+      // Same rule as the provider list above: the backend owns the
+      // valid names, the UI only renders them.
+      processorSelect.innerHTML = "";
+      for (const name of processors) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        processorSelect.appendChild(opt);
+      }
+      processorSelect.value = defaults?.processor_provider ?? processorSelect.value;
+      log("loaded supported processors:", processors);
+    }
+  } catch (error) {
+    log("could not load supported processors:", error);
+  }
+
   // 2. Auto-save on every committed change so settings persist
   //    across Tauri shell restarts. The `change` event fires
   //    on <select>/<input type=number> when the user commits a
@@ -621,6 +646,7 @@ async function saveCurrentSettings() {
 
   const config = {
     transcription_provider: providerSelect.value,
+    processor_provider: processorSelect.value,
     source_language: sourceLanguage.value,
     target_language: targetLanguage.value,
     chunk_duration_ms: chunk.value,
