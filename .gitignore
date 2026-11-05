@@ -13,3 +13,8 @@ codedb.snapshot
 # faster-whisper Docker container. Mounted from ./docker/faster-whisper/hf_cache
 # in docker-compose.yml; can grow to several gigabytes, never committed.
 /docker/faster-whisper/hf_cache
+
+# Cached Piper voice weights downloaded by the local Piper Docker
+# container. Mounted from ./docker/piper/voices in docker-compose.yml;
+# tens of megabytes, never committed.
+/docker/piper/voices

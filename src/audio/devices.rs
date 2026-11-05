@@ -35,3 +35,23 @@ pub fn print_device_info(host: &cpal::Host) -> Result<()> {
 
     Ok(())
 }
+
+/// Prints only the output devices and the default, the list the real
+/// player picks from (`devices --output`: the preflight a `piper`
+/// session runs to choose a `player_device` substring).
+pub fn print_output_devices(host: &cpal::Host) -> Result<()> {
+    println!("Audio Host: {:?}", host.id());
+
+    println!("\nOutput devices:");
+    for (i, device) in host.output_devices()?.enumerate() {
+        println!("  [{}] {}", i, device);
+    }
+
+    println!("\nDefault output device:");
+    match host.default_output_device() {
+        Some(device) => println!("  {}", device),
+        None => println!("  (none)"),
+    }
+
+    Ok(())
+}

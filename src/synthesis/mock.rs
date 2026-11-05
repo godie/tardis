@@ -43,22 +43,22 @@ impl MockSynthesizer {
 }
 
 impl Synthesizer for MockSynthesizer {
-    fn synthesize(&self, speech: &Speech) -> Option<AudioChunk> {
+    fn synthesize(&self, speech: &Speech) -> anyhow::Result<Option<AudioChunk>> {
         let text = speech.text.trim();
         if text.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let chars = text.chars().count() as u64;
         let frames = mock_frame_count(chars);
         let samples = (0..frames).map(mock_sample).collect();
 
-        Some(AudioChunk {
+        Ok(Some(AudioChunk {
             samples,
             sample_rate: MOCK_SAMPLE_RATE,
             channels: 1,
             is_final: true,
-        })
+        }))
     }
 }
 
@@ -97,47 +97,48 @@ mod tests {
         }
     }
 
+    /// Every test goes through one helper: the mock's `synthesize`
+    /// cannot fail for a deterministic provider, so a failure is a
+    /// contract violation, not a silence.
+    fn synth(text: &str) -> Option<AudioChunk> {
+        MockSynthesizer::new()
+            .synthesize(&speech(text))
+            .expect("the mock must always succeed")
+    }
+
     // ---- skip-on-empty -------------------------------------------------
 
     #[test]
     fn empty_text_returns_none() {
-        assert!(MockSynthesizer::new().synthesize(&speech("")).is_none());
+        assert!(synth("").is_none());
     }
 
     #[test]
     fn whitespace_only_text_returns_none() {
-        assert!(
-            MockSynthesizer::new()
-                .synthesize(&speech("   \t\n "))
-                .is_none()
-        );
+        assert!(synth("   \t\n ").is_none());
     }
 
     // ---- determinism ----------------------------------------------------
 
     #[test]
     fn same_text_twice_is_identical() {
-        let a = MockSynthesizer::new().synthesize(&speech("hola")).unwrap();
-        let b = MockSynthesizer::new().synthesize(&speech("hola")).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(a.samples.len(), b.samples.len());
+        assert_eq!(synth("hola"), synth("hola"));
     }
 
     #[test]
     fn surrounding_whitespace_does_not_change_length() {
-        let a = MockSynthesizer::new().synthesize(&speech("hola")).unwrap();
-        let b = MockSynthesizer::new()
-            .synthesize(&speech("  hola\n"))
-            .unwrap();
-        assert_eq!(a.samples.len(), b.samples.len());
+        assert_eq!(
+            synth("hola").unwrap().samples.len(),
+            synth("  hola\n").unwrap().samples.len()
+        );
     }
 
     // ---- length contract -------------------------------------------------
 
     #[test]
     fn two_characters_render_120ms_at_16k_mono() {
-        let chunk = MockSynthesizer::new().synthesize(&speech("hi")).unwrap();
         // 2 chars * 60 ms = 120 ms -> 1 920 frames.
+        let chunk = synth("hi").unwrap();
         assert_eq!(chunk.samples.len(), 1_920);
         assert_eq!(chunk_duration_ms(&chunk), 120);
         assert_eq!(chunk.sample_rate, MOCK_SAMPLE_RATE);
@@ -154,15 +155,16 @@ mod tests {
 
     #[test]
     fn counts_characters_not_bytes() {
-        // "ñ" is 2 UTF-8 bytes but 1 character; both must render 60 ms.
-        let one = MockSynthesizer::new().synthesize(&speech("ñ")).unwrap();
-        let ascii = MockSynthesizer::new().synthesize(&speech("a")).unwrap();
-        assert_eq!(one.samples.len(), ascii.samples.len());
+        // "ñ" is 2 UTF-8 bytes but 1 character; both render 60 ms.
+        assert_eq!(
+            synth("ñ").unwrap().samples.len(),
+            synth("a").unwrap().samples.len()
+        );
     }
 
     #[test]
     fn samples_stay_within_full_scale() {
-        let chunk = MockSynthesizer::new().synthesize(&speech("hola")).unwrap();
+        let chunk = synth("hola").unwrap();
         assert!(
             chunk.samples.iter().all(|s| (-1.0..=1.0).contains(s)),
             "mock samples must stay inside -1.0..=1.0"

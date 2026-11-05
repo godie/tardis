@@ -320,6 +320,8 @@ mod tests {
         let cfg = AppRuntimeConfig {
             transcription_provider: "local-whisper".to_string(),
             processor_provider: "llm".to_string(),
+            synthesizer_provider: "piper".to_string(),
+            player_device: Some("macbook speakers".to_string()),
             source_language: "fr".to_string(),
             target_language: "it".to_string(),
             chunk_duration_ms: 750,

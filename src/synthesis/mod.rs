@@ -9,6 +9,12 @@
 //! finality). Nothing here knows about devices, streams, or playback;
 //! that is [`crate::audio::player::Player`]'s job.
 //!
+//! Like every stage in this repo, `Ok(Some(chunk))` is a rendered
+//! utterance, `Ok(None)` is deliberate silence (empty text), and `Err`
+//! is a failure (the TTS server is unreachable). Never collapse a
+//! failure into `None`: the runner reports `Err` as an error event and
+//! keeps the session alive.
+//!
 //! [`chunk_duration_ms`] is the one shared pure helper: the mock and
 //! any future real player both report the same duration for the same
 //! chunk, so the UI's "Spoken · 1.2 s" line and the CLI's
@@ -17,9 +23,30 @@
 //! Tests live in `#[cfg(test)] mod tests` per AGENTS.md conventions;
 //! nothing in this module touches CPAL, the filesystem, or the clock.
 
+pub mod local_http;
 pub mod mock;
 
+pub use local_http::LocalHttpSynthesizer;
 pub use mock::MockSynthesizer;
+
+/// Build a [`Synthesizer`] by provider name, mirroring
+/// [`crate::transcription::build_provider`] and
+/// [`crate::processor::build_processor`].
+///
+/// `"mock"` returns the deterministic offline synthesizer;
+/// `"piper"` returns the local HTTP client for the Docker Piper
+/// server (**it does not contact the server here**, so construction
+/// works offline; failures surface on the first `synthesize` call).
+/// Anything else is an error listing the valid names.
+pub fn build_synthesizer(name: &str) -> anyhow::Result<Box<dyn Synthesizer>> {
+    match name {
+        "mock" => Ok(Box::new(MockSynthesizer::new())),
+        "piper" => Ok(Box::new(LocalHttpSynthesizer::from_env())),
+        other => Err(anyhow::anyhow!(
+            "unknown synthesizer provider \"{other}\"; valid values are: mock, piper"
+        )),
+    }
+}
 
 /// What to say.
 ///
@@ -58,13 +85,15 @@ pub struct AudioChunk {
 
 /// Synchronous text-to-audio contract.
 ///
-/// `synthesize` must be pure with respect to `&self`: the same
-/// [`Speech`] and the same impl state must produce the same
-/// [`AudioChunk`]. Returning `None` signals "nothing to say"
-/// (empty text, or a provider that declined); the runner then emits
-/// no speech event and does not call the player.
+/// `synthesize` mirrors [`crate::processor::Processor::process`]'s
+/// three-way shape: `Ok(Some(..))` renders the utterance, `Ok(None)`
+/// means deliberate silence (empty text, nothing worth speaking), and
+/// `Err` is a real failure (server unreachable, bad response) that the
+/// runner surfaces as an error event instead of as silence. Keeping
+/// the split is deliberate: a TTS server that died must not look the
+/// same as a segment nobody needs to hear.
 pub trait Synthesizer {
-    fn synthesize(&self, speech: &Speech) -> Option<AudioChunk>;
+    fn synthesize(&self, speech: &Speech) -> anyhow::Result<Option<AudioChunk>>;
 }
 
 /// Duration of `chunk` in whole milliseconds.
