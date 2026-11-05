@@ -42,8 +42,8 @@ impl DefaultInput {
     /// Resolve `selected` by name, falling back to the host default.
     ///
     /// `None` (or a blank name) means "the OS default". A name that no
-    /// longer matches any device — unplugged headset, renamed aggregate
-    /// device — falls back to the default and says so on stderr, because a
+    /// longer matches any device (unplugged headset, renamed aggregate
+    /// device) falls back to the default and says so on stderr, because a
     /// stale preference must not make Start fail: the alternative is a
     /// session that cannot begin until the user edits `runtime.json`.
     pub fn resolve_selected(selected: Option<&str>) -> Result<Self> {
@@ -118,8 +118,8 @@ const MONO_ENERGY_RATIO: f32 = 0.5;
 /// The signal is **not** assumed to live on channels 0 and 1: a virtual
 /// loopback device pads with silence, but a multi-input interface can put the
 /// voice on channel 3 or 7 and leave the first pair empty. So the mix is
-/// built from whichever channels actually carry energy in this block — those
-/// within [`MONO_ENERGY_RATIO`] of the loudest one — and each gets an equal
+/// built from whichever channels actually carry energy in this block, those
+/// within [`MONO_ENERGY_RATIO`] of the loudest one, and each gets an equal
 /// share. Silent channels get weight 0, which is what keeps the level intact:
 /// averaging all 16 channels of a BlackHole device divides the amplitude by 8,
 /// and loud speech then reads as silence to the volume gate.
@@ -202,7 +202,7 @@ fn push_mono<T>(
 /// The UI shows `name` and sends back `id`. The id is what survives a
 /// restart, a replug, or a reboot (`cpal` documents `DeviceId` as stable and
 /// meant to be persisted through `Display`/`FromStr`), while enumeration
-/// order — and, on some hosts, the name — does not.
+/// order, and on some hosts the name, does not.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct InputDeviceInfo {
     /// `"<host>:<device>"`, e.g. `"coreaudio:BuiltInMicrophoneDevice"`.
@@ -390,7 +390,7 @@ where
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
             // Mono in, mono out: one buffer sample per frame regardless of
             // how many channels the device reports. Both scratch arrays are
-            // stack locals reused by every block — this callback runs on the
+            // stack locals reused by every block. This callback runs on the
             // OS audio thread and must not allocate (AGENTS.md).
             let mut peaks = [0.0_f32; MAX_MIX_CHANNELS];
             block_peaks(data, device_channels, &mut peaks);

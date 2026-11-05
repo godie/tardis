@@ -1,7 +1,7 @@
 //! Append-only session history, one JSON object per line (JSONL).
 //!
-//! The shell writes one line per stage output — the transcript it heard and
-//! the rendered output it produced — so a session can be re-read after the
+//! The shell writes one line per stage output, the transcript it heard and
+//! the rendered output it produced, so a session can be re-read after the
 //! window is closed: `tail -f`, `grep`, or any JSONL reader. Both kinds live
 //! in one file, in the order they happened, because correlating two files by
 //! timestamp is work the reader should not have to do.

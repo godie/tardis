@@ -391,8 +391,8 @@ test("an impossible endpointing pair blocks the start", async ({ page }) => {
 
 // The Tauri 2 ACL rejects `event.listen` unless a capability grants
 // `core:event:allow-listen`. Swallowing that rejection is what makes the shell
-// wait forever for a `stopped` event that can never arrive — the "stuck on
-// Stopping…" symptom. The failure has to be visible, not silent.
+// wait forever for a `stopped` event that can never arrive (the "stuck on
+// Stopping…" symptom). The failure has to be visible, not silent.
 test("a rejected event subscription surfaces an error instead of hanging", async ({ page }) => {
   await installFakeBridge(page, DEFAULT_CONFIG);
   await page.addInitScript(() => {

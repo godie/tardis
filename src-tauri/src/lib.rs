@@ -747,14 +747,14 @@ fn append_record(path: &Path, record: &str) {
     }
 }
 
-/// Log every panic — location, message and backtrace — to stderr and to
+/// Log every panic (location, message and backtrace) to stderr and to
 /// `<config dir>/tardis/panic.log`.
 ///
 /// The shell has no other crash trail: launched from Finder its stderr goes
 /// nowhere, so a "the window disappeared" report leaves nothing behind. The
 /// backtrace is captured with `Backtrace::force_capture`, which ignores
-/// `RUST_BACKTRACE=0`, and the process still exits as it would have — this
-/// only observes, it does not swallow the panic.
+/// `RUST_BACKTRACE=0`, and the process still exits as it would have. This
+/// only observes the panic, it does not swallow it.
 fn install_panic_logger(path: PathBuf) {
     let started = timestamp_secs();
     append_record(
