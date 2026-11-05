@@ -1,8 +1,11 @@
 # Vendored skills
 
 Agent skills the PR gate in [`AGENTS.md`](../../AGENTS.md#before-opening-a-pr)
-calls. They live here so a clone is enough to run the gate; OpenCode loads
-`.opencode/skills/<name>/SKILL.md` before any global copy.
+calls. They live here so a clone is enough to run the gate, in the
+agent-agnostic `.agents/skills/` layout: OpenCode, and any other agent that
+follows that convention, reads `<repo>/.agents/skills/<name>/SKILL.md`
+directly. Agents that only read a global directory get them through
+[`scripts/install-skills.sh`](../../scripts/install-skills.sh).
 
 | Skill | Source | Licence |
 | --- | --- | --- |

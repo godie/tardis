@@ -347,19 +347,28 @@ Design constraints that shape the codebase:
 ## Skills for agent workflows
 
 The PR gate in [AGENTS.md](AGENTS.md#before-opening-a-pr) calls three skills.
-All three ship in this repo under [`.opencode/skills/`](.opencode/skills/), so
-a clone is enough to run the gate:
+They live in this repo under [`.agents/skills/`](.agents/skills/), which is
+the agent-agnostic project layout: any agent that reads project skills finds
+them without an install step.
 
 | Skill | What it does | Path |
 | --- | --- | --- |
-| `no-ai-slop` | prose pass over the PR body, commit messages and new docs | [`.opencode/skills/no-ai-slop`](.opencode/skills/no-ai-slop) |
-| `ponytail-review` | quality review of the diff: logic, safety, load, tests, dead code | [`.opencode/skills/ponytail-review`](.opencode/skills/ponytail-review) |
-| `caveman-review` | second, compressed local review; one line per finding | [`.opencode/skills/caveman-review`](.opencode/skills/caveman-review) |
+| `no-ai-slop` | prose pass over the PR body, commit messages and new docs | [`.agents/skills/no-ai-slop`](.agents/skills/no-ai-slop) |
+| `ponytail-review` | quality review of the diff: logic, safety, load, tests, dead code | [`.agents/skills/ponytail-review`](.agents/skills/ponytail-review) |
+| `caveman-review` | second, compressed local review; one line per finding | [`.agents/skills/caveman-review`](.agents/skills/caveman-review) |
 
-Nothing to install for those: OpenCode discovers
-`.opencode/skills/<name>/SKILL.md` from the repo. If the same skill is also
-installed globally, keep one copy so the two do not drift; the project copy
-wins inside this repo.
+An agent that only reads a global skills directory gets them from the
+installer. It links by default, so the repo copy stays the only copy:
+
+```sh
+scripts/install-skills.sh                              # -> ~/.agents/skills
+scripts/install-skills.sh --target ~/.claude/skills
+scripts/install-skills.sh --target ~/.config/opencode/skills
+scripts/install-skills.sh --copy                       # copy instead of link
+```
+
+If the same skill is installed globally as well, keep one copy so the two do
+not drift.
 
 Two more are per machine, not per repo:
 
@@ -375,7 +384,7 @@ qodo skills list              # confirm qodo-review is installed
 ```
 
 Provenance and the update procedure for the vendored copies are in
-[`.opencode/skills/README.md`](.opencode/skills/README.md).
+[`.agents/skills/README.md`](.agents/skills/README.md).
 
 ## Related Docs
 

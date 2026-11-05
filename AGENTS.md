@@ -316,8 +316,9 @@ A finding you decide not to fix belongs in the PR body with the reason.
    has to say so. If splitting would leave the base branch unbuildable, stack
    the PRs and merge them in order.
 
-The three review skills ship in [`.opencode/skills/`](.opencode/skills/). If
-one is missing from the skill list, install it as described in
+The three review skills ship in [`.agents/skills/`](.agents/skills/). An
+agent that reads project skills finds them there; one that reads only a global
+directory runs `scripts/install-skills.sh`. See
 [`README.md#skills-for-agent-workflows`](README.md#skills-for-agent-workflows).
 
 The same applies to a PR opened by the user: check the list before pushing, and
