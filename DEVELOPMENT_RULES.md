@@ -53,6 +53,7 @@ every matching row. Green here is the price of asking the user to commit.
 | Rust library or CLI (`src/`) | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` |
 | Tauri crate (`src-tauri/`) | the `src/` row, plus `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` |
 | Frontend (`ui/`, including `ui/tests/`) | the `src-tauri/` row, plus `npm run test:e2e` |
+| Shell tooling (`scripts/`) | `sh -n <script>` on every script you edit, plus `sh scripts/install-skills.test.sh` (initial install, repeat run, copy mode, forced replacement, and the two refusals: source directory and a symlink alias to it) |
 | CPAL, Docker, or a real model | the rows above, plus the manual `cargo run -- <mode>` named in that module's row below. Unit tests never cover this. |
 | Docs only (`*.md`) | none. Check that the links and command names still resolve. |
 

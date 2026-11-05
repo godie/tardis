@@ -59,7 +59,23 @@ done
 
 [ -d "$source_dir" ] || { echo "no skills at $source_dir" >&2; exit 1; }
 
+# Physical path of a directory, symlinks resolved.
+resolve_dir() {
+    (CDPATH= cd -- "$1" && pwd -P)
+}
+
 mkdir -p "$target_dir"
+source_path=$(resolve_dir "$source_dir")
+target_path=$(resolve_dir "$target_dir")
+
+# A forced install into the source directory would delete each skill just
+# before copying or linking it. Refuse early, before any rm. Comparing
+# resolved paths catches a symlink alias too.
+if [ "$target_path" = "$source_path" ]; then
+    echo "refusing to install into the source directory: $target_path" >&2
+    echo "pass a different target, for example --target \"$HOME/.agents/skills\"" >&2
+    exit 1
+fi
 
 installed=0
 skipped=0
