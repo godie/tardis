@@ -60,6 +60,12 @@ pub const DEFAULT_CHUNKS_DIR: &str = "output/chunks";
 /// [`crate::transcription::LocalTranscriptionProvider`].
 pub const LIVE_CHUNKS_DIR: &str = "output/live_chunks";
 
+/// Append-only session history written by the Tauri shell: one JSON object
+/// per stage output (transcript, rendered output) in the order they
+/// happened, one per line. Relative to the working directory, like
+/// [`LIVE_CHUNKS_DIR`].
+pub const HISTORY_PATH: &str = "output/history.jsonl";
+
 /// Default source language code passed to translation pipelines
 /// (BCP-47-ish, lowercase).
 pub const DEFAULT_SOURCE_LANGUAGE: &str = "en";

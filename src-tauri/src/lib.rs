@@ -1,5 +1,8 @@
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager};
 
@@ -278,6 +281,12 @@ fn start_live_transcription(
                 None, // None => run until stop signal is set
                 Some(stop_clone),
                 move |event| {
+                    // Persist before emitting: anything the user can already
+                    // see should already be on disk.
+                    append_history(
+                        &event,
+                        std::path::Path::new(tardis::config::HISTORY_PATH),
+                    );
                     let ui_event =
                         tardis::app::ui_events::app_event_to_ui_event(&event);
                     let _ = app_clone.emit("app-event", ui_event);
@@ -344,6 +353,18 @@ fn stop_live_transcription(
         }
         None => Err(NO_SESSION_RUNNING_ERR.to_string()),
     }
+}
+
+/// List the input devices the host reports, for the settings selector.
+///
+/// Each entry carries a stable `id` (what the frontend persists in
+/// `runtime.json`, resolved back through `cpal`'s `Host::device_by_id`) and a
+/// human `name` (what the dropdown shows). Touches CPAL, so it is not
+/// unit-tested (DEVELOPMENT_RULES rule 2); the parsing and fallback rules it
+/// stands on live in [`tardis::audio::capture`] and are covered there.
+#[tauri::command]
+fn list_input_devices() -> Result<Vec<tardis::audio::capture::InputDeviceInfo>, String> {
+    tardis::audio::capture::list_input_devices().map_err(|e| e.to_string())
 }
 
 /// Return the list of supported transcription provider names.
@@ -566,9 +587,174 @@ fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
         .map_err(|e| normalize_local_transcription_error(&e.to_string()))
 }
 
+/// Current wall-clock time as Unix epoch milliseconds.
+///
+/// The history stores epoch milliseconds rather than a formatted string so
+/// the file stays timezone-free and sortable; the UI renders the local time
+/// from the same instant.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Append one transcript record to `path`, creating the file (and its
+/// directory) on first use.
+fn append_record_to(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())
+}
+
+/// Record one stage output in the append-only history file.
+///
+/// Transcripts and rendered outputs go to the same file, in the order they
+/// happened, tagged with `kind` so either can be filtered out.
+///
+/// Deliberately infallible from the caller's point of view: a read-only
+/// working directory, a full disk, or a serialization failure must not take
+/// a running session down, so the problem is reported on stderr and the
+/// session continues. Empty text is skipped rather than padded into the
+/// file, and every other event kind is ignored.
+fn append_history(event: &tardis::app::events::AppEvent, path: &std::path::Path) {
+    use tardis::app::events::AppEvent;
+    use tardis::app::history::{format_record, is_recordable, HistoryRecord};
+
+    let at_ms = now_ms();
+    let record = match event {
+        AppEvent::Transcript(t) if is_recordable(&t.text) => HistoryRecord::Transcript {
+            at_ms,
+            text: &t.text,
+            duration_ms: t.duration_ms,
+            provider: &t.provider,
+        },
+        AppEvent::Output(o) if is_recordable(&o.text) => HistoryRecord::Output {
+            at_ms,
+            text: &o.text,
+            source_language: &o.source_language,
+            target_language: &o.target_language,
+            output_kind: o.kind.as_label(),
+        },
+        _ => return,
+    };
+
+    let line = match format_record(&record) {
+        Ok(line) => line,
+        Err(e) => {
+            eprintln!("history: could not format record: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = append_record_to(path, &line) {
+        eprintln!("history: could not append to {}: {e}", path.display());
+    }
+}
+
+// ===== Crash diagnostics ===================================================
+
+/// `<OS config dir>/tardis/panic.log`, next to `runtime.json`.
+pub(crate) fn panic_log_path(base_dir: &Path) -> PathBuf {
+    tardis::app::settings_store::settings_file_path(base_dir).with_file_name("panic.log")
+}
+
+/// One panic record: when, where, what, and the backtrace.
+pub(crate) fn format_panic_record(
+    timestamp_secs: u64,
+    location: &str,
+    payload: &str,
+    backtrace: &str,
+) -> String {
+    format!("=== panic at {timestamp_secs} ({location}) ===\n{payload}\n{backtrace}\n")
+}
+
+fn append_record(path: &Path, record: &str) {
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("crash log: could not create {}: {e}", parent.display());
+        return;
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = writeln!(file, "{record}") {
+                eprintln!("crash log: could not write {}: {e}", path.display());
+            }
+            let _ = file.flush();
+        }
+        Err(e) => eprintln!("crash log: could not open {}: {e}", path.display()),
+    }
+}
+
+/// Log every panic — location, message and backtrace — to stderr and to
+/// `<config dir>/tardis/panic.log`.
+///
+/// The shell has no other crash trail: launched from Finder its stderr goes
+/// nowhere, so a "the window disappeared" report leaves nothing behind. The
+/// backtrace is captured with `Backtrace::force_capture`, which ignores
+/// `RUST_BACKTRACE=0`, and the process still exits as it would have — this
+/// only observes, it does not swallow the panic.
+fn install_panic_logger(path: PathBuf) {
+    let started = timestamp_secs();
+    append_record(
+        &path,
+        &format!(
+            "=== shell started at {started} (pid {}) ===",
+            std::process::id()
+        ),
+    );
+
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let backtrace = format!("{:?}", std::backtrace::Backtrace::force_capture());
+        let record = format_panic_record(timestamp_secs(), &location, &payload, &backtrace);
+        // Keep the default behaviour on stderr so a terminal launch still
+        // shows the panic immediately.
+        eprintln!("{record}");
+        append_record(&path, &record);
+    }));
+}
+
+fn timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // Installed before any worker thread starts, so a panic during a
+            // live session (the usual suspect) is captured, not lost.
+            if let Ok(base_dir) = app.path().config_dir() {
+                install_panic_logger(panic_log_path(&base_dir));
+            }
+            Ok(())
+        })
         .manage(Mutex::new(MockAppState::default()))
         // LiveSessionState is registered as `Arc<...>` (not
         // `Mutex<...>`) so the worker thread spawned by
@@ -595,6 +781,7 @@ pub fn run() {
             start_live_transcription,
             stop_live_transcription,
             get_supported_transcription_providers,
+            list_input_devices,
             get_default_runtime_config,
             load_runtime_settings,
             save_runtime_settings,
@@ -606,6 +793,63 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_log_sits_next_to_runtime_json() {
+        let path = panic_log_path(Path::new("/tmp/fake-config"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/fake-config/tardis/panic.log")
+        );
+    }
+
+    #[test]
+    fn panic_record_carries_time_location_payload_and_backtrace() {
+        let record = format_panic_record(
+            1_700_000_000,
+            "src/lib.rs:42:9",
+            "called `Option::unwrap()` on a `None` value",
+            "   0: tardis_ui_shell::start_live_transcription",
+        );
+        assert!(record.starts_with("=== panic at 1700000000 (src/lib.rs:42:9) ==="));
+        assert!(record.contains("Option::unwrap"));
+        assert!(record.contains("start_live_transcription"));
+        assert!(record.ends_with("\n"));
+    }
+
+    #[test]
+    fn panic_hook_writes_the_backtrace_to_the_log() {
+        // Note: the panic hook is process-global, so this test leaves it
+        // installed. It only observes panics (the default stderr print is
+        // preserved), so other tests are unaffected.
+        let dir = std::env::temp_dir().join(format!("tardis-hook-{}", std::process::id()));
+        let path = panic_log_path(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        install_panic_logger(path.clone());
+        let _ = std::panic::catch_unwind(|| panic!("boom from the test"));
+
+        let contents = std::fs::read_to_string(&path).expect("panic log written");
+        assert!(contents.contains("shell started"), "{contents}");
+        assert!(contents.contains("boom from the test"), "{contents}");
+        assert!(contents.contains("=== panic at"), "{contents}");
+        assert!(contents.contains("lib.rs"), "backtrace frames: {contents}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_record_creates_the_log_and_appends() {
+        let dir = std::env::temp_dir().join(format!("tardis-panic-{}", std::process::id()));
+        let path = panic_log_path(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        append_record(&path, "first");
+        append_record(&path, "second");
+
+        let contents = std::fs::read_to_string(&path).expect("log written");
+        assert_eq!(contents, "first\nsecond\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn default_status_is_idle() {
@@ -634,6 +878,96 @@ mod tests {
             MOCK_TRANSLATION,
             "[mock es] mock transcript: speech detected"
         );
+    }
+
+    // ---- transcript history --------------------------------------------
+
+    #[test]
+    fn append_record_to_creates_the_directory_and_never_truncates() {
+        // A session appends one line per utterance; a truncating writer would
+        // silently leave only the last transcript of the day in the file.
+        let dir = std::env::temp_dir().join(format!("tardis-history-test-{}", std::process::id()));
+        let path = dir.join("nested").join("transcripts.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        append_record_to(&path, "{\"text\":\"one\"}\n").expect("first append");
+        append_record_to(&path, "{\"text\":\"two\"}\n").expect("second append");
+
+        let body = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(
+            body.lines().count(),
+            2,
+            "both appends must survive: {body:?}"
+        );
+        assert!(body.starts_with("{\"text\":\"one\"}"), "got: {body:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_text_is_skipped_by_the_history() {
+        // `append_history` filters on this; an empty provider reply must not
+        // add a blank row per silent utterance.
+        assert!(!tardis::app::history::is_recordable("  "));
+    }
+
+    #[test]
+    fn history_records_transcripts_and_outputs_in_order_and_ignores_the_rest() {
+        use tardis::app::events::{AppEvent, AppStatus, AppTranscriptEvent};
+        use tardis::app::live_events::{build_output_event, build_speech_event, build_transcript_event};
+        use tardis::processor::processor::OutputKind;
+
+        let dir = std::env::temp_dir().join(format!("tardis-history-order-{}", std::process::id()));
+        let path = dir.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let events = [
+            AppEvent::StatusChanged(AppStatus::Listening),
+            build_transcript_event(1, "hello".into(), "mock-local".into(), true, 4_320),
+            build_output_event(
+                1,
+                OutputKind::Translate,
+                "hello".into(),
+                "hola".into(),
+                "en".into(),
+                "es".into(),
+                true,
+            ),
+            // Status and speech carry no text to record.
+            build_speech_event(1, "hola".into(), "es".into(), 900, true),
+            AppEvent::StatusChanged(AppStatus::Stopped),
+        ];
+        for event in &events {
+            append_history(event, &path);
+        }
+
+        let body = std::fs::read_to_string(&path).expect("read back");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "only transcript + output: {body:?}");
+        assert!(
+            lines[0].starts_with("{\"kind\":\"transcript\""),
+            "got: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with("{\"kind\":\"output\""),
+            "rendered output must be its own record: {}",
+            lines[1]
+        );
+
+        // An empty provider reply adds nothing: no blank rows per silence.
+        let silent = AppEvent::Transcript(AppTranscriptEvent {
+            chunk_index: 2,
+            text: "   ".into(),
+            provider: "local-whisper".into(),
+            is_final: true,
+            duration_ms: 1_000,
+        });
+        append_history(&silent, &path);
+        let body = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(body.lines().count(), 2, "blank transcript was written: {body:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- validate_wav_path_input --------------------------------------

@@ -7,12 +7,11 @@
 //! same shared buffer. This module owns that machinery; the drivers keep only
 //! their own loop shape, banner text, and per-chunk work.
 //!
-//! Device enumeration and stream building touch CPAL and real hardware, so
+//! Device *enumeration* and stream building touch CPAL and real hardware, so
 //! they are not unit-tested (DEVELOPMENT_RULES rule 2). The pure pieces this
 //! module stands on (`chunker::chunk_size_or_error`,
-//! `chunker::has_complete_chunk`, `chunker::drain_chunk`) are covered by their
-//! own tests, and so is the mono mix ([`mono_mix_weights`]): it is plain
-//! arithmetic on a slice of peaks.
+//! `chunker::has_complete_chunk`, `chunker::drain_chunk`, and
+//! [`find_device_index`]) are covered by their own tests.
 
 use std::sync::{Arc, Mutex};
 
@@ -37,10 +36,19 @@ pub struct DefaultInput {
 impl DefaultInput {
     /// Resolve the default input device and its default stream config.
     pub fn resolve() -> Result<Self> {
+        Self::resolve_selected(None)
+    }
+
+    /// Resolve `selected` by name, falling back to the host default.
+    ///
+    /// `None` (or a blank name) means "the OS default". A name that no
+    /// longer matches any device — unplugged headset, renamed aggregate
+    /// device — falls back to the default and says so on stderr, because a
+    /// stale preference must not make Start fail: the alternative is a
+    /// session that cannot begin until the user edits `runtime.json`.
+    pub fn resolve_selected(selected: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No default input device available"))?;
+        let device = select_device(&host, selected)?;
         let supported = device.default_input_config()?;
         Ok(Self {
             device_label: format!("{device}"),
@@ -189,6 +197,81 @@ fn push_mono<T>(
     }
 }
 
+/// One selectable input device: a stable id plus the human name.
+///
+/// The UI shows `name` and sends back `id`. The id is what survives a
+/// restart, a replug, or a reboot (`cpal` documents `DeviceId` as stable and
+/// meant to be persisted through `Display`/`FromStr`), while enumeration
+/// order — and, on some hosts, the name — does not.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InputDeviceInfo {
+    /// `"<host>:<device>"`, e.g. `"coreaudio:BuiltInMicrophoneDevice"`.
+    pub id: String,
+    /// `Display` form of the device, as shown in every driver banner.
+    pub name: String,
+}
+
+/// Every input device the host reports, in enumeration order.
+///
+/// A device that cannot report an id cannot be selected by it either, so it
+/// is skipped rather than offered as a row that always fails on Start.
+pub fn list_input_devices() -> Result<Vec<InputDeviceInfo>> {
+    let host = cpal::default_host();
+    let devices = host
+        .input_devices()
+        .map_err(|e| anyhow!("Could not enumerate input devices: {e}"))?;
+    Ok(devices
+        .filter_map(|device| {
+            let id = device.id().ok()?;
+            Some(InputDeviceInfo {
+                id: id.to_string(),
+                name: device.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Parse a persisted device id string, rejecting blanks.
+///
+/// Split out from [`select_device`] so the "empty means default" rule is
+/// testable without a sound card: a blank name in `runtime.json` is the UI's
+/// empty option in disguise, not a device that could ever be opened.
+pub fn parse_device_id(selected: &str) -> Option<cpal::DeviceId> {
+    let trimmed = selected.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<cpal::DeviceId>().ok()
+}
+
+/// Pick the device to open: `selected` when it still exists, otherwise the
+/// host default.
+fn select_device(host: &cpal::Host, selected: Option<&str>) -> Result<cpal::Device> {
+    if let Some(wanted) = selected {
+        match parse_device_id(wanted) {
+            Some(id) => {
+                if let Some(device) = host.device_by_id(&id) {
+                    return Ok(device);
+                }
+                eprintln!(
+                    "input device \"{wanted}\" is not available; falling back to the system default"
+                );
+            }
+            // Not a device id at all: most likely a hand-edited
+            // `runtime.json`. The default is a better answer than a failed
+            // session, but say so.
+            None if !wanted.trim().is_empty() => {
+                eprintln!(
+                    "input device \"{wanted}\" is not a valid device id; falling back to the system default"
+                );
+            }
+            None => {}
+        }
+    }
+    host.default_input_device()
+        .ok_or_else(|| anyhow!("No default input device available"))
+}
+
 /// An unplayed capture stream feeding mono f32 samples into a shared buffer,
 /// plus the input config those samples were captured with.
 pub struct MicInput {
@@ -202,7 +285,13 @@ impl MicInput {
     /// `error_prefix` labels stream errors, e.g. `"chunk recorder stream
     /// error: …"`.
     pub fn start(error_prefix: &'static str) -> Result<Self> {
-        let input = DefaultInput::resolve()?;
+        Self::start_with_device(error_prefix, None)
+    }
+
+    /// Same as [`MicInput::start`], but opening `selected` (see
+    /// [`DefaultInput::resolve_selected`]).
+    pub fn start_with_device(error_prefix: &'static str, selected: Option<&str>) -> Result<Self> {
+        let input = DefaultInput::resolve_selected(selected)?;
         let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let stream = match input.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -231,7 +320,7 @@ impl MicInput {
         self.input.sample_rate()
     }
 
-    /// Always 1: [`build_stream`] downmixes every block on the way in, so the
+    /// Always 1: [`build_stream`] downmixes every frame on the way in, so the
     /// buffer, the volume gate, the endpointing frames and the WAV handed to
     /// the provider are all mono.
     pub fn channels(&self) -> u16 {
@@ -300,9 +389,9 @@ where
         input.config(),
         move |data: &[T], _info: &cpal::InputCallbackInfo| {
             // Mono in, mono out: one buffer sample per frame regardless of
-            // how many channels the device reports. The scratch arrays are
-            // stack locals: this callback runs on the OS audio thread and
-            // must not allocate (AGENTS.md).
+            // how many channels the device reports. Both scratch arrays are
+            // stack locals reused by every block — this callback runs on the
+            // OS audio thread and must not allocate (AGENTS.md).
             let mut peaks = [0.0_f32; MAX_MIX_CHANNELS];
             block_peaks(data, device_channels, &mut peaks);
             let weights = mono_mix_weights(&peaks, device_channels);
@@ -322,6 +411,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_device_selection_means_system_default() {
+        // The UI's empty option and a hand-edited `runtime.json` both land
+        // here; neither is an error, both mean "whatever the OS picks".
+        assert!(parse_device_id("").is_none());
+        assert!(parse_device_id("   ").is_none());
+    }
+
+    #[test]
+    fn a_string_that_is_not_a_device_id_is_rejected() {
+        // No host prefix: this is what a user typing a device name by hand
+        // into runtime.json produces, and it must fall back, not panic.
+        assert!(parse_device_id("External Microphone").is_none());
+    }
 
     /// Mix one frame of `channels` samples with the weights those peaks
     /// produce, the way `push_mono` does it in the callback.
@@ -373,8 +477,9 @@ mod tests {
 
     #[test]
     fn the_loudest_channel_dominates_a_much_quieter_one() {
-        // 0.1 is below half of 0.8, so it does not halve the level. Real
-        // stereo pairs stay within 2x of each other and are averaged.
+        // 0.1 is below half of 0.8, so it only pads the average when it is
+        // real audio (both sides of a stereo pair are within 2x of each
+        // other); a near-silent channel must not halve the level.
         assert!((mix(&[0.8, 0.1]) - 0.8).abs() < 1e-6);
     }
 
@@ -391,5 +496,18 @@ mod tests {
         let weights = mono_mix_weights(&peaks, 200);
         assert_eq!(weights.len(), MAX_MIX_CHANNELS);
         assert!(weights.iter().all(|w| w.is_finite()));
+    }
+
+    #[test]
+    fn device_info_serializes_id_and_name_for_the_ui() {
+        let json = serde_json::to_string(&InputDeviceInfo {
+            id: "coreaudio:BuiltInMicrophoneDevice".to_string(),
+            name: "External Microphone".to_string(),
+        })
+        .expect("serializes");
+        assert_eq!(
+            json,
+            r#"{"id":"coreaudio:BuiltInMicrophoneDevice","name":"External Microphone"}"#
+        );
     }
 }

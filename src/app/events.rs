@@ -141,6 +141,11 @@ pub struct AppTranscriptEvent {
     /// impls may additionally yield `is_final = false` partials
     /// while the chunk is still being decoded.
     pub is_final: bool,
+    /// Length of the audio this transcript came from, in
+    /// milliseconds. `0` for synthetic flows that never captured
+    /// audio. The transcript history shows it so a reader can tell a
+    /// clipped word from a full sentence.
+    pub duration_ms: u64,
 }
 
 /// Per-call output event emitted after a successful
@@ -277,18 +282,21 @@ mod tests {
             text: "hello".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         };
         let b = AppTranscriptEvent {
             chunk_index: 1,
             text: "hello".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         };
         let c = AppTranscriptEvent {
             chunk_index: 1,
             text: "hello".to_string(),
             provider: "local-whisper".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         };
         assert_eq!(a, b);
         assert_ne!(a, c);
@@ -344,6 +352,7 @@ mod tests {
             text: "x".to_string(),
             provider: "p".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         let translation = AppEvent::Output(AppOutputEvent {
             chunk_index: 1,
@@ -372,6 +381,7 @@ mod tests {
             text: "hi".to_string(),
             provider: "p".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         assert_eq!(app_event_kind(&e), "transcript");
     }
@@ -417,6 +427,7 @@ mod tests {
             text: "hello".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         let s = format_app_event_for_console(&e);
         assert!(
@@ -432,6 +443,7 @@ mod tests {
             text: "hi".to_string(),
             provider: "local-whisper".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         let s = format_app_event_for_console(&e);
         assert!(
@@ -447,6 +459,7 @@ mod tests {
             text: "hello world".to_string(),
             provider: "p".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         let s = format_app_event_for_console(&e);
         assert!(

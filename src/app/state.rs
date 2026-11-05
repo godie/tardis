@@ -147,6 +147,7 @@ mod tests {
             text: "hello".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         };
         state.apply_transcript(event.clone());
         assert_eq!(state.last_transcript.as_deref(), Some("hello"));
@@ -160,6 +161,7 @@ mod tests {
             text: "world".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         };
         let returned = state.apply_transcript(event.clone());
         assert_eq!(returned, AppEvent::Transcript(event));
@@ -221,6 +223,7 @@ mod tests {
             text: "transcribed".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 1_200,
         });
         assert!(matches!(tr, AppEvent::Transcript(_)));
         assert_eq!(state.last_transcript.as_deref(), Some("transcribed"));

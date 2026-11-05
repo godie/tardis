@@ -152,6 +152,9 @@ impl AppService {
             text: transcript_text.to_string(),
             provider: self.state.config.transcription_provider.clone(),
             is_final: true,
+            // Synthetic flow: the text is supplied by the caller, no audio
+            // was ever captured, so there is no duration to report.
+            duration_ms: 0,
         };
         events.push(self.state.apply_transcript(transcript_event));
 

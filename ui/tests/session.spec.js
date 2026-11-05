@@ -22,7 +22,14 @@ const DEFAULT_CONFIG = {
   hangover_ms: 400,
   min_speech_ms: 200,
   max_utterance_ms: 15000,
+  input_device: null,
 };
+
+// Two fake input devices: the selector shows `name` and persists `id`.
+const INPUT_DEVICES = [
+  { id: "coreaudio:builtin", name: "Built-in Microphone" },
+  { id: "coreaudio:usb", name: "USB Audio" },
+];
 
 // Runs in the page before `app.js`. `window.__tauriTest` is the inspection
 // handle the tests use: every invoke is recorded, and `emitAppEvent` feeds the
@@ -42,6 +49,11 @@ function installFakeBridge(page, config) {
           return initialConfig;
         case "get_supported_transcription_providers":
           return ["mock-local", "local-whisper"];
+        case "list_input_devices":
+          return [
+            { id: "coreaudio:builtin", name: "Built-in Microphone" },
+            { id: "coreaudio:usb", name: "USB Audio" },
+          ];
         case "start_live_transcription":
           return "Listening";
         case "stop_live_transcription":
@@ -86,6 +98,43 @@ function findCall(page, command) {
   );
 }
 
+test("the input-device selector lists devices and sends the chosen id", async ({ page }) => {
+  await openShell(page);
+
+  const select = page.locator("#input-device");
+  // "System default" plus one row per device the backend reported.
+  await expect(select.locator("option")).toHaveCount(1 + INPUT_DEVICES.length);
+  await expect(select).toHaveValue("");
+  await expect(select.locator("option").nth(1)).toHaveText("Built-in Microphone");
+
+  await select.selectOption("coreaudio:usb");
+  await page.locator("#start-button").click();
+
+  const start = await findCall(page, "start_live_transcription");
+  expect(start.args.config.input_device).toBe("coreaudio:usb");
+});
+
+test("a persisted device is preselected, and a missing one falls back to the default", async ({
+  page,
+}) => {
+  // The saved id exists: the selector must show it, not "System default".
+  await installFakeBridge(page, { ...DEFAULT_CONFIG, input_device: "coreaudio:builtin" });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "list_input_devices"),
+  );
+  await expect(page.locator("#input-device")).toHaveValue("coreaudio:builtin");
+
+  // The saved id is a device that is gone (unplugged headset): falling back
+  // to the system default is what the backend does too.
+  await installFakeBridge(page, { ...DEFAULT_CONFIG, input_device: "coreaudio:gone" });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "list_input_devices"),
+  );
+  await expect(page.locator("#input-device")).toHaveValue("");
+});
+
 test("start sends the whole runtime config and locks the panel", async ({ page }) => {
   await openShell(page);
 
@@ -117,7 +166,14 @@ test("utterance events fill the transcript, output and speech lines", async ({ p
   const spoken = "[mock es] mock translation: \"hola mundo\"";
   await page.evaluate((text) => {
     window.emitAppEvent({ kind: "status", status: "listening" });
-    window.emitAppEvent({ kind: "transcript", index: 1, text: "hola mundo", provider: "mock-local" });
+    window.emitAppEvent({
+      kind: "transcript",
+      index: 1,
+      text: "hola mundo",
+      provider: "mock-local",
+      duration_ms: 4320,
+      is_final: true,
+    });
     window.emitAppEvent({
       kind: "output",
       index: 1,
@@ -139,11 +195,80 @@ test("utterance events fill the transcript, output and speech lines", async ({ p
     });
   }, spoken);
 
-  await expect(page.locator("#transcript-content")).toHaveText("hola mundo");
-  await expect(page.locator("#translation-content")).toHaveText(spoken);
+  const row = page.locator("#transcript-content .history-item").first();
+  await expect(row.locator(".history-text")).toHaveText("hola mundo");
+  // Duration and provider come from the event, so the row can be read later
+  // without re-listening to the audio.
+  await expect(row.locator(".history-meta")).toHaveText("4.3 s \u00b7 mock-local");
+  await expect(row.locator(".history-time")).not.toBeEmpty();
+  // The rendered output gets the same treatment: a row of its own, tagged
+  // with the language pair that produced it.
+  const rendered = page.locator("#translation-content .history-item").first();
+  await expect(rendered.locator(".history-text")).toHaveText(spoken);
+  await expect(rendered.locator(".history-meta")).toHaveText("en \u2192 es");
+  await expect(page.locator("#translation-empty")).toBeHidden();
   await expect(page.locator("#speech-status")).toBeVisible();
   await expect(page.locator("#speech-status")).toHaveText(`Spoken · 4.3 s · es — ${spoken}`);
   await expect(page.locator("#live-error")).toBeHidden();
+});
+
+test("each utterance appends to the transcript and translation histories instead of replacing them", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+
+  await page.evaluate(() => {
+    window.emitAppEvent({ kind: "status", status: "listening" });
+    window.emitAppEvent({
+      kind: "transcript",
+      index: 1,
+      text: "first thing heard",
+      provider: "mock-local",
+      duration_ms: 1000,
+      is_final: true,
+    });
+    window.emitAppEvent({
+      kind: "transcript",
+      index: 2,
+      text: "second thing heard",
+      provider: "local-whisper",
+      duration_ms: 2500,
+      is_final: true,
+    });
+    window.emitAppEvent({
+      kind: "output",
+      index: 1,
+      text: "lo primero oido",
+      source_language: "en",
+      target_language: "es",
+      output_kind: "translate",
+      is_final: true,
+    });
+    window.emitAppEvent({
+      kind: "output",
+      index: 2,
+      text: "lo segundo oido",
+      source_language: "en",
+      target_language: "es",
+      output_kind: "translate",
+      is_final: true,
+    });
+  });
+
+  const rows = page.locator("#transcript-content .history-item");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator(".history-text")).toHaveText("first thing heard");
+  await expect(rows.nth(1).locator(".history-text")).toHaveText("second thing heard");
+  await expect(rows.nth(1).locator(".history-meta")).toHaveText("2.5 s \u00b7 local-whisper");
+
+  // Same for the rendered lines: the second must not replace the first.
+  const rendered = page.locator("#translation-content .history-item");
+  await expect(rendered).toHaveCount(2);
+  await expect(rendered.nth(0).locator(".history-text")).toHaveText("lo primero oido");
+  await expect(rendered.nth(1).locator(".history-text")).toHaveText("lo segundo oido");
+
+  // The empty-state hints are gone once there is something to read.
+  await expect(page.locator("#transcript-empty")).toBeHidden();
+  await expect(page.locator("#translation-empty")).toBeHidden();
 });
 
 test("stop keeps the panel locked until the backend reports stopped", async ({ page }) => {
@@ -197,4 +322,27 @@ test("an impossible endpointing pair blocks the start", async ({ page }) => {
   await expect(page.locator("#max-utterance-ms")).toHaveAttribute("aria-invalid", "true");
   expect(await findCall(page, "start_live_transcription")).toBeNull();
   await expect(page.locator("#start-button")).toBeEnabled();
+});
+
+// The Tauri 2 ACL rejects `event.listen` unless a capability grants
+// `core:event:allow-listen`. Swallowing that rejection is what makes the shell
+// wait forever for a `stopped` event that can never arrive — the "stuck on
+// Stopping…" symptom. The failure has to be visible, not silent.
+test("a rejected event subscription surfaces an error instead of hanging", async ({ page }) => {
+  await installFakeBridge(page, DEFAULT_CONFIG);
+  await page.addInitScript(() => {
+    window.__TAURI__.event.listen = async () => {
+      throw new Error(
+        "event.listen not allowed. Permissions associated with this command: core:event:allow-listen",
+      );
+    };
+  });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "load_runtime_settings"),
+  );
+
+  await expect(page.locator("#live-error")).toBeVisible();
+  await expect(page.locator("#live-error")).toContainText("Could not subscribe to backend events");
+  await expect(page.locator("#status-indicator")).toHaveText("Error");
 });
