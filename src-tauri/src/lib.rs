@@ -599,8 +599,18 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Append one transcript record to `path`, creating the file (and its
-/// directory) on first use.
+/// Append one record to `path`, creating the file (and its directory) on
+/// first use.
+///
+/// Two failure modes matter here, because this is the only write that
+/// happens during a live session:
+///
+/// - A previous crash or a full disk can leave an **unterminated** object at
+///   the end of the file. It is dropped before appending, so the new record
+///   starts on its own line instead of fusing with the fragment.
+/// - If this write itself stops halfway, the bytes it wrote are rolled back.
+///   The next append then starts where this one began instead of after a
+///   half-written object.
 fn append_record_to(path: &std::path::Path, line: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
@@ -609,9 +619,48 @@ fn append_record_to(path: &std::path::Path, line: &str) -> std::io::Result<()> {
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
-    file.write_all(line.as_bytes())
+    repair_partial_tail(&mut file)?;
+    let start = file.metadata()?.len();
+    if let Err(e) = file.write_all(line.as_bytes()) {
+        let _ = file.set_len(start);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Truncate an unterminated trailing record, if there is one.
+///
+/// Every record `format_record` writes ends in `\n`, so "no trailing
+/// newline" is exactly "the last write did not finish". Walks backwards in
+/// blocks rather than reading the whole file: history files get long, and
+/// this runs on every append.
+fn repair_partial_tail(file: &mut std::fs::File) -> std::io::Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let mut end = file.metadata()?.len();
+    if end == 0 {
+        return Ok(());
+    }
+    let mut block = [0u8; 512];
+    while end > 0 {
+        let size = end.min(block.len() as u64);
+        let start = end - size;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut block[..size as usize])?;
+        if let Some(pos) = block[..size as usize].iter().rposition(|b| *b == b'\n') {
+            let keep = start + pos as u64 + 1;
+            if keep != file.metadata()?.len() {
+                file.set_len(keep)?;
+            }
+            return Ok(());
+        }
+        end = start;
+    }
+    // No newline anywhere: the file is one broken record.
+    file.set_len(0)
 }
 
 /// Record one stage output in the append-only history file.
@@ -911,6 +960,66 @@ mod tests {
         assert!(!tardis::app::history::is_recordable("  "));
     }
 
+    #[test]
+    fn append_record_to_drops_a_partial_tail_left_by_a_crash() {
+        // A write that stopped halfway leaves an unterminated object. The
+        // next append must not fuse with it: readers that skip malformed
+        // lines would otherwise lose that record too.
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-history-partial-{}",
+            std::process::id()
+        ));
+        let path = dir.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        std::fs::write(&path, "{\"text\":\"one\"}\n{\"text\":\"half").expect("seed file");
+        append_record_to(&path, "{\"text\":\"two\"}\n").expect("append after a partial write");
+
+        let body = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(body, "{\"text\":\"one\"}\n{\"text\":\"two\"}\n", "got: {body:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_record_to_handles_a_file_with_no_newline_at_all() {
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-history-nonl-{}",
+            std::process::id()
+        ));
+        let path = dir.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        std::fs::write(&path, "{\"text\":\"trunc").expect("seed file");
+        append_record_to(&path, "{\"text\":\"two\"}\n").expect("append after a broken file");
+
+        let body = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(body, "{\"text\":\"two\"}\n", "got: {body:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_record_to_keeps_a_complete_file_untouched() {
+        // The repair path must not cost bytes when the file is healthy.
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-history-intact-{}",
+            std::process::id()
+        ));
+        let path = dir.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        std::fs::write(&path, "{\"text\":\"one\"}\n").expect("seed file");
+        append_record_to(&path, "{\"text\":\"two\"}\n").expect("append");
+
+        let body = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(body, "{\"text\":\"one\"}\n{\"text\":\"two\"}\n", "got: {body:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn history_records_transcripts_and_outputs_in_order_and_ignores_the_rest() {
         use tardis::app::events::{AppEvent, AppStatus, AppTranscriptEvent};

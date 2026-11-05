@@ -114,7 +114,7 @@ test("the input-device selector lists devices and sends the chosen id", async ({
   expect(start.args.config.input_device).toBe("coreaudio:usb");
 });
 
-test("a persisted device is preselected, and a missing one falls back to the default", async ({
+test("a persisted device is preselected, and a missing one stays selected", async ({
   page,
 }) => {
   // The saved id exists: the selector must show it, not "System default".
@@ -125,14 +125,52 @@ test("a persisted device is preselected, and a missing one falls back to the def
   );
   await expect(page.locator("#input-device")).toHaveValue("coreaudio:builtin");
 
-  // The saved id is a device that is gone (unplugged headset): falling back
-  // to the system default is what the backend does too.
+  // The saved id is a device that is gone (unplugged headset). The selector
+  // keeps it as a "not connected" option: the backend already falls back to
+  // the system default at Start, and an unrelated settings change must not
+  // erase the choice before the headset comes back.
   await installFakeBridge(page, { ...DEFAULT_CONFIG, input_device: "coreaudio:gone" });
   await page.goto("/");
   await page.waitForFunction(() =>
     window.__tauriTest.calls.some((call) => call.command === "list_input_devices"),
   );
-  await expect(page.locator("#input-device")).toHaveValue("");
+  const select = page.locator("#input-device");
+  await expect(select).toHaveValue("coreaudio:gone");
+  await expect(select.locator("option[value='coreaudio:gone']")).toHaveText(
+    "coreaudio:gone (not connected)",
+  );
+
+  // Changing something unrelated must persist the same id, not null.
+  await page.locator("#target-language").selectOption("it");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "save_runtime_settings"),
+  );
+  const save = await findCall(page, "save_runtime_settings");
+  expect(save.args.config.input_device).toBe("coreaudio:gone");
+});
+
+test("a failed device enumeration does not erase the saved id", async ({ page }) => {
+  await installFakeBridge(page, { ...DEFAULT_CONFIG, input_device: "coreaudio:usb" });
+  await page.addInitScript(() => {
+    window.__TAURI__.core.invoke = ((invoke) =>
+      async (command, args) => {
+        if (command === "list_input_devices") {
+          throw new Error("could not enumerate input devices");
+        }
+        return invoke(command, args);
+      })(window.__TAURI__.core.invoke);
+  });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "load_runtime_settings"),
+  );
+
+  await page.locator("#target-language").selectOption("it");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "save_runtime_settings"),
+  );
+  const save = await findCall(page, "save_runtime_settings");
+  expect(save.args.config.input_device).toBe("coreaudio:usb");
 });
 
 test("start sends the whole runtime config and locks the panel", async ({ page }) => {
@@ -269,6 +307,33 @@ test("each utterance appends to the transcript and translation histories instead
   // The empty-state hints are gone once there is something to read.
   await expect(page.locator("#transcript-empty")).toBeHidden();
   await expect(page.locator("#translation-empty")).toBeHidden();
+});
+
+test("history panels keep only the newest rows", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+
+  // A long session must not grow the webview's DOM without bound. The file
+  // on disk still gets every record; the panels keep the recent tail.
+  await page.evaluate(() => {
+    window.emitAppEvent({ kind: "status", status: "listening" });
+    for (let i = 1; i <= 205; i += 1) {
+      window.emitAppEvent({
+        kind: "transcript",
+        index: i,
+        text: `utterance ${i}`,
+        provider: "mock-local",
+        duration_ms: 1000,
+        is_final: true,
+      });
+    }
+  });
+
+  const rows = page.locator("#transcript-content .history-item");
+  await expect(rows).toHaveCount(200);
+  // The oldest rows are the ones retired; the newest is still last.
+  await expect(rows.first().locator(".history-text")).toHaveText("utterance 6");
+  await expect(rows.last().locator(".history-text")).toHaveText("utterance 205");
 });
 
 test("stop keeps the panel locked until the backend reports stopped", async ({ page }) => {

@@ -41,6 +41,22 @@ const SESSION_SETTINGS_INPUTS = [
 ];
 
 const DEV = true; // Set to false before release to suppress console logs
+
+// Rows kept per history panel. The whole session is still on disk in
+// output/history.jsonl; the panels only need the recent tail, and an
+// unbounded list keeps every utterance in the webview's DOM for the rest of
+// the session.
+const MAX_HISTORY_ROWS = 200;
+
+// Append one row to a history panel and retire the oldest rows past the cap,
+// keeping the newest row in view.
+function appendHistoryItem(panel, item) {
+  panel.append(item);
+  while (panel.children.length > MAX_HISTORY_ROWS) {
+    panel.firstElementChild.remove();
+  }
+  panel.scrollTop = panel.scrollHeight;
+}
 const providerHint = document.querySelector("#provider-hint");
 
 // Local WAV transcription controls.
@@ -116,9 +132,9 @@ function appendTranscript(text, durationMs, provider) {
   meta.textContent = parts.join(" \u00b7 ");
 
   item.append(time, body, meta);
-  transcriptPanel.append(item);
-  // Newest last: keep the newest row in view as the session runs.
-  transcriptPanel.scrollTop = transcriptPanel.scrollHeight;
+  // Newest last: the helper keeps the newest row in view as the session
+  // runs, and drops rows past MAX_HISTORY_ROWS from the top.
+  appendHistoryItem(transcriptPanel, item);
 }
 
 // Same shape as the transcript history: one row per rendered output, so the
@@ -148,8 +164,7 @@ function appendTranslation(text, sourceLang, targetLang) {
   meta.textContent = pair;
 
   item.append(time, body, meta);
-  translationPanel.append(item);
-  translationPanel.scrollTop = translationPanel.scrollHeight;
+  appendHistoryItem(translationPanel, item);
 }
 
 // The speech line reports what the backend rendered and asked the
@@ -527,6 +542,27 @@ async function loadFromBackendSettings() {
   // Input-device selector: the value is the device's stable id, the label is
   // the human name. Read once per load; a headset plugged in after the
   // window opened shows up next time the shell starts.
+  //
+  // A persisted id whose device is not connected right now is kept as an
+  // option of its own. Without it the selector would sit on "System default"
+  // and the next unrelated settings change would save `input_device: null`,
+  // erasing the choice the moment the headset came back. Start still falls
+  // back to the system default when the id cannot be opened.
+  function keepSavedDevice() {
+    if (!savedDevice) return;
+    const known = Array.from(inputDeviceSelect.options).some(
+      (option) => option.value === savedDevice,
+    );
+    if (!known) {
+      const missing = document.createElement("option");
+      missing.value = savedDevice;
+      missing.textContent = `${savedDevice} (not connected)`;
+      inputDeviceSelect.appendChild(missing);
+      log("persisted input device is not available:", savedDevice);
+    }
+    inputDeviceSelect.value = savedDevice;
+  }
+
   try {
     const devices = await invoke("list_input_devices");
     inputDeviceSelect.innerHTML = "";
@@ -543,20 +579,14 @@ async function loadFromBackendSettings() {
         inputDeviceSelect.appendChild(opt);
       }
     }
-
-    // A persisted id whose device is gone (unplugged headset) leaves the
-    // selector on "System default", which is what the backend does too.
-    if (savedDevice) {
-      const known = Array.from(inputDeviceSelect.options).some(
-        (option) => option.value === savedDevice,
-      );
-      inputDeviceSelect.value = known ? savedDevice : "";
-      if (!known) log("persisted input device is not available:", savedDevice);
-    }
     log("loaded input devices:", devices);
   } catch (error) {
     log("could not load input devices:", error);
   }
+
+  // Runs on both paths: a failed enumeration must not turn the saved
+  // preference into null on the next save.
+  keepSavedDevice();
 
   // 2. Auto-save on every committed change so settings persist
   //    across Tauri shell restarts. The `change` event fires
