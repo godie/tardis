@@ -20,7 +20,7 @@ What exists:
 - `audio::*` covers device listing, microphone capture, chunking, chunk saving, WAV recording, and silence endpointing (`audio::endpoint` turns fixed windows into whole utterances).
 - `transcription::LocalTranscriptionProvider` is the real backend contract (file in, text out): `LocalWhisperClient` (Docker `faster-whisper`) and `MockLocalProvider` implement it, and the live runner selects between them through `ProviderKind` / `build_provider`.
 - `transcription::transcriber::Transcriber` exists for in-process `&[f32]` chunk processing; today only `MockTranscriber` implements it and it drives the mock pipelines (`mock-transcribe*`, `mock-translate`).
-- `processor::*` carries the process stage: `Processor` returns `Option<Output>` (translate today, respond later), `build_processor` dispatches, and `MockProcessor` is the deterministic default.
+- `processor::*` carries the process stage: `Processor` returns `Result<Option<Output>>` (`Ok(None)` = deliberate silence, `Err` = surfaced as an error event; translate today, respond later), `build_processor` dispatches, and `MockProcessor` is the deterministic default.
 - `synthesis::*` + `audio::player` complete the loop with `Synthesizer` / `Player` contracts and deterministic mocks; `AppEvent::Speech` reports the rendered duration.
 - `src/app/` introduces the app-facing orchestration boundary: `AppService`, `AppState`, `AppRuntimeConfig`, and a typed `AppEvent` stream. `cargo run -- app-mock-flow` exercises it end-to-end against `MockProcessor` without CPAL/Docker/fs; `cargo run -- mock-voice-flow` runs the same stages through the `Speech` event. Pure-logic coverage (`config` 36, `events` 26, `state` 12, `service` 15) totals 89 unit tests.
 - Provider selection is surfaced end to end: `transcription_provider` on `AppRuntimeConfig` (default `mock-local`, validated against `ProviderKind`), `#provider-select` built from `get_supported_transcription_providers`, and `--provider <name>` on the CLI.
@@ -58,23 +58,23 @@ Next:
 
 ## 3. Replace Mock Translation With A Real Translation Boundary
 
-Status: `partial`
+Status: `partial (real LLM provider behind the trait)`
 
 What exists:
 
 - `processor::processor::Processor` and the mock translate pipeline already define the handoff point.
-- The CLI already proves utterance-by-utterance transcription-to-output flow.
+- `processor::llm::LlmProcessor` is the real implementation: an OpenAI-compatible `/chat/completions` client (`reqwest::blocking`, no async runtime) selected by `processor_provider: "llm"`, `--processor llm`, or the shell's Processor dropdown. Defaults to a local Ollama; a cloud endpoint is a base-URL plus `TARDIS_LLM_API_KEY` change. The key is redacted from every error string and never persisted.
+- The CLI already proves utterance-by-utterance transcription-to-output flow, and `llm-translate-text "<text>"` exercises one real round-trip with no microphone.
 
 Gaps:
 
-- Translation is still string formatting, not language-aware transformation.
-- There is no source-language detection or provider routing yet.
+- Translation quality is the model's; there is no evaluation harness.
+- There is no source-language detection yet, and the prompt is translate-only (respond mode is PR 6 in [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md)).
+- One request at a time on the capture thread: a cold model stalls the loop up to `LLM_TIMEOUT_SECS`.
 
 Next:
 
-- Add a provider-backed translator behind the existing trait.
-- Decide whether the first real path is local, cloud-backed, or deferred until transcription quality is acceptable.
-- Keep the mock translator for deterministic tests and offline UI work.
+- Measure latency for the local default against a fast cloud model before choosing a default (§4 of the core pipeline plan).
 
 Later:
 
@@ -136,7 +136,7 @@ Next:
 - Add the session accumulator (transcript + translation events per
   session) plus JSON / plain-text export, and surface export controls
   in the UI.
-- Generalize the process stage to a `Processor` trait (returns `Option<Output>`, so "stay silent" is a normal result) and inject it, then add a real provider in translate mode; see [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md).
+- Generalize the process stage to a `Processor` trait (returns `Result<Option<Output>>`: `Ok(None)` is "stay silent", `Err` becomes an error event) and inject it, then add a real provider in translate mode; see [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md).
 - Surface real translation events through the Tauri event stream.
 - Add a multithreaded Start/Stop race test to harden the cleanup.
 - Add a top-level `schema_version` to the persisted file so future

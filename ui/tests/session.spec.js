@@ -15,6 +15,7 @@ const { test, expect } = require("@playwright/test");
 
 const DEFAULT_CONFIG = {
   transcription_provider: "mock-local",
+  processor_provider: "mock",
   source_language: "en",
   target_language: "es",
   chunk_duration_ms: 1000,
@@ -54,6 +55,8 @@ function installFakeBridge(page, config) {
             { id: "coreaudio:builtin", name: "Built-in Microphone" },
             { id: "coreaudio:usb", name: "USB Audio" },
           ];
+        case "get_supported_processor_providers":
+          return ["mock", "llm"];
         case "start_live_transcription":
           return "Listening";
         case "stop_live_transcription":

@@ -383,6 +383,17 @@ fn get_supported_transcription_providers() -> Vec<String> {
         .collect()
 }
 
+/// Return the backend's list of supported process-stage names (`mock`,
+/// `llm`). Mirrors [`get_supported_transcription_providers`] so the
+/// settings panel rebuilds both dropdowns from one source of truth.
+#[tauri::command]
+fn get_supported_processor_providers() -> Vec<String> {
+    tardis::app::config::supported_processor_providers()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Return the default [`tardis::app::config::AppRuntimeConfig`]
 /// the UI should pre-populate the settings panel with on first
 /// load.
@@ -831,6 +842,7 @@ pub fn run() {
             stop_live_transcription,
             get_supported_transcription_providers,
             list_input_devices,
+            get_supported_processor_providers,
             get_default_runtime_config,
             load_runtime_settings,
             save_runtime_settings,

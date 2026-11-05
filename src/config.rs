@@ -92,3 +92,30 @@ pub const LOCAL_WHISPER_MODEL: &str = "base";
 /// Default language code passed as the multipart `language` field
 /// to the local faster-whisper container.
 pub const LOCAL_WHISPER_LANGUAGE: &str = "en";
+
+/// Base URL of the OpenAI-compatible LLM endpoint the real
+/// `processor` talks to. Defaults to a local Ollama; a cloud endpoint
+/// is the same code with a different base URL plus
+/// `TARDIS_LLM_API_KEY`. Never contains the key.
+pub const LLM_BASE_URL: &str = "http://localhost:11434/v1";
+
+/// Model id sent as the `model` field. Must exist on the server above
+/// (`ollama pull qwen2.5:7b-instruct` for the default).
+pub const LLM_MODEL: &str = "qwen2.5:7b-instruct";
+
+/// Per-request timeout, in seconds. One request is in flight at a time
+/// (the loop is synchronous), so this is also the worst-case stall of
+/// the capture thread when the model is cold.
+pub const LLM_TIMEOUT_SECS: u64 = 20;
+
+/// Cap on generated tokens per utterance. A translation never needs
+/// more than the transcript itself; the cap bounds latency and cost.
+pub const LLM_MAX_TOKENS: u32 = 256;
+
+/// Sampling temperature. Low on purpose: translating is not a creative
+/// task, and a warm model drifts on names and numbers.
+pub const LLM_TEMPERATURE: f32 = 0.2;
+
+/// Version of the process-stage prompt. Bumped whenever the prompt text
+/// changes, so the change is visible in the prompt itself and in review.
+pub const PROCESS_PROMPT_VERSION: u32 = 1;

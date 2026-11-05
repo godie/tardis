@@ -34,6 +34,12 @@ pub struct AppRuntimeConfig {
     /// Stable identifier for the active `Transcriber`
     /// implementation (e.g. `"mock-local"`, `"local-whisper"`).
     pub transcription_provider: String,
+    /// Stable identifier for the active `Processor` implementation:
+    /// `"mock"` (deterministic, offline) or `"llm"` (OpenAI-compatible
+    /// chat endpoint). Deserialized with a default so a `runtime.json`
+    /// written before the LLM processor existed still loads as the mock.
+    #[serde(default = "default_processor_provider")]
+    pub processor_provider: String,
     /// BCP-47-ish source language code (e.g. `"en"`).
     pub source_language: String,
     /// BCP-47-ish target language code (e.g. `"es"`).
@@ -82,6 +88,10 @@ pub struct AppRuntimeConfig {
 
 fn default_hangover_ms() -> u64 {
     central::DEFAULT_HANGOVER_MS
+}
+
+fn default_processor_provider() -> String {
+    crate::processor::DEFAULT_PROCESSOR_NAME.to_string()
 }
 
 fn default_min_speech_ms() -> u64 {
@@ -150,6 +160,23 @@ pub fn is_supported_transcription_provider(provider: &str) -> bool {
     supported_transcription_providers().contains(&provider)
 }
 
+/// Return the canonical list of supported process-stage
+/// ("processor") names.
+///
+/// Kept next to the transcription list so the UI can rebuild both
+/// dropdowns from the backend instead of hardcoding either.
+pub fn supported_processor_providers() -> Vec<&'static str> {
+    vec!["mock", "llm"]
+}
+
+/// Membership test for [`supported_processor_providers`].
+///
+/// Same contract as [`is_supported_transcription_provider`]:
+/// exact, case-sensitive match; empty and unknown names fail.
+pub fn is_supported_processor_provider(provider: &str) -> bool {
+    supported_processor_providers().contains(&provider)
+}
+
 /// Trim leading / trailing whitespace from the
 /// [`AppRuntimeConfig`] string fields.
 ///
@@ -165,6 +192,7 @@ pub fn is_supported_transcription_provider(provider: &str) -> bool {
 pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
     AppRuntimeConfig {
         transcription_provider: config.transcription_provider.trim().to_string(),
+        processor_provider: config.processor_provider.trim().to_string(),
         source_language: config.source_language.trim().to_string(),
         target_language: config.target_language.trim().to_string(),
         chunk_duration_ms: config.chunk_duration_ms,
@@ -190,6 +218,7 @@ impl Default for AppRuntimeConfig {
     fn default() -> Self {
         Self {
             transcription_provider: "mock-local".to_string(),
+            processor_provider: crate::processor::DEFAULT_PROCESSOR_NAME.to_string(),
             source_language: central::DEFAULT_SOURCE_LANGUAGE.to_string(),
             target_language: central::DEFAULT_TARGET_LANGUAGE.to_string(),
             chunk_duration_ms: central::DEFAULT_CHUNK_DURATION_MS,
@@ -215,17 +244,20 @@ impl Default for AppRuntimeConfig {
 /// 1. `transcription_provider` non-empty (after trimming).
 /// 2. `transcription_provider` is one of
 ///    [`supported_transcription_providers`].
-/// 3. `source_language` non-empty.
-/// 4. `target_language` non-empty.
-/// 5. `chunk_duration_ms > 0` (avoid divide-by-zero in
+/// 3. `processor_provider` non-empty (after trimming).
+/// 4. `processor_provider` is one of
+///    [`supported_processor_providers`].
+/// 5. `source_language` non-empty.
+/// 6. `target_language` non-empty.
+/// 7. `chunk_duration_ms > 0` (avoid divide-by-zero in
 ///    [`crate::audio::chunker::calculate_chunk_size_samples`]).
-/// 6. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
+/// 8. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
 ///    [`MAX_CHUNK_DURATION_MS`].
-/// 7. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
-/// 8. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
-///    first non-speech frame).
-/// 9. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
-/// 10. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
+/// 9. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
+/// 10. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
+///     first non-speech frame).
+/// 11. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
+/// 12. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
 ///     least `min_speech_ms`, so a valid utterance can never exceed the
 ///     cap before it reaches the minimum.
 ///
@@ -247,6 +279,17 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
             "transcription_provider \"{}\" is not supported; valid values are: {}",
             trimmed_provider,
             supported_transcription_providers().join(", ")
+        ));
+    }
+    let trimmed_processor = config.processor_provider.trim();
+    if trimmed_processor.is_empty() {
+        return Err("processor_provider must not be empty or whitespace".to_string());
+    }
+    if !is_supported_processor_provider(trimmed_processor) {
+        return Err(format!(
+            "processor_provider \"{}\" is not supported; valid values are: {}",
+            trimmed_processor,
+            supported_processor_providers().join(", ")
         ));
     }
     if config.source_language.trim().is_empty() {
@@ -373,6 +416,66 @@ mod tests {
             ..AppRuntimeConfig::default()
         };
         assert!(validate_runtime_config(&cfg).is_err());
+    }
+
+    // ---- Processor provider -------------------------------------------
+
+    #[test]
+    fn default_uses_mock_processor() {
+        let cfg = AppRuntimeConfig::default();
+        assert_eq!(cfg.processor_provider, "mock");
+    }
+
+    #[test]
+    fn empty_processor_provider_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            processor_provider: "  \t".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("processor_provider"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_processor_provider_is_invalid_and_lists_the_valid_values() {
+        let cfg = AppRuntimeConfig {
+            processor_provider: "gpt".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(err.contains("gpt"), "error must name the value: {err}");
+        assert!(err.contains("mock"), "error must list valid values: {err}");
+        assert!(err.contains("llm"), "error must list valid values: {err}");
+    }
+
+    #[test]
+    fn llm_processor_provider_is_valid() {
+        let cfg = AppRuntimeConfig {
+            processor_provider: "llm".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn supported_processor_providers_lists_mock_and_llm() {
+        assert_eq!(supported_processor_providers(), vec!["mock", "llm"]);
+        assert!(is_supported_processor_provider("mock"));
+        assert!(is_supported_processor_provider("llm"));
+        assert!(!is_supported_processor_provider("Mock"));
+        assert!(!is_supported_processor_provider(""));
+    }
+
+    #[test]
+    fn normalize_trims_processor_provider() {
+        let cfg = AppRuntimeConfig {
+            processor_provider: "  llm  ".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        assert_eq!(normalize_runtime_config(cfg).processor_provider, "llm");
     }
 
     #[test]

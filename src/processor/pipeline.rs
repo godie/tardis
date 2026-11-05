@@ -80,10 +80,13 @@ pub fn run_mock_translate_test(
                     // whitespace input, so an output must exist.
                     // If a future transcriber yields "", the panic
                     // message names the trait contract that broke.
-                    let output = processor.process(&result.text, &mode).expect(
-                        "non-empty transcript must yield Some output \
-                         (MockProcessor contract violated)",
-                    );
+                    let output = processor
+                        .process(&result.text, &mode)
+                        .expect("MockProcessor never fails")
+                        .expect(
+                            "non-empty transcript must yield Some output \
+                             (MockProcessor contract violated)",
+                        );
                     translated_chunks += 1;
                     println!("[chunk {}] transcript: {}", chunk_index, result.text);
                     println!("[chunk {}] translation: {}", chunk_index, output.text);

@@ -12,7 +12,7 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, capture window, volume threshold, utterance boundaries) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
-- `cargo test` runs 329 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 35 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
+- `cargo test` runs 361 unit tests over pure helper logic, provider dispatch, the `src/app/` layer, and the `settings_store` persistence layer. The 38 Tauri command tests live in the separate `src-tauri` crate: `cargo test --manifest-path src-tauri/Cargo.toml`.
 
 ## Stack
 
@@ -105,7 +105,8 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Default provider is `mock-local` (no Docker). Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes |
+| `cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Defaults are `mock-local` and `mock`, so it runs with no Docker and no model. Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes |
+| `cargo run -- llm-translate-text "<text>"` | One LLM round-trip with no microphone, TTS or capture: the same translate prompt the live loop uses, one request, the rendered line on stdout. Use it to check `TARDIS_LLM_API_KEY`, base URL and model before wiring live capture. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
 | `cargo run -- settings-validate <path>` | Load + validate a settings JSON file at `<path>`. Prints the resolved values and exits `0` on success or `1` with the underlying `SettingsStoreError` on parse / validation / I/O failure. Mirrors the `load_runtime_settings` Tauri command. | Yes |
@@ -140,6 +141,35 @@ cargo run -- live-local-transcribe --provider local-whisper
 
 Operator details for that container live in [docker/faster-whisper/README.md](docker/faster-whisper/README.md).
 
+## Process Providers (LLM)
+
+The process stage picks a `Processor` with `processor_provider` (`mock` or
+`llm`, default `mock`) in `runtime.json`, `--processor` on the CLI, and the
+**Processor** dropdown in the shell. Both speak the same
+`processor::Processor` contract; only the implementation differs.
+
+| Provider | Selector | What it does |
+| --- | --- | --- |
+| Deterministic stub | `--processor mock` (default) | Renders `[mock <target>] mock translation: "<text>"` with no network. |
+| OpenAI-compatible chat endpoint | `--processor llm` | Posts the translate prompt to `<base_url>/chat/completions` and speaks the reply. Works with Ollama, llama.cpp server, LM Studio or a cloud endpoint. |
+
+Defaults are `http://localhost:11434/v1` and `qwen2.5:7b-instruct`; the key
+comes from `TARDIS_LLM_API_KEY` (empty is valid for local Ollama) and is
+never written to `runtime.json`. The endpoint is contacted at the first
+utterance, not at startup, so a missing model does not block Start.
+
+```bash
+ollama serve
+ollama pull qwen2.5:7b-instruct
+cargo run -- llm-translate-text "the meeting moved to Thursday"
+cargo run -- live-local-transcribe --processor llm
+```
+
+`processor::llm` is synchronous, one request at a time, from the capture
+thread: a cold 7B model stalls the loop (default timeout 20 s). Streaming
+needs the explicit go-ahead described in
+[docs/core-pipeline-plan.md](docs/core-pipeline-plan.md) §4.2.
+
 ## Tauri UI Shell Setup
 
 The CLI commands in [Quick Start](#quick-start) and [CLI Modes](#cli-modes) compile against `cpal` and `hound` with no GUI dependencies. The Tauri shell additionally pulls in the WebKit / GTK / appindicator toolchain, which Debian / Ubuntu systems do not ship by default. Before the first `cargo run --manifest-path src-tauri/Cargo.toml`, install the system deps that CI installs (the bash block below is verbatim from `.github/workflows/ci.yml` lines 19–28):
@@ -169,8 +199,8 @@ cargo run --manifest-path src-tauri/Cargo.toml
 
 What the shell does today:
 
-- **Session settings panel**: pick an **input device** (or leave it on "System default"), a `transcription_provider`, `source_language`, `target_language`, `chunk_duration_ms`, `volume_threshold`, `hangover_ms`, `min_speech_ms`, and `max_utterance_ms` before pressing **Start Listening**. The device list comes from the backend ([`tardis::audio::capture::list_input_devices`](src/audio/capture.rs)) and the selector stores the device's stable `cpal` id, not its index or name, so the choice survives replugs and reboots; if that device is gone at Start the runner falls back to the system default and says so on stderr, and the selector keeps the saved id as a "not connected" option so an unrelated settings change does not erase it. Every capture stream is folded down to **mono** before the volume gate, the endpointing frames, and the WAV sent to the provider, and the mix is built from the channels that actually carry energy in each block ([`mono_mix_weights`](src/audio/capture.rs)): virtual loopback devices such as BlackHole 16ch/64ch report 16/64 channels with the signal on only one or two of them, and averaging all of them divides the level by 8/32, so loud speech reads as silence and nothing is transcribed. Channels more than 2× quieter than the loudest one are treated as padding, and no channel index is assumed: an interface that puts the voice on channel 3 works the same as a BlackHole pair on 0/1. Settings are pre-populated from a persisted `runtime.json` if one exists, otherwise from `AppRuntimeConfig::default()` ([`src/app/config.rs`](src/app/config.rs)). The provider dropdown is rebuilt from the backend's supported-provider list so a future provider shows up without touching the HTML. The settings lock while a session is in progress.
-- **Live transcription**: Click Start Listening to capture audio from the default microphone in the requested window, classify each window with the requested threshold, group windows into utterances with the endpointing settings, and transcribe each finished utterance through the selected provider. Transcript and translation events flow into the window via Tauri events. Click Stop to end the session. Translation uses the selected source/target language pair (no hardcoded en/es).
+- **Session settings panel**: pick an **input device** (or leave it on "System default"), a `transcription_provider`, a `processor_provider` (`mock` offline or `llm` OpenAI-compatible), `source_language`, `target_language`, `chunk_duration_ms`, `volume_threshold`, `hangover_ms`, `min_speech_ms`, and `max_utterance_ms` before pressing **Start Listening**. The device list comes from the backend ([`tardis::audio::capture::list_input_devices`](src/audio/capture.rs)) and the selector stores the device's stable `cpal` id, not its index or name, so the choice survives replugs and reboots; if that device is gone at Start the runner falls back to the system default and says so on stderr, and the selector keeps the saved id as a "not connected" option so an unrelated settings change does not erase it. Every capture stream is folded down to **mono** before the volume gate, the endpointing frames, and the WAV sent to the provider, and the mix is built from the channels that actually carry energy in each block ([`mono_mix_weights`](src/audio/capture.rs)): virtual loopback devices such as BlackHole 16ch/64ch report 16/64 channels with the signal on only one or two of them, and averaging all of them divides the level by 8/32, so loud speech reads as silence and nothing is transcribed. Settings are pre-populated from a persisted `runtime.json` if one exists, otherwise from `AppRuntimeConfig::default()` ([`src/app/config.rs`](src/app/config.rs)). The provider and processor dropdowns are rebuilt from the backend's supported lists so a future implementation shows up without touching the HTML. The settings lock while a session is in progress.
+- **Live transcription**: Click Start Listening to capture audio from the default microphone in the requested window, classify each window with the requested threshold, group windows into utterances with the endpointing settings, and transcribe each finished utterance through the selected provider. The transcript then goes through the selected processor (mock or LLM). Transcript, output and speech events flow into the window via Tauri events. Click Stop to end the session. Translation uses the selected source/target language pair (no hardcoded en/es).
 - **Session history**: every stage output is appended to a scrolling list in its panel: the Transcript panel gets one row per utterance (local time, the text exactly as the provider returned it, the captured audio length, and which provider produced it), the Translation panel gets one row per rendered output (local time, the rendered text, and the language pair). Both kinds are also appended to `output/history.jsonl` in the order they happened, one JSON object per line tagged with `kind`: `{"kind":"transcript","at_ms":…,"text":…,"duration_ms":…,"provider":…}` and `{"kind":"output","at_ms":…,"text":…,"source_language":…,"target_language":…,"output_kind":…}`. A session therefore survives closing the window and stays readable with `tail`, `grep '"kind":"output"'`, or any JSONL tool. The panels themselves keep the newest 200 rows so a long session does not grow the webview's DOM without bound; the file keeps every record. Empty text is skipped rather than written as blank rows. The file is append-only, an unterminated trailing record left by a crash is dropped before the next append, and a failed write is reported on stderr without stopping the session.
 - **Diagnostics**: the worker thread prints every utterance (`[utterance 2] speech (3200 ms) | saved …`), every discarded burst, and every half-duplex backlog drop to **stdout in both CLI and Tauri mode**, so `cargo run --manifest-path src-tauri/Cargo.toml > app.log` leaves a readable trace of a live session. Panics are captured by a hook installed before any worker starts: location, message and a forced backtrace go to stderr **and** to `<OS config dir>/tardis/panic.log`, next to `runtime.json`, after a `=== shell started at <epoch> (pid …) ===` marker. A `panic.log` with the marker and no panic record means the process was killed from outside, not that it crashed.
 - **Provider selector**: choose `mock-local` (no Docker, deterministic) or `local-whisper` (requires Docker).

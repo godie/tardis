@@ -75,15 +75,20 @@ pub struct Output {
 
 /// Synchronous per-call processing contract.
 ///
-/// `process` must be pure with respect to `&self`: the same input text +
-/// same mode + same impl state must produce the same output.
+/// Implementations must be pure with respect to `&self`: no interior
+/// mutation of the processor's own state. Determinism is required of the
+/// mocks, because tests assert on their exact output; a real provider
+/// (`processor::llm`) is exempt, since a model is not reproducible.
 ///
-/// `None` is a **normal** outcome, not an error: empty / whitespace-only
-/// input, or (in respond mode) a decision rule that says "stay silent".
-/// The runner skips the synthesis stage entirely on `None`, so nothing is
-/// spoken and no `Speech` event is emitted.
+/// The return type separates silence from failure:
+///
+/// - `Ok(None)`: empty or whitespace-only input, or a respond-mode decision
+///   that says "do not act". The runner skips synthesis and emits nothing.
+/// - `Err(..)`: transport, auth, or an empty model reply. The runner emits
+///   `AppEvent::Error` and still skips synthesis, so a failed request is
+///   not reported as silence.
 pub trait Processor {
-    fn process(&self, text: &str, mode: &ProcessMode) -> Option<Output>;
+    fn process(&self, text: &str, mode: &ProcessMode) -> anyhow::Result<Option<Output>>;
 }
 
 // ===== Unit tests ========================================================
