@@ -279,6 +279,8 @@ fn run_mock_voice_flow() -> Result<()> {
         transcript_text.to_string(),
         config.transcription_provider.clone(),
         true,
+        // Synthetic text: this flow never captured audio.
+        0,
     ));
 
     // 2. Process (translate mode; `build_processor` dispatch).

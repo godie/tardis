@@ -6,7 +6,9 @@ const translationCopy = "[mock es] mock transcript: speech detected";
 const statusIndicator = document.querySelector("#status-indicator");
 const statusAnnouncer = document.querySelector("#status-announcer");
 const transcriptPanel = document.querySelector("#transcript-content");
+const transcriptEmpty = document.querySelector("#transcript-empty");
 const translationPanel = document.querySelector("#translation-content");
+const translationEmpty = document.querySelector("#translation-empty");
 const speechStatus = document.querySelector("#speech-status");
 const liveError = document.querySelector("#live-error");
 const startButton = document.querySelector("#start-button");
@@ -14,6 +16,7 @@ const stopButton = document.querySelector("#stop-button");
 const targetLanguage = document.querySelector("#target-language");
 const sourceLanguage = document.querySelector("#source-language");
 const providerSelect = document.querySelector("#provider-select");
+const inputDeviceSelect = document.querySelector("#input-device");
 const chunkDurationMsInput = document.querySelector("#chunk-duration-ms");
 const volumeThresholdInput = document.querySelector("#volume-threshold");
 const hangoverMsInput = document.querySelector("#hangover-ms");
@@ -27,6 +30,7 @@ const maxUtteranceMsInput = document.querySelector("#max-utterance-ms");
 // field names a 1:1 cross-check for serde.
 const SESSION_SETTINGS_INPUTS = [
   providerSelect,
+  inputDeviceSelect,
   sourceLanguage,
   targetLanguage,
   chunkDurationMsInput,
@@ -37,6 +41,22 @@ const SESSION_SETTINGS_INPUTS = [
 ];
 
 const DEV = true; // Set to false before release to suppress console logs
+
+// Rows kept per history panel. The whole session is still on disk in
+// output/history.jsonl; the panels only need the recent tail, and an
+// unbounded list keeps every utterance in the webview's DOM for the rest of
+// the session.
+const MAX_HISTORY_ROWS = 200;
+
+// Append one row to a history panel and retire the oldest rows past the cap,
+// keeping the newest row in view.
+function appendHistoryItem(panel, item) {
+  panel.append(item);
+  while (panel.children.length > MAX_HISTORY_ROWS) {
+    panel.firstElementChild.remove();
+  }
+  panel.scrollTop = panel.scrollHeight;
+}
 const providerHint = document.querySelector("#provider-hint");
 
 // Local WAV transcription controls.
@@ -80,21 +100,71 @@ function setLiveError(message) {
   liveError.textContent = message;
 }
 
-function setPanels(transcript, translation) {
-  transcriptPanel.textContent = transcript;
-  transcriptPanel.classList.remove("muted");
-  translationPanel.textContent = translation;
-  translationPanel.classList.remove("muted");
+// One row per transcribed utterance. The panel used to overwrite its text,
+// so only the newest sentence survived; the list keeps the whole session and
+// each row carries the two facts that make a row readable later: when it was
+// heard, and how much audio it came from.
+function appendTranscript(text, durationMs, provider) {
+  if (!text) return;
+  if (transcriptEmpty) transcriptEmpty.hidden = true;
+
+  const now = new Date();
+  const item = document.createElement("li");
+  item.className = "history-item";
+
+  const time = document.createElement("time");
+  time.className = "history-time";
+  time.dateTime = now.toISOString();
+  time.textContent = now.toLocaleTimeString();
+
+  const body = document.createElement("span");
+  body.className = "history-text";
+  body.dir = "auto";
+  body.textContent = text;
+
+  const meta = document.createElement("span");
+  meta.className = "history-meta";
+  const parts = [];
+  if (Number.isFinite(Number(durationMs)) && Number(durationMs) > 0) {
+    parts.push(`${(Number(durationMs) / 1000).toFixed(1)} s`);
+  }
+  if (provider) parts.push(provider);
+  meta.textContent = parts.join(" \u00b7 ");
+
+  item.append(time, body, meta);
+  // Newest last: the helper keeps the newest row in view as the session
+  // runs, and drops rows past MAX_HISTORY_ROWS from the top.
+  appendHistoryItem(transcriptPanel, item);
 }
 
-function appendTranscript(text) {
-  transcriptPanel.textContent = text;
-  transcriptPanel.classList.remove("muted");
-}
+// Same shape as the transcript history: one row per rendered output, so the
+// two panels line up and a reader can see which language pair produced each
+// line. The text is what the process stage returned, not the transcript.
+function appendTranslation(text, sourceLang, targetLang) {
+  if (!text) return;
+  if (translationEmpty) translationEmpty.hidden = true;
 
-function appendTranslation(text) {
-  translationPanel.textContent = text;
-  translationPanel.classList.remove("muted");
+  const now = new Date();
+  const item = document.createElement("li");
+  item.className = "history-item";
+
+  const time = document.createElement("time");
+  time.className = "history-time";
+  time.dateTime = now.toISOString();
+  time.textContent = now.toLocaleTimeString();
+
+  const body = document.createElement("span");
+  body.className = "history-text";
+  body.dir = "auto";
+  body.textContent = text;
+
+  const meta = document.createElement("span");
+  meta.className = "history-meta";
+  const pair = sourceLang && targetLang ? `${sourceLang} \u2192 ${targetLang}` : "";
+  meta.textContent = pair;
+
+  item.append(time, body, meta);
+  appendHistoryItem(translationPanel, item);
 }
 
 // The speech line reports what the backend rendered and asked the
@@ -244,6 +314,9 @@ async function startLiveTranscription() {
     hangover_ms: endpointing.hangover_ms,
     min_speech_ms: endpointing.min_speech_ms,
     max_utterance_ms: endpointing.max_utterance_ms,
+    // `""` is the "System default" option; the backend reads `null` as
+    // "let the OS choose".
+    input_device: inputDeviceSelect.value || null,
   };
 
   try {
@@ -303,7 +376,7 @@ function setupEventListener() {
     return;
   }
 
-  window.__TAURI__.event.listen("app-event", (event) => {
+  const subscription = window.__TAURI__.event.listen("app-event", (event) => {
     const payload = event.payload;
     log("app-event:", payload);
 
@@ -327,14 +400,18 @@ function setupEventListener() {
       }
       case "transcript": {
         if (payload.text) {
-          appendTranscript(payload.text);
+          appendTranscript(payload.text, payload.duration_ms, payload.provider);
           setLiveError("");
         }
         break;
       }
       case "output": {
         if (payload.text) {
-          appendTranslation(payload.text);
+          appendTranslation(
+            payload.text,
+            payload.source_language,
+            payload.target_language,
+          );
         }
         break;
       }
@@ -350,6 +427,18 @@ function setupEventListener() {
       }
     }
   });
+
+  // `listen` is a promise, and the Tauri ACL can reject it (for example
+  // when no capability grants `core:event:allow-listen`). Ignoring that
+  // rejection leaves the UI waiting forever for events that will never
+  // arrive: status sticks on "Stopping…" and Stop appears broken. Surface
+  // it instead, so a missing permission is visible rather than silent.
+  if (subscription && typeof subscription.catch === "function") {
+    subscription.catch((error) => {
+      setStatus("Error");
+      setLiveError(`Could not subscribe to backend events: ${error}`);
+    });
+  }
 }
 
 // ===== Existing mock / init flow ===========================================
@@ -357,8 +446,12 @@ function setupEventListener() {
 async function syncInitialState() {
   if (!hasTauriInvoke()) {
     setStatus("Idle");
-    transcriptPanel.textContent = "Run the Tauri shell to activate the mock backend commands.";
-    translationPanel.textContent = "The static preview is loaded, but invoke() is unavailable outside Tauri.";
+    if (transcriptEmpty) {
+      transcriptEmpty.textContent = "Run the Tauri shell to activate the mock backend commands.";
+    }
+    if (translationEmpty) {
+      translationEmpty.textContent = "The static preview is loaded, but invoke() is unavailable outside Tauri.";
+    }
     return;
   }
 
@@ -394,6 +487,10 @@ async function loadFromBackendSettings() {
     }
   }
 
+  // Remembered until the device list arrives: the selector's options do
+  // not exist yet, so the value cannot be applied here.
+  let savedDevice = "";
+
   if (defaults && typeof defaults === "object") {
     if (typeof defaults.transcription_provider === "string") {
       providerSelect.value = defaults.transcription_provider;
@@ -419,6 +516,9 @@ async function loadFromBackendSettings() {
     if (Number.isFinite(defaults.max_utterance_ms)) {
       maxUtteranceMsInput.value = String(defaults.max_utterance_ms);
     }
+    if (typeof defaults.input_device === "string") {
+      savedDevice = defaults.input_device;
+    }
   }
 
   try {
@@ -438,6 +538,55 @@ async function loadFromBackendSettings() {
   } catch (error) {
     log("could not load supported providers:", error);
   }
+
+  // Input-device selector: the value is the device's stable id, the label is
+  // the human name. Read once per load; a headset plugged in after the
+  // window opened shows up next time the shell starts.
+  //
+  // A persisted id whose device is not connected right now is kept as an
+  // option of its own. Without it the selector would sit on "System default"
+  // and the next unrelated settings change would save `input_device: null`,
+  // erasing the choice the moment the headset came back. Start still falls
+  // back to the system default when the id cannot be opened.
+  function keepSavedDevice() {
+    if (!savedDevice) return;
+    const known = Array.from(inputDeviceSelect.options).some(
+      (option) => option.value === savedDevice,
+    );
+    if (!known) {
+      const missing = document.createElement("option");
+      missing.value = savedDevice;
+      missing.textContent = `${savedDevice} (not connected)`;
+      inputDeviceSelect.appendChild(missing);
+      log("persisted input device is not available:", savedDevice);
+    }
+    inputDeviceSelect.value = savedDevice;
+  }
+
+  try {
+    const devices = await invoke("list_input_devices");
+    inputDeviceSelect.innerHTML = "";
+    const systemDefault = document.createElement("option");
+    systemDefault.value = "";
+    systemDefault.textContent = "System default";
+    inputDeviceSelect.appendChild(systemDefault);
+
+    if (Array.isArray(devices)) {
+      for (const device of devices) {
+        const opt = document.createElement("option");
+        opt.value = device.id;
+        opt.textContent = device.name;
+        inputDeviceSelect.appendChild(opt);
+      }
+    }
+    log("loaded input devices:", devices);
+  } catch (error) {
+    log("could not load input devices:", error);
+  }
+
+  // Runs on both paths: a failed enumeration must not turn the saved
+  // preference into null on the next save.
+  keepSavedDevice();
 
   // 2. Auto-save on every committed change so settings persist
   //    across Tauri shell restarts. The `change` event fires
@@ -479,6 +628,7 @@ async function saveCurrentSettings() {
     hangover_ms: endpointing.hangover_ms,
     min_speech_ms: endpointing.min_speech_ms,
     max_utterance_ms: endpointing.max_utterance_ms,
+    input_device: inputDeviceSelect.value || null,
   };
   try {
     await invoke("save_runtime_settings", { config });
@@ -501,11 +651,15 @@ stopButton.addEventListener("click", async () => {
 });
 
 targetLanguage.addEventListener("change", () => {
-  if (transcriptPanel.textContent !== transcriptCopy) {
+  // Only the placeholder translation is rewritten: once a session has
+  // appended rows, the rendered output belongs to those rows.
+  if (transcriptEmpty && transcriptEmpty.hidden) {
     return;
   }
 
-  translationPanel.textContent = `[mock ${targetLanguage.value}] ${transcriptCopy}`;
+  if (translationEmpty) {
+    translationEmpty.textContent = `[mock ${targetLanguage.value}] ${transcriptCopy}`;
+  }
 });
 
 // ===== Local WAV transcription ============================================

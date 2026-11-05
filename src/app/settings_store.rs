@@ -326,6 +326,7 @@ mod tests {
             hangover_ms: 600,
             min_speech_ms: 300,
             max_utterance_ms: 20_000,
+            input_device: Some("External Microphone".to_string()),
         };
         save_to_path(&path, &cfg).expect("save must succeed");
         let loaded = load_from_path_or_default(&path).expect("load must succeed");

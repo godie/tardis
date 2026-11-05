@@ -63,6 +63,21 @@ pub struct AppRuntimeConfig {
     /// [`central::DEFAULT_MAX_UTTERANCE_MS`].
     #[serde(default = "default_max_utterance_ms")]
     pub max_utterance_ms: u64,
+    /// Stable `cpal` device id of the input device to capture from, in the
+    /// `"<host>:<device>"` form [`crate::audio::capture::list_input_devices`]
+    /// reports and `parse_device_id` parses. `None` means "whichever device
+    /// the OS considers default", which is what every capture driver did
+    /// before the selector existed. `serde` defaults it so a `runtime.json`
+    /// written before the selector still loads.
+    ///
+    /// The value is an id, not a name: CPAL's enumeration order and, on some
+    /// hosts, a device's display name are not stable across replugs and
+    /// reboots. An id that no longer resolves (device unplugged, host
+    /// changed) falls back to the default with a printed warning instead of
+    /// failing the session. Hand-editing a device *name* into `runtime.json`
+    /// therefore does nothing but trigger that fallback.
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 fn default_hangover_ms() -> u64 {
@@ -157,6 +172,17 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         hangover_ms: config.hangover_ms,
         min_speech_ms: config.min_speech_ms,
         max_utterance_ms: config.max_utterance_ms,
+        // A whitespace-only id is the UI's empty option in disguise; treat
+        // it as "system default" rather than as a device id that can never
+        // be resolved.
+        input_device: config.input_device.and_then(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }),
     }
 }
 
@@ -171,6 +197,8 @@ impl Default for AppRuntimeConfig {
             hangover_ms: central::DEFAULT_HANGOVER_MS,
             min_speech_ms: central::DEFAULT_MIN_SPEECH_MS,
             max_utterance_ms: central::DEFAULT_MAX_UTTERANCE_MS,
+            // `None` = the OS default input device.
+            input_device: None,
         }
     }
 }
@@ -558,6 +586,34 @@ mod tests {
         let out = normalize_runtime_config(cfg);
         assert_eq!(out.source_language, "en");
         assert_eq!(out.target_language, "es");
+    }
+
+    #[test]
+    fn normalize_trims_input_device() {
+        let cfg = AppRuntimeConfig {
+            input_device: Some("  coreaudio:builtin  ".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        let out = normalize_runtime_config(cfg);
+        assert_eq!(out.input_device.as_deref(), Some("coreaudio:builtin"));
+    }
+
+    #[test]
+    fn normalize_turns_a_blank_input_device_into_none() {
+        // A blank name is the UI's "System default" option in disguise, not
+        // a device called " " that could never be opened.
+        for blank in ["", "   ", "\n\t"] {
+            let cfg = AppRuntimeConfig {
+                input_device: Some(blank.to_string()),
+                ..AppRuntimeConfig::default()
+            };
+            assert_eq!(normalize_runtime_config(cfg).input_device, None);
+        }
+    }
+
+    #[test]
+    fn default_config_uses_the_system_input_device() {
+        assert_eq!(AppRuntimeConfig::default().input_device, None);
     }
 
     #[test]

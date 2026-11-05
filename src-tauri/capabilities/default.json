@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the main window. The shell depends on core:event:allow-listen (via core:default) to receive the backend's app-event stream; without a capability file the Tauri 2 ACL denies every core command and the UI silently never leaves its starting state.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

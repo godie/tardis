@@ -49,8 +49,8 @@ pub struct UiAppEvent {
     /// Present for `transcript` and `translation` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_final: Option<bool>,
-    /// Present for `speech` events: rendered audio length in
-    /// milliseconds.
+    /// Present for `transcript` events (length of the captured audio) and
+    /// for `speech` events (length of the rendered audio), in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
 }
@@ -85,7 +85,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             output_kind: None,
             message: None,
             is_final: Some(t.is_final),
-            duration_ms: None,
+            duration_ms: Some(t.duration_ms),
         },
         AppEvent::Output(o) => UiAppEvent {
             kind: "output".to_string(),
@@ -163,6 +163,7 @@ mod tests {
             text: "hello".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 4_320,
         });
         let ui = app_event_to_ui_event(&e);
         assert_eq!(ui.kind, "transcript");
@@ -257,6 +258,7 @@ mod tests {
             text: "hi".to_string(),
             provider: "mock-local".to_string(),
             is_final: true,
+            duration_ms: 4_320,
         });
         let ui = app_event_to_ui_event(&e);
         let json = serde_json::to_string(&ui).expect("must serialize");

@@ -22,6 +22,7 @@
 
 pub mod config;
 pub mod events;
+pub mod history;
 pub mod live_events;
 pub mod service;
 pub mod settings_store;

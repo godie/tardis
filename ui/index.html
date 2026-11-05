@@ -23,6 +23,13 @@
 
         <div class="control-right">
           <label class="provider-field-inline">
+            <span>Input</span>
+            <select id="input-device">
+              <option value="" selected>System default</option>
+            </select>
+          </label>
+
+          <label class="provider-field-inline">
             <span>Provider</span>
             <select id="provider-select">
               <option value="mock-local" selected>mock-local (offline)</option>
@@ -97,9 +104,10 @@
             <p class="panel-kicker">Transcript</p>
             <h2>Captured speech</h2>
           </div>
-          <p id="transcript-content" class="panel-copy muted" dir="auto" aria-live="polite">
+          <p id="transcript-empty" class="panel-copy muted">
             Click Start Listening to begin capturing audio. Transcripts appear here.
           </p>
+          <ol id="transcript-content" class="history-list" aria-live="polite"></ol>
         </article>
 
         <article class="panel panel-accent">
@@ -107,9 +115,10 @@
             <p class="panel-kicker">Translation</p>
             <h2>Rendered output</h2>
           </div>
-          <p id="translation-content" class="panel-copy muted" dir="auto" aria-live="polite">
+          <p id="translation-empty" class="panel-copy muted">
             Mock translations (en &rarr; es) appear alongside each transcript.
           </p>
+          <ol id="translation-content" class="history-list" aria-live="polite"></ol>
           <p id="speech-status" class="speech-status" role="status" aria-live="polite" hidden>
             Spoken audio appears here once a chunk is synthesized.
           </p>

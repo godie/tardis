@@ -189,7 +189,9 @@ where
     let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());
 
-    let mic = MicInput::start("live-local")?;
+    // `None` in the config means "whatever the OS calls default"; a name that
+    // no longer exists falls back to the default inside `MicInput`.
+    let mic = MicInput::start_with_device("live-local", config.input_device.as_deref())?;
     println!("device:  {}", mic.input().device_label());
     println!("config:  {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
@@ -280,7 +282,6 @@ where
         channels,
         chunk_duration_ms: config.chunk_duration_ms,
         target_language: &target_lang,
-        has_stop_signal,
     };
 
     loop {
@@ -319,17 +320,17 @@ where
                 EndpointDecision::Continue => {}
                 EndpointDecision::Discard => {
                     // A blip below `min_speech_ms` is noise: no event, no
-                    // WAV, no provider call. Print once so the CLI is not
-                    // silent about having thrown audio away.
+                    // WAV, no provider call. Print once so neither the CLI
+                    // nor the Tauri shell's stdout is silent about having
+                    // thrown audio away. The shell's log is where a
+                    // "nothing gets transcribed" report gets debugged.
                     pending_samples.clear();
-                    if !has_stop_signal {
-                        println!(
-                            "{} discarded (below {} ms of speech)",
-                            live_utterance_status_message(utterance_index + 1, "burst"),
-                            endpoint_config.min_speech_ms,
-                        );
-                        let _ = io::stdout().flush();
-                    }
+                    println!(
+                        "{} discarded (below {} ms of speech)",
+                        live_utterance_status_message(utterance_index + 1, "burst"),
+                        endpoint_config.min_speech_ms,
+                    );
+                    let _ = io::stdout().flush();
                 }
                 EndpointDecision::Utterance { frames } => {
                     utterance_index += 1;
@@ -392,12 +393,7 @@ impl Speaker<'_> {
     /// The result is returned rather than handled here: a failed playback
     /// must not end the session, so the caller reports it and keeps
     /// transcribing.
-    fn speak(
-        &mut self,
-        utterance_index: usize,
-        chunk: &AudioChunk,
-        has_stop_signal: bool,
-    ) -> Result<()> {
+    fn speak(&mut self, utterance_index: usize, chunk: &AudioChunk) -> Result<()> {
         // Half duplex: stop listening while we speak. Playback blocks, so
         // the ring buffer fills with our own voice; clearing it drops that
         // whole backlog at once, partial chunk included.
@@ -407,7 +403,7 @@ impl Speaker<'_> {
         let dropped = self.mic.clear();
 
         let backlog = playback_backlog(dropped, self.chunk_size);
-        if !has_stop_signal && backlog.requires_clear() {
+        if backlog.requires_clear() {
             println!(
                 "{} dropped buffered playback audio ({} chunk(s), {} partial sample(s))",
                 live_utterance_status_message(utterance_index, "half-duplex"),
@@ -446,7 +442,6 @@ struct UtteranceStages<'a, F> {
     channels: u16,
     chunk_duration_ms: u64,
     target_language: &'a str,
-    has_stop_signal: bool,
 }
 
 impl<F> UtteranceStages<'_, F>
@@ -470,19 +465,24 @@ where
         write_chunk_wav(&wav_path, samples, self.channels, self.sample_rate)
             .with_context(|| format!("write live utterance WAV {}", wav_path.display()))?;
 
-        if !self.has_stop_signal {
-            println!(
-                "{} ({} ms) | saved {}",
-                live_utterance_status_message(utterance_index, "speech"),
-                endpoint::frames_to_ms(frames, self.chunk_duration_ms),
-                wav_path.display(),
-            );
-        }
+        let duration_ms = endpoint::frames_to_ms(frames, self.chunk_duration_ms);
+
+        // Unconditional on purpose: the Tauri shell's stdout is the only
+        // place a live session leaves a trace, and gating this on "CLI mode"
+        // made a session that transcribed in the UI look dead in the log.
+        println!(
+            "{} ({} ms) | saved {}",
+            live_utterance_status_message(utterance_index, "speech"),
+            duration_ms,
+            wav_path.display(),
+        );
+        let _ = io::stdout().flush();
 
         // The transcript and output events use the configured provider name
         // verbatim so the UI shows exactly what the user selected, and the
         // configured language pair (no hardcoded en/es).
-        let spoke = self.transcribe_process_and_speak(utterance_index, &wav_path, speaker);
+        let spoke =
+            self.transcribe_process_and_speak(utterance_index, duration_ms, &wav_path, speaker);
 
         let _ = io::stdout().flush();
 
@@ -501,6 +501,7 @@ where
     fn transcribe_process_and_speak(
         &self,
         utterance_index: usize,
+        duration_ms: u64,
         wav_path: &Path,
         speaker: &mut Speaker<'_>,
     ) -> bool {
@@ -512,6 +513,7 @@ where
                     text.clone(),
                     self.provider_name.to_string(),
                     true,
+                    duration_ms,
                 ));
 
                 let Some(output) = self.processor.process(&text, self.process_mode) else {
@@ -551,7 +553,7 @@ where
                     chunk.is_final,
                 ));
 
-                if let Err(e) = speaker.speak(utterance_index, &chunk, self.has_stop_signal) {
+                if let Err(e) = speaker.speak(utterance_index, &chunk) {
                     (self.on_event)(build_error_event(format!(
                         "[utterance {utterance_index}] playback error: {e}"
                     )));
@@ -630,6 +632,7 @@ where
         hangover_ms: config::DEFAULT_HANGOVER_MS,
         min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
         max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
+        input_device: None,
     };
     run_live_local_transcription_with_config_and_events(
         config,

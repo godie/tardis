@@ -383,6 +383,66 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* ---- Transcript history --------------------------------------------- */
+
+/* One row per transcribed utterance, oldest first. The list scrolls with a
+   cap so a long session grows inside the card instead of pushing the
+   settings and the other panels off screen. */
+.history-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Nothing captured yet: the hint above carries the message, and an empty
+   list would otherwise add a gap of dead space. */
+.history-list:empty {
+  display: none;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "time text"
+    ".    meta";
+  column-gap: 12px;
+  row-gap: 3px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--signal-faint);
+}
+
+.history-time {
+  grid-area: time;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  /* Timestamps are compared down the column; tabular digits keep them
+     aligned instead of jittering per glyph. */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.history-text {
+  grid-area: text;
+  font-size: 1rem;
+  line-height: 1.5;
+  /* Same reason as .panel-copy: a provider can return an unbroken URL. */
+  overflow-wrap: anywhere;
+}
+
+.history-meta {
+  grid-area: meta;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Rendered-audio line under the translation panel. Display only: the
    player is a backend stage, so there are no transport controls here
    (see docs/core-pipeline-plan.md §2.5). */

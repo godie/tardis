@@ -22,17 +22,21 @@ use crate::processor::processor::OutputKind;
 /// * `text` — recognised transcript text.
 /// * `provider` — stable provider identifier (e.g. `"mock-local"`).
 /// * `is_final` — `true` for terminal outputs of a chunk.
+/// * `duration_ms` — length of the captured audio in milliseconds;
+///   `0` when the flow is synthetic and no audio was captured.
 pub fn build_transcript_event(
     chunk_index: usize,
     text: String,
     provider: String,
     is_final: bool,
+    duration_ms: u64,
 ) -> AppEvent {
     AppEvent::Transcript(AppTranscriptEvent {
         chunk_index,
         text,
         provider,
         is_final,
+        duration_ms,
     })
 }
 
@@ -111,13 +115,13 @@ mod tests {
 
     #[test]
     fn build_transcript_event_creates_transcript_variant() {
-        let e = build_transcript_event(1, "hello".to_string(), "mock-local".to_string(), true);
+        let e = build_transcript_event(1, "hello".to_string(), "mock-local".to_string(), true, 0);
         assert!(matches!(e, AppEvent::Transcript(_)));
     }
 
     #[test]
     fn transcript_event_includes_chunk_index() {
-        let e = build_transcript_event(7, "hi".to_string(), "p".to_string(), true);
+        let e = build_transcript_event(7, "hi".to_string(), "p".to_string(), true, 1_500);
         if let AppEvent::Transcript(t) = &e {
             assert_eq!(t.chunk_index, 7);
         } else {
@@ -127,7 +131,13 @@ mod tests {
 
     #[test]
     fn transcript_event_includes_provider() {
-        let e = build_transcript_event(1, "hi".to_string(), "local-whisper".to_string(), true);
+        let e = build_transcript_event(
+            1,
+            "hi".to_string(),
+            "local-whisper".to_string(),
+            true,
+            2_000,
+        );
         if let AppEvent::Transcript(t) = &e {
             assert_eq!(t.provider, "local-whisper");
         } else {
@@ -137,9 +147,19 @@ mod tests {
 
     #[test]
     fn transcript_event_includes_final_flag() {
-        let e = build_transcript_event(1, "hi".to_string(), "p".to_string(), false);
+        let e = build_transcript_event(1, "hi".to_string(), "p".to_string(), false, 0);
         if let AppEvent::Transcript(t) = &e {
             assert!(!t.is_final);
+        } else {
+            panic!("expected Transcript, got {e:?}");
+        }
+    }
+
+    #[test]
+    fn transcript_event_carries_captured_audio_duration() {
+        let e = build_transcript_event(1, "hi".to_string(), "p".to_string(), true, 4_320);
+        if let AppEvent::Transcript(t) = &e {
+            assert_eq!(t.duration_ms, 4_320);
         } else {
             panic!("expected Transcript, got {e:?}");
         }
