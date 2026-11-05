@@ -368,7 +368,8 @@ scripts/install-skills.sh --copy                       # copy instead of link
 ```
 
 If the same skill is installed globally as well, keep one copy so the two do
-not drift.
+not drift. If one is missing, the gate falls back to doing that pass by hand;
+[AGENTS.md](AGENTS.md#before-opening-a-pr) says what to report.
 
 Two more are per machine, not per repo:
 

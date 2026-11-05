@@ -43,8 +43,9 @@ Invariants:
 - **`respond` mode never speaks a commitment** (dates, money, agreements,
   opinions). It suggests them to the host instead. Two layers enforce it:
   classify the request, then validate the generated reply.
-- **Mocks first.** Every stage has a deterministic mock, so the whole loop runs
-  with no microphone, no Docker and no model.
+- **Mocks first.** Every stage keeps a deterministic mock, so the whole loop
+  runs with no microphone, no Docker and no model. A stage that loses its mock
+  breaks the offline path: restore it or say why in the plan.
 
 ## Build + test
 
@@ -289,6 +290,10 @@ review.
 | Feature or refactor | all of them |
 | More than 20 files | split first, then run this list per PR |
 
+Neither local review is a hard dependency. If the skill is not installed, run
+its checklist by hand and say in the PR which one you did. A missing review
+never blocks the PR; an unreported skip does.
+
 A finding you decide not to fix belongs in the PR body with the reason.
 
 1. **Validation matrix** for the areas you touched
@@ -305,9 +310,12 @@ A finding you decide not to fix belongs in the PR body with the reason.
    with one caller.
 5. **`ponytail-review`** over the change, and fix the findings. Review the
    working tree with `git diff`, or the commit if the user already asked for
-   one.
-6. **`caveman-review`** as a second, independent local review, and fix the
-   findings. If the two reviews disagree, say why in the PR.
+   one. If the skill is unavailable, do the pass yourself: correctness, safety
+   under real load, tests for the risky paths, dead code, and whether every
+   line earns its place.
+6. **`caveman-review`** as a second read, for a feature or refactor. A small
+   fix only needs it when step 5 found something. If the two disagree, say why
+   in the PR; if you skip this step, say so too.
 7. **Atomic commits.** One logical change per commit, conventional subject,
    build green at each commit that others may bisect to.
 8. **At most 20 files per PR.** A feature that touches more is split by
