@@ -101,6 +101,13 @@ pub fn parse_wav_body(body: &[u8]) -> Result<AudioChunk> {
     // The file body starts right after the 12-byte master header.
     let fmt = fmt_chunk(body)?;
     let samples = pcm_samples(body)?;
+    // Samples must be whole channel frames, or the chunk's stated
+    // channel count and its sample count disagree and adapters fold
+    // misaligned audio instead of failing loudly.
+    anyhow::ensure!(
+        samples.len() % fmt.channels as usize == 0,
+        "WAV data chunk does not line up with the declared channel count"
+    );
 
     Ok(AudioChunk {
         samples,
@@ -124,10 +131,13 @@ fn fmt_chunk(body: &[u8]) -> Result<WavFmt> {
             anyhow::ensure!(size >= 16, "WAV fmt chunk is truncated");
             let start = offset + 8;
             // Declared size can lie: a body cut mid-payload would make
-            // the field reads below slice past the end and panic. The
-            // parser treats that as a bad response, never a crash.
+            // the field reads below slice past the end and panic, and
+            // a size larger than the remaining bytes would leave the
+            // data walker decoding bytes that belong to the fmt
+            // payload. Both are treated as a bad response, never a
+            // crash or half-parsed speech.
             anyhow::ensure!(
-                start + 16 <= body.len(),
+                start + size <= body.len(),
                 "WAV fmt chunk payload is truncated"
             );
             let audio_format = u16::from_le_bytes(body[start..start + 2].try_into()?);
@@ -140,6 +150,14 @@ fn fmt_chunk(body: &[u8]) -> Result<WavFmt> {
             let bits = u16::from_le_bytes(body[start + 14..start + 16].try_into()?);
             anyhow::ensure!(channels > 0, "WAV declares 0 channels");
             anyhow::ensure!(sample_rate > 0, "WAV declares a 0 Hz sample rate");
+            // A tiny declared rate makes resample_linear expand the
+            // samples by rate/target: a 1 Hz header turns a small
+            // reply into gigabytes at playback time. Speech rates live
+            // between 8 kHz and 192 kHz; anything else is a lie.
+            anyhow::ensure!(
+                (8_000..=192_000).contains(&sample_rate),
+                "WAV declares a {sample_rate} Hz sample rate; only 8 kHz to 192 kHz is plausible for speech"
+            );
             // pcm_samples decodes exactly two-byte signed samples, so a
             // different depth must be refused, not misread.
             anyhow::ensure!(
@@ -396,6 +414,33 @@ mod tests {
         // Declare four data bytes; deliver only the chunk header.
         body.truncate(body.len() - 2);
         assert!(parse_wav_body(&body).is_err());
+    }
+
+    /// A liying rate makes `resample_linear` expand samples by
+    /// rate/target: 1 Hz turns a small reply into gigabytes. Refuse
+    /// rates outside the plausible speech range instead.
+    #[test]
+    fn rejects_a_sample_rate_outside_the_speech_range() {
+        let body = wav_body(1, 1, 1, &[1, 2], false);
+        let err = parse_wav_body(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("sample rate"),
+            "error must name the rate, got: {err}"
+        );
+        let body = wav_body(1, 500_000, 1, &[1], false);
+        assert!(parse_wav_body(&body).is_err());
+    }
+
+    /// A stereo payload with a hanging sample folds into misaligned
+    /// audio; refuse it instead of playing a half frame per channel.
+    #[test]
+    fn rejects_stereo_data_with_a_hanging_sample() {
+        let body = wav_body(1, TTS_SAMPLE_RATE, 2, &[500], false);
+        let err = parse_wav_body(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("channel count"),
+            "error must name the alignment, got: {err}"
+        );
     }
 
     // ---- resample_linear -------------------------------------------------
