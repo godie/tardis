@@ -119,3 +119,28 @@ pub const LLM_TEMPERATURE: f32 = 0.2;
 /// Version of the process-stage prompt. Bumped whenever the prompt text
 /// changes, so the change is visible in the prompt itself and in review.
 pub const PROCESS_PROMPT_VERSION: u32 = 1;
+
+/// Base URL of the local Piper HTTP TTS server. Matches
+/// `docker/piper/docker-compose.yml`'s `127.0.0.1:5002:5002` port
+/// binding; audio never leaves the loopback interface.
+pub const TTS_BASE_URL: &str = "http://localhost:5002";
+
+/// Voice id the Piper container loads and the client requests. Must
+/// match `PIPER_VOICE` in `docker/piper/docker-compose.yml`. The
+/// default is single-speaker Mexican Spanish, one of the voices since
+/// piper-voices v1.0.0; pick another from the voice catalog if the
+/// session targets a different Spanish accent.
+pub const TTS_VOICE: &str = "es_MX-ald-medium";
+
+/// Sample rate the `medium` voices render at, in Hz. The WAV the
+/// server returns carries the real rate in its header, so
+/// [`crate::synthesis::local_http::parse_wav_body`] never trusts this
+/// constant for playback; it exists so tests and docs can pin what the
+/// round trip should produce.
+pub const TTS_SAMPLE_RATE: u32 = 22_050;
+
+/// Per-request timeout for one TTS synthesis, in seconds. One request
+/// is in flight at a time (the loop is synchronous), so this is also
+/// the worst-case stall of the capture thread between two spoken
+/// replies.
+pub const TTS_TIMEOUT_SECS: u64 = 20;

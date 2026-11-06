@@ -12,7 +12,8 @@
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
-//!   cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] -> utterance-by-utterance live transcription (defaults: mock-local, mock)
+//!   cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] -> utterance-by-utterance live transcription (defaults: mock-local, mock, mock)
+//!   cargo run -- say-text "<text>"  -> speak one line through the local Piper TTS server + the real output device (needs Docker + a sound device)
 //!   cargo run -- llm-translate-text "<text>"                 -> one real LLM round-trip, no mic (needs the LLM server)
 //!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
 //!   cargo run -- settings-validate <path>                   -> load + validate a settings JSON file (exit 0 on success, 1 on error)
@@ -30,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tardis::{
     app::{
-        config::AppRuntimeConfig,
+        config::{AppMode, AppRuntimeConfig},
         events::{AppEvent, format_app_event_for_console, status_label},
         live_events::{build_output_event, build_speech_event, build_transcript_event},
         service::AppService,
@@ -62,6 +63,7 @@ fn main() -> Result<()> {
         Some("mock-translate") => run_mock_translate(),
         Some("local-transcribe-file") => run_local_transcribe_file(),
         Some("live-local-transcribe") => run_live_local_transcribe(),
+        Some("say-text") => run_say_text(),
         Some("llm-translate-text") => run_llm_translate_text(),
         Some("app-mock-flow") => run_app_mock_flow(),
         Some("mock-voice-flow") => run_mock_voice_flow(),
@@ -74,7 +76,7 @@ fn main() -> Result<()> {
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices [--output] | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] | -- say-text \"<text>\" | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -83,7 +85,53 @@ fn main() -> Result<()> {
 
 fn run_devices() -> Result<()> {
     let host = cpal::default_host();
-    audio::devices::print_device_info(&host)
+    if std::env::args().nth(2).is_some_and(|arg| arg == "--output") {
+        // The situated check, per the piper ticket: without a sound
+        // output device the real player cannot be exercised at all.
+        audio::devices::print_output_devices(&host)
+    } else {
+        audio::devices::print_device_info(&host)
+    }
+}
+
+/// Speak one line through the local Piper server and the real output
+/// device, then exit. `say-text` minimizes the piper path to one
+/// request with no microphone and no session: the same
+/// [`tardis::synthesis::LocalHttpSynthesizer`] the live loop uses, the
+/// same [`tardis::audio::player::CpalPlayer`], one chunk, one play.
+///
+/// Needs the Docker container up (`docker compose -f
+/// docker/piper/docker-compose.yml up -d`) and an output device;
+/// both failures print a readable error and exit non-zero.
+fn run_say_text() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let text = args.get(2).ok_or_else(|| {
+        anyhow!("say-text requires a text argument\nUsage: cargo run -- say-text \"<text>\"")
+    })?;
+
+    let speech = tardis::synthesis::Speech {
+        text: text.clone(),
+        language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
+    };
+    // Synthesize first: a server problem should abort before the
+    // player opens a device and speaks silence.
+    let chunk = match tardis::synthesis::build_synthesizer("piper")?.synthesize(&speech) {
+        Ok(Some(chunk)) => chunk,
+        Ok(None) => anyhow::bail!("nothing to speak for the text given"),
+        Err(e) => return Err(e),
+    };
+    println!(
+        "speaking {} ms ({} samples, {} Hz, {} ch)...",
+        tardis::synthesis::chunk_duration_ms(&chunk),
+        chunk.samples.len(),
+        chunk.sample_rate,
+        chunk.channels,
+    );
+
+    let mut player = tardis::audio::player::CpalPlayer::new(&cpal::default_host(), None)
+        .context("open the output device for say-text")?;
+    player.play_chunk(&chunk)?;
+    Ok(())
 }
 
 fn run_mic_continuous() -> Result<()> {
@@ -290,26 +338,20 @@ fn run_mock_voice_flow() -> Result<()> {
         .process(transcript_text, &mode)?
         .ok_or_else(|| anyhow!("mock processor returned no output for a non-empty transcript"))?;
     let spoken_text = output.text.clone();
-    events.push(build_output_event(
-        1,
-        output.kind,
-        output.source_text,
-        output.text,
-        output.source_language,
-        output.target_language,
-        output.is_final,
-    ));
+    events.push(build_output_event(1, &output));
 
-    // 3. Synthesize + 4. play. Synthesis returning `None` is a normal
-    //    "nothing to say"; for the canonical phrase it must not happen,
-    //    so treat it as a contract violation here.
+    // 3. Synthesize + 4. play. `Ok(None)` is a normal "nothing to
+    //    say"; for the canonical phrase it must not happen, so treat it
+    //    as a contract violation here.
     let speech = Speech {
         text: spoken_text,
         language: config.target_language.clone(),
     };
-    let chunk = synthesizer
-        .synthesize(&speech)
-        .ok_or_else(|| anyhow!("mock synthesizer returned no audio for non-empty speech"))?;
+    let chunk = match synthesizer.synthesize(&speech) {
+        Ok(Some(chunk)) => chunk,
+        Ok(None) => anyhow::bail!("mock synthesizer returned no audio for non-empty speech"),
+        Err(e) => return Err(e.context("mock synthesizer failed")), // unreachable for the deterministic mock
+    };
     let duration_ms = chunk_duration_ms(&chunk);
     player
         .play_chunk(&chunk)
@@ -324,7 +366,12 @@ fn run_mock_voice_flow() -> Result<()> {
 
     println!();
     for event in &events {
-        println!("{}", format_app_event_for_console(event));
+        // Errors to stderr, same routing as the live loop: scripts
+        // that read stdout must not end up swallowing a failure.
+        match event {
+            AppEvent::Error(_) => eprintln!("{}", format_app_event_for_console(event)),
+            _ => println!("{}", format_app_event_for_console(event)),
+        }
     }
 
     println!("\n=== summary ===");
@@ -419,62 +466,150 @@ fn run_mock_translate() -> Result<()> {
 /// Usage:
 ///   cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>
 /// Live chunk-by-chunk local transcription from the default
-/// microphone. Default provider is `"mock-local"` (no Docker
-/// required); pass `--provider local-whisper` to use the
-/// self-hosted faster-whisper server instead.
+/// microphone. Defaults: `--provider mock-local` (no Docker
+/// required), `--processor mock`, `--synthesizer mock` (counts instead
+/// of playing, no sound device required). Pass `--synthesizer piper`
+/// to speak replies through the local Piper TTS server and the real
+/// output device, optionally `--device <substring>` to pick it.
+///
+/// The CLI builds the [`AppRuntimeConfig`] itself and calls the
+/// canonical driver, the same one the Tauri shell uses.
 ///
 /// This is **not** true streaming: each speech-like chunk is
 /// written to a temporary WAV file in `output/live_chunks/`,
 /// sent through the selected
 /// [`transcription::LocalTranscriptionProvider`], and deleted
 /// after transcription. Silence chunks are skipped.
-///
-/// Usage:
-///   cargo run -- live-local-transcribe [--provider <name>]
 fn run_live_local_transcribe() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut provider_name = "mock-local".to_string();
     let mut processor_name = processor::DEFAULT_PROCESSOR_NAME.to_string();
+    let mut synthesizer_name = "mock".to_string();
+    let mut player_device: Option<String> = None;
+    let mut host_names: Vec<String> = Vec::new();
+    let mut wants_respond = false;
+    let mut dry_run = false;
 
     // [0] = binary path, [1] = "live-local-transcribe"; start at [2].
     let mut i = 2;
     while i < args.len() {
         let arg = &args[i];
-        if arg == "--provider" {
-            i += 1;
-            if i >= args.len() {
-                return Err(anyhow!(
-                    "--provider requires a value (e.g. --provider mock-local)\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
-                ));
+        if let Some(value) = flag_value(arg, &args, &mut i, "--provider", "mock-local")? {
+            provider_name = value;
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--processor", "llm")? {
+            processor_name = value;
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--synthesizer", "piper")? {
+            synthesizer_name = value;
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--device", "<output device>")? {
+            player_device = Some(value.trim().to_string());
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--mode", "respond")? {
+            match value.to_lowercase().trim() {
+                "translate" => {}
+                "respond" => wants_respond = true,
+                other => {
+                    return Err(anyhow!(
+                        "unknown mode \"{other}\": valid values are translate, respond"
+                    ));
+                }
             }
-            provider_name = args[i].clone();
-        } else if let Some(value) = arg.strip_prefix("--provider=") {
-            provider_name = value.to_string();
-        } else if arg == "--processor" {
-            i += 1;
-            if i >= args.len() {
-                return Err(anyhow!(
-                    "--processor requires a value (e.g. --processor llm)\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
-                ));
-            }
-            processor_name = args[i].clone();
-        } else if let Some(value) = arg.strip_prefix("--processor=") {
-            processor_name = value.to_string();
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--host", "<name>")? {
+            host_names.push(value.trim().to_string());
+        } else if arg == "--dry-run" {
+            dry_run = true;
         } else {
             return Err(anyhow!(
-                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>]"
+                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <output device>] [--mode translate|respond --host <name>] [--dry-run]"
             ));
         }
         i += 1;
     }
+    if dry_run && !wants_respond {
+        return Err(anyhow!(
+            "--dry-run only means something in --mode respond: translate has no decision step"
+        ));
+    }
+    if !wants_respond && !host_names.is_empty() {
+        return Err(anyhow!(
+            "--host is a respond-mode flag: add --mode respond or drop it"
+        ));
+    }
+    let mode = if wants_respond {
+        AppMode::Respond {
+            policy: crate::processor::processor::RespondPolicy {
+                host_names,
+                answer_questions_only: true,
+                require_name: true,
+                allow_commitments: false,
+            },
+        }
+    } else {
+        AppMode::Translate
+    };
 
-    transcription::live_local::run_live_local_transcription_test(
-        &provider_name,
-        &processor_name,
-        config::DEFAULT_PIPELINE_TEST_SECONDS,
-        config::DEFAULT_CHUNK_DURATION_MS,
+    let config = AppRuntimeConfig {
+        transcription_provider: provider_name,
+        processor_provider: processor_name,
+        synthesizer_provider: synthesizer_name,
+        player_device,
+        source_language: config::DEFAULT_SOURCE_LANGUAGE.to_string(),
+        target_language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
+        chunk_duration_ms: config::DEFAULT_CHUNK_DURATION_MS,
+        volume_threshold: config::DEFAULT_VOLUME_THRESHOLD,
+        hangover_ms: config::DEFAULT_HANGOVER_MS,
+        min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
+        max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
+        input_device: None,
+        mode,
+        dry_run,
+    };
+    transcription::live_local::run_live_local_transcription_with_config_and_events(
+        config,
+        Some(config::DEFAULT_PIPELINE_TEST_SECONDS),
+        None,
+        |event| {
+            // Errors go to stderr so redirecting stdout keeps the
+            // transcript clean and scripts can detect failures.
+            match event {
+                AppEvent::Error(_) => {
+                    eprintln!("{}", format_app_event_for_console(&event))
+                }
+                _ => println!("{}", format_app_event_for_console(&event)),
+            }
+        },
     )
+}
+
+/// Parse one `--flag value` / `--flag=value` occurrence at `args[i]`.
+///
+/// Returns `Ok(None)` when `arg` is not this flag, `Ok(Some(value))`
+/// when it is, and an error with remediation when `--flag` dangles
+/// without a value. The `missing_example` text names the flag's shape
+/// in the error, so the fix is on the same line as the problem.
+fn flag_value(
+    arg: &str,
+    args: &[String],
+    i: &mut usize,
+    flag: &str,
+    missing_example: &str,
+) -> Result<Option<String>> {
+    let (value, advance) = if arg == flag {
+        let next = *i + 1;
+        let value = args.get(next).ok_or_else(|| {
+            anyhow!(
+                "{flag} requires a value (e.g. {flag} {missing_example})\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>]"
+            )
+        })?;
+        (value.clone(), true)
+    } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+        (value.to_string(), false)
+    } else {
+        return Ok(None);
+    };
+    if advance {
+        *i += 1;
+    }
+    Ok(Some(value))
 }
 
 /// One LLM round-trip with no microphone and no TTS.

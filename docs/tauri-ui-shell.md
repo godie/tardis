@@ -1,9 +1,10 @@
 # TARDIS v1 Tauri UI Shell
 
 This document covers the Tauri desktop shell. The shell runs live
-microphone transcription, a runtime settings panel, and a file-based
-local transcription flow that reuses the existing
-`transcription::local_whisper::LocalWhisperClient` against
+microphone transcription, a runtime settings panel (with the translate /
+respond mode select and the respond host names input, both locked while
+a session runs), and a file-based local transcription flow that reuses
+the existing `transcription::local_whisper::LocalWhisperClient` against
 `docker/faster-whisper/`. It also keeps a set of zero-side-effect mock
 commands for UI development.
 

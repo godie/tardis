@@ -1,0 +1,40 @@
+# Local Piper HTTP text-to-speech server.
+#
+# Image: built from ./Dockerfile (python:3.13-slim + piper-tts[http]).
+#   - Speaks POST /synthesize with a JSON body, replies with a WAV
+#     (16-bit PCM, 22050 Hz mono for the default voice).
+#   - Voice: single-speaker es_MX-ald-medium by default. Change it with
+#     PIPER_VOICE on the container; any name from
+#     https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
+#     works as long as it is downloaded below.
+#
+# Usage:
+#   docker compose -f docker/piper/docker-compose.yml up -d
+#   docker compose -f docker/piper/docker-compose.yml down
+#
+# Test it manually with curl:
+#   curl -X POST -H 'Content-Type: application/json' \
+#        -d '{"text": "hola desde tardis"}' \
+#        -o test.wav http://localhost:5002/synthesize
+
+services:
+  piper:
+    build: .
+    container_name: tardis-piper
+    ports:
+      # Bind only to the loopback interface so audio never leaves the host.
+      - "127.0.0.1:5002:5002"
+    environment:
+      # Voice id passed to the downloader and the server. The first start
+      # downloads it (~60 MB for the default) into ./voices on the host.
+      PIPER_VOICE: es_MX-ald-medium
+    volumes:
+      # Keep the downloaded voice on the host so later starts skip the
+      # download, the same trade as ./hf_cache in docker/faster-whisper.
+      - ./voices:/voices
+    command: >
+      sh -c "test -f /voices/$${PIPER_VOICE}.onnx ||
+             python3 -m piper.download_voices --data-dir /voices $${PIPER_VOICE} &&
+             exec python3 -m piper.http_server --host 0.0.0.0 --port 5002 --data-dir /voices --model $${PIPER_VOICE}"
+
+    restart: unless-stopped

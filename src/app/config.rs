@@ -27,6 +27,42 @@ use crate::config as central;
 /// and is copied out into every emitted [`crate::app::events::AppEvent`].
 ///
 /// The `serde` derives let the Tauri shell round-trip the same
+/// Which process mode the app runs, as configuration stores it.
+///
+/// A lean discriminant: the languages stay top-level on
+/// [`AppRuntimeConfig`] and are carried into the per-call
+/// [`crate::processor::processor::ProcessMode`] by the runner, so there
+/// is one source of truth per piece of data. Serializes with a `kind`
+/// tag; a `runtime.json` written before this field existed, or with an
+/// explicit `null`, loads as translate — today's behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AppMode {
+    /// Translate every speech segment into the target language.
+    #[default]
+    Translate,
+    /// Answer as the host, under the two-layer commitment safety.
+    Respond {
+        /// What the decision step needs: who the host is and what never
+        /// gets spoken. Defaults on a respond payload that omits it;
+        /// validation then rejects what v1 does not support.
+        #[serde(default)]
+        policy: crate::processor::processor::RespondPolicy,
+    },
+}
+
+/// Accepts a `null` mode the way a missing one is accepted: a file may
+/// say `"mode": null` and still load as translate, but an unknown
+/// `kind` deserializing fails so a corrupt file is reported, not
+/// silently demoted.
+fn deserialize_mode_or_null<'de, D>(deserializer: D) -> Result<AppMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Deserialize;
+    Option::<AppMode>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 /// struct through its IPC boundary; the frontend sends the same
 /// shape and the backend validates before using it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -40,6 +76,33 @@ pub struct AppRuntimeConfig {
     /// written before the LLM processor existed still loads as the mock.
     #[serde(default = "default_processor_provider")]
     pub processor_provider: String,
+    /// Which process mode the session runs. `serde` defaults it so a
+    /// `runtime.json` written before it existed, or an explicit `null`,
+    /// still loads as translate; an unknown `kind` is a parse error, not
+    /// a silent fallback.
+    #[serde(default, deserialize_with = "deserialize_mode_or_null")]
+    pub mode: AppMode,
+    /// Never persisted and never sent by the UI: the CLI's
+    /// `--dry-run` turns playback into a counted, silent drain so a
+    /// respond session reveals its decisions without a sound. Sessions
+    /// started anywhere else are not dry runs.
+    #[serde(skip)]
+    pub dry_run: bool,
+    /// Stable identifier for the active `Synthesizer` implementation:
+    /// `"mock"` (deterministic offline tone, the default) or `"piper"`
+    /// (the local Docker TTS server). `serde` defaults it: a
+    /// `runtime.json` written before the real synthesizer existed
+    /// still loads, on the mock.
+    #[serde(default = "default_synthesizer_provider")]
+    pub synthesizer_provider: String,
+    /// Output device preference for the real player, matched
+    /// case-insensitively against the device label, in the same
+    /// `"<substring>"` form. `None` means "the OS default output
+    /// device". Only read when a real player is active (the `piper`
+    /// path); the always-on mocks have no device, which is what keeps
+    /// CI device-free.
+    #[serde(default)]
+    pub player_device: Option<String>,
     /// BCP-47-ish source language code (e.g. `"en"`).
     pub source_language: String,
     /// BCP-47-ish target language code (e.g. `"es"`).
@@ -92,6 +155,10 @@ fn default_hangover_ms() -> u64 {
 
 fn default_processor_provider() -> String {
     crate::processor::DEFAULT_PROCESSOR_NAME.to_string()
+}
+
+fn default_synthesizer_provider() -> String {
+    "mock".to_string()
 }
 
 fn default_min_speech_ms() -> u64 {
@@ -177,6 +244,23 @@ pub fn is_supported_processor_provider(provider: &str) -> bool {
     supported_processor_providers().contains(&provider)
 }
 
+/// Return the canonical list of supported synthesizer provider names.
+///
+/// `"mock"` is the offline stage that ships with the loop; `"piper"`
+/// talks to the local Docker TTS server. Kept next to the other lists
+/// so the validator (and a future UI dropdown) rebuild from one place.
+pub fn supported_synthesizer_providers() -> Vec<&'static str> {
+    vec!["mock", "piper"]
+}
+
+/// Membership test for [`supported_synthesizer_providers`].
+///
+/// Same contract as [`is_supported_transcription_provider`]:
+/// exact, case-sensitive match; empty and unknown names fail.
+pub fn is_supported_synthesizer_provider(provider: &str) -> bool {
+    supported_synthesizer_providers().contains(&provider)
+}
+
 /// Trim leading / trailing whitespace from the
 /// [`AppRuntimeConfig`] string fields.
 ///
@@ -193,6 +277,7 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
     AppRuntimeConfig {
         transcription_provider: config.transcription_provider.trim().to_string(),
         processor_provider: config.processor_provider.trim().to_string(),
+        synthesizer_provider: config.synthesizer_provider.trim().to_string(),
         source_language: config.source_language.trim().to_string(),
         target_language: config.target_language.trim().to_string(),
         chunk_duration_ms: config.chunk_duration_ms,
@@ -203,15 +288,61 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         // A whitespace-only id is the UI's empty option in disguise; treat
         // it as "system default" rather than as a device id that can never
         // be resolved.
-        input_device: config.input_device.and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }),
+        input_device: normalize_optional_device(config.input_device),
+        player_device: normalize_optional_device(config.player_device),
+        mode: normalize_mode(config.mode),
+        dry_run: config.dry_run,
     }
+}
+
+/// Trims and de-duplicates the respond policy's host names,
+/// case-insensitively, keeping the first casing ("  Ana " + "ana" →
+/// "Ana"). Nothing else about the mode is rewritten: the flags are
+/// validated, not normalized, so a config shipping v1's conservative
+/// defaults stays exactly that.
+fn normalize_mode(mode: AppMode) -> AppMode {
+    match mode {
+        AppMode::Translate => AppMode::Translate,
+        AppMode::Respond { policy } => {
+            let mut seen: Vec<String> = Vec::new();
+            let host_names = policy
+                .host_names
+                .iter()
+                .filter_map(|name| {
+                    let trimmed = name.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let key = trimmed.to_lowercase();
+                    if seen.contains(&key) {
+                        return None;
+                    }
+                    seen.push(key);
+                    Some(trimmed.to_string())
+                })
+                .collect();
+            AppMode::Respond {
+                policy: crate::processor::processor::RespondPolicy {
+                    host_names,
+                    ..policy
+                },
+            }
+        }
+    }
+}
+
+/// `Some("")` and padded values collapse the way the UI sends its
+/// "system default" option: blank becomes `None`, everything else is
+/// trimmed.
+fn normalize_optional_device(device: Option<String>) -> Option<String> {
+    device.and_then(|name| {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 impl Default for AppRuntimeConfig {
@@ -219,6 +350,7 @@ impl Default for AppRuntimeConfig {
         Self {
             transcription_provider: "mock-local".to_string(),
             processor_provider: crate::processor::DEFAULT_PROCESSOR_NAME.to_string(),
+            synthesizer_provider: "mock".to_string(),
             source_language: central::DEFAULT_SOURCE_LANGUAGE.to_string(),
             target_language: central::DEFAULT_TARGET_LANGUAGE.to_string(),
             chunk_duration_ms: central::DEFAULT_CHUNK_DURATION_MS,
@@ -228,6 +360,14 @@ impl Default for AppRuntimeConfig {
             max_utterance_ms: central::DEFAULT_MAX_UTTERANCE_MS,
             // `None` = the OS default input device.
             input_device: None,
+            // `None` = the OS default output device, and the default
+            // synthesizer is the mock, which never opens a device at all.
+            player_device: None,
+            // Translate is the shipped mode; respond never loads from a
+            // legacy file.
+            mode: AppMode::Translate,
+            // A plain config never dry-runs; only the CLI flag sets it.
+            dry_run: false,
         }
     }
 }
@@ -247,17 +387,28 @@ impl Default for AppRuntimeConfig {
 /// 3. `processor_provider` non-empty (after trimming).
 /// 4. `processor_provider` is one of
 ///    [`supported_processor_providers`].
-/// 5. `source_language` non-empty.
-/// 6. `target_language` non-empty.
-/// 7. `chunk_duration_ms > 0` (avoid divide-by-zero in
+/// 5. `synthesizer_provider` non-empty (after trimming).
+/// 6. `synthesizer_provider` is one of
+///    [`supported_synthesizer_providers`]; and `player_device`, when
+///    present, is not empty or whitespace
+///    ([`normalize_runtime_config`] collapses a blank one to `None`;
+///    a whitespace-only value that survives means a malformed
+///    config).
+/// 7. translate mode has nothing more to check; a respond `mode` must
+///    name at least one non-blank host and never err looser than v1
+///    (`allow_commitments` must stay `false`, while
+///    `answer_questions_only` and `require_name` must stay `true`).
+/// 8. `source_language` non-empty.
+/// 8. `target_language` non-empty.
+/// 9. `chunk_duration_ms > 0` (avoid divide-by-zero in
 ///    [`crate::audio::chunker::calculate_chunk_size_samples`]).
-/// 8. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
-///    [`MAX_CHUNK_DURATION_MS`].
-/// 9. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
-/// 10. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
+/// 10. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
+///     [`MAX_CHUNK_DURATION_MS`].
+/// 11. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
+/// 13. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
 ///     first non-speech frame).
-/// 11. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
-/// 12. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
+/// 14. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
+/// 15. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
 ///     least `min_speech_ms`, so a valid utterance can never exceed the
 ///     cap before it reaches the minimum.
 ///
@@ -291,6 +442,59 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
             trimmed_processor,
             supported_processor_providers().join(", ")
         ));
+    }
+    let trimmed_synthesizer = config.synthesizer_provider.trim();
+    if trimmed_synthesizer.is_empty() {
+        return Err("synthesizer_provider must not be empty or whitespace".to_string());
+    }
+    if !is_supported_synthesizer_provider(trimmed_synthesizer) {
+        return Err(format!(
+            "synthesizer_provider \"{}\" is not supported; valid values are: {}",
+            trimmed_synthesizer,
+            supported_synthesizer_providers().join(", ")
+        ));
+    }
+    if let Some(device) = config.player_device.as_deref()
+        && device.trim().is_empty()
+    {
+        return Err(
+            "player_device must not be empty or whitespace; omit it to select the system default"
+                .to_string(),
+        );
+    }
+    if let AppMode::Respond { policy } = &config.mode {
+        let host_count = policy
+            .host_names
+            .iter()
+            .filter(|name| !name.trim().is_empty())
+            .count();
+        if host_count == 0 {
+            return Err(
+                "mode.policy.host_names must name at least one host in respond mode".to_string(),
+            );
+        }
+        if policy.host_names.iter().any(|name| name.trim().is_empty()) {
+            return Err(
+                "mode.policy.host_names must not contain empty or whitespace names".to_string(),
+            );
+        }
+        if policy.allow_commitments {
+            return Err(
+                "allow_commitments is not supported yet; respond mode never speaks commitments"
+                    .to_string(),
+            );
+        }
+        if !policy.answer_questions_only {
+            return Err(
+                "answer_questions_only=false is not supported yet; v1 only answers questions"
+                    .to_string(),
+            );
+        }
+        if !policy.require_name {
+            return Err(
+                "require_name=false is not supported yet; v1 only answers the host".to_string(),
+            );
+        }
     }
     if config.source_language.trim().is_empty() {
         return Err("source_language must not be empty or whitespace".to_string());
@@ -717,6 +921,128 @@ mod tests {
     #[test]
     fn default_config_uses_the_system_input_device() {
         assert_eq!(AppRuntimeConfig::default().input_device, None);
+    }
+
+    // ---- synthesizer_provider / player_device -------------------------
+
+    #[test]
+    fn default_uses_mock_synthesizer_and_no_player_device() {
+        let cfg = AppRuntimeConfig::default();
+        assert_eq!(cfg.synthesizer_provider, "mock");
+        assert_eq!(cfg.player_device, None);
+    }
+
+    #[test]
+    fn piper_synthesizer_provider_is_valid() {
+        let cfg = AppRuntimeConfig {
+            synthesizer_provider: "piper".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn empty_synthesizer_provider_is_invalid() {
+        let cfg = AppRuntimeConfig {
+            synthesizer_provider: "  \t".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("synthesizer_provider"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn blank_player_device_is_invalid_and_omit_selects_the_system_default() {
+        let cfg = AppRuntimeConfig {
+            player_device: Some("   ".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("player_device"),
+            "error should name the offending field, got: {err}"
+        );
+        assert!(validate_runtime_config(&AppRuntimeConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn unknown_synthesizer_provider_is_invalid_and_lists_the_valid_values() {
+        let cfg = AppRuntimeConfig {
+            synthesizer_provider: "kitten".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(err.contains("kitten"), "error must name the value: {err}");
+        assert!(err.contains("mock"), "error must list valid values: {err}");
+        assert!(err.contains("piper"), "error must list valid values: {err}");
+    }
+
+    #[test]
+    fn normalize_trims_synthesizer_provider() {
+        let cfg = AppRuntimeConfig {
+            synthesizer_provider: "  piper  ".to_string(),
+            ..AppRuntimeConfig::default()
+        };
+        assert_eq!(normalize_runtime_config(cfg).synthesizer_provider, "piper");
+    }
+
+    #[test]
+    fn supported_synthesizer_providers_lists_mock_and_piper() {
+        assert_eq!(supported_synthesizer_providers(), vec!["mock", "piper"]);
+        assert!(is_supported_synthesizer_provider("mock"));
+        assert!(is_supported_synthesizer_provider("piper"));
+        assert!(!is_supported_synthesizer_provider("Piper"));
+        assert!(!is_supported_synthesizer_provider(""));
+    }
+
+    #[test]
+    fn normalize_trims_player_device() {
+        let cfg = AppRuntimeConfig {
+            player_device: Some("  macbook  ".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        let out = normalize_runtime_config(cfg);
+        assert_eq!(out.player_device.as_deref(), Some("macbook"));
+    }
+
+    #[test]
+    fn normalize_turns_a_blank_player_device_into_none() {
+        // Same contract as `input_device`: a blank value is the UI's
+        // "System default" option, not a device named " ".
+        for blank in ["", "   ", "\n\t"] {
+            let cfg = AppRuntimeConfig {
+                player_device: Some(blank.to_string()),
+                ..AppRuntimeConfig::default()
+            };
+            assert_eq!(normalize_runtime_config(cfg).player_device, None);
+        }
+    }
+
+    #[test]
+    fn default_config_uses_the_system_player_device() {
+        assert_eq!(AppRuntimeConfig::default().player_device, None);
+    }
+
+    /// A `runtime.json` written before the synthesizer fields existed
+    /// must still load, on the mock provider with no player device.
+    /// Mirrors the `deserialize_ignores_unknown_fields` / legacy test
+    /// pattern in `settings_store.rs`.
+    #[test]
+    fn legacy_config_without_synthesizer_fields_defaults_to_mock() {
+        let json = r#"{
+            "transcription_provider": "mock-local",
+            "source_language": "en",
+            "target_language": "es",
+            "chunk_duration_ms": 1000,
+            "volume_threshold": 0.01
+        }"#;
+        let cfg: AppRuntimeConfig = serde_json::from_str(json).expect("legacy JSON must load");
+        assert_eq!(cfg.synthesizer_provider, "mock");
+        assert_eq!(cfg.player_device, None);
+        assert!(validate_runtime_config(&cfg).is_ok());
     }
 
     #[test]

@@ -443,6 +443,17 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
+/* Guard-blocked reply marker on a respond-mode output entry. Same
+   tokens as the error surface: visible, never decorative. */
+.blocked-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--danger);
+  background: var(--danger-surface);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.4rem;
+}
+
 /* Rendered-audio line under the translation panel. Display only: the
    player is a backend stage, so there are no transport controls here
    (see docs/core-pipeline-plan.md §2.5). */

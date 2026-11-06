@@ -175,6 +175,7 @@ impl AppService {
                     source_language: output.source_language.clone(),
                     target_language: output.target_language.clone(),
                     is_final: output.is_final,
+                    blocked: output.blocked,
                 };
                 events.push(self.state.apply_output(output_event));
             }

@@ -24,8 +24,10 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::config;
-use crate::processor::processor::{Output, OutputKind, ProcessMode, Processor};
+use crate::processor::decision::Decision;
+use crate::processor::processor::{BlockReason, Output, OutputKind, ProcessMode, Processor};
 use crate::processor::prompt;
+use crate::processor::{decision, guard};
 
 /// OpenAI-compatible chat endpoint suffix. `base_url` (e.g. Ollama's
 /// `http://localhost:11434/v1`) + this string is the request URL.
@@ -277,34 +279,89 @@ impl LlmProcessor {
 }
 
 impl Processor for LlmProcessor {
-    /// `Ok(None)` only for empty input (nothing to translate). Transport,
-    /// auth, malformed and empty completions are all `Err`, so the runner
-    /// can surface them instead of reporting them as silence.
+    /// `Ok(None)` for empty input and for a decision that says "stay
+    /// silent". Transport, auth, malformed and empty completions are
+    /// all `Err`, so the runner can surface them instead of reporting
+    /// them as silence.
     fn process(&self, text: &str, mode: &ProcessMode) -> Result<Option<Output>> {
         if text.trim().is_empty() {
             return Ok(None);
         }
-        let ProcessMode::Translate {
-            source_language,
-            target_language,
-        } = mode;
-        let system_prompt = prompt::build_translate_system_prompt(source_language, target_language);
-        let user_text = prompt::wrap_transcript(text);
-        let rendered = self.complete(&system_prompt, &user_text)?;
-        if rendered.is_empty() {
-            return Err(anyhow!(
-                "model '{}' returned an empty reply (no translation produced)",
-                self.model
-            ));
+        match mode {
+            ProcessMode::Translate {
+                source_language,
+                target_language,
+            } => {
+                let system_prompt =
+                    prompt::build_translate_system_prompt(source_language, target_language);
+                let user_text = prompt::wrap_transcript(text);
+                let rendered = self.complete(&system_prompt, &user_text)?;
+                if rendered.is_empty() {
+                    return Err(anyhow!(
+                        "model '{}' returned an empty reply (no translation produced)",
+                        self.model
+                    ));
+                }
+                Ok(Some(Output {
+                    kind: OutputKind::Translate,
+                    source_text: text.to_string(),
+                    text: rendered,
+                    source_language: source_language.clone(),
+                    target_language: target_language.clone(),
+                    is_final: true,
+                    blocked: None,
+                }))
+            }
+            ProcessMode::Respond {
+                source_language,
+                target_language,
+                policy,
+            } => {
+                // Layer a first: the classifier decides whether to act
+                // before any tokens are spent.
+                match decision::decide_should_respond(text, policy) {
+                    Decision::Ignore => Ok(None),
+                    Decision::Suggest { reason } => {
+                        // A commitment request is surfaced, never
+                        // synthesized: no model call, just the reason.
+                        Ok(Some(Output {
+                            kind: OutputKind::Respond,
+                            source_text: text.to_string(),
+                            text: format!("[respond suggestion] {reason}"),
+                            source_language: source_language.clone(),
+                            target_language: target_language.clone(),
+                            is_final: true,
+                            blocked: Some(BlockReason::Commitment),
+                        }))
+                    }
+                    Decision::Answer => {
+                        let system_prompt =
+                            prompt::build_respond_system_prompt(source_language, target_language);
+                        let user_text = prompt::wrap_transcript(text);
+                        let rendered = self.complete(&system_prompt, &user_text)?;
+                        if rendered.is_empty() {
+                            return Err(anyhow!(
+                                "model '{}' returned an empty reply (no response produced)",
+                                self.model
+                            ));
+                        }
+                        // Layer b: the model must not be trusted to have
+                        // avoided a promise just because it was asked a
+                        // question.
+                        let guarded = guard::validate_reply(&rendered);
+                        Ok(Some(Output {
+                            kind: OutputKind::Respond,
+                            source_text: text.to_string(),
+                            text: rendered,
+                            source_language: source_language.clone(),
+                            target_language: target_language.clone(),
+                            is_final: true,
+                            blocked: guarded.reasons.first().copied(),
+                        }))
+                    }
+                }
+            }
         }
-        Ok(Some(Output {
-            kind: OutputKind::Translate,
-            source_text: text.to_string(),
-            text: rendered,
-            source_language: source_language.clone(),
-            target_language: target_language.clone(),
-            is_final: true,
-        }))
     }
 }
 

@@ -785,6 +785,14 @@ can silently produce chipmunk audio, so it gets the tests.
 
 ### PR 6 — Respond mode with two-layer commitment safety
 
+**Status.** Implemented on the branch stacked on top of PR 5. One
+deviation from the list below: the persisted config field is
+`AppMode` (a lean `Translate | Respond { policy }` discriminant) while
+`process` keeps carrying the languages in its per-call `ProcessMode`,
+because the top-level language pair is the single source of truth; the
+runner joins the two at call time. `Output.blocked` and the two pure
+safety layers landed exactly as specified.
+
 **Files.** `src/app/config.rs` (`ProcessMode`, `RespondPolicy`,
 validation, normalize), `src/app/settings_store.rs` (the seven tests in
 §2.4), `src/processor/decision.rs` (layer a: classify + decide),

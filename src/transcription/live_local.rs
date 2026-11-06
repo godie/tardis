@@ -6,10 +6,11 @@
 //! the provider. Silence only closes an utterance (after `hangover_ms`); it
 //! never becomes a provider call. Each utterance is written to a temporary
 //! WAV file because the provider interface is file-based. Each transcript is
-//! then processed, synthesized by [`crate::synthesis::MockSynthesizer`], and
-//! handed to [`crate::audio::player::CountingPlayer`], which counts instead
-//! of playing: the whole five-stage loop runs with no TTS service, no output
-//! device, and no permissions. It counts rather than records because an
+//! then processed, synthesized by the configured [`crate::synthesis::Synthesizer`]
+//! (mock offline, or the local Piper HTTP server), and handed to the
+//! matching player: the mock counts instead of playing, so the whole
+//! five-stage loop runs with no TTS service, no output device, and no
+//! permissions. It counts rather than records because an
 //! indefinite session would otherwise hold every rendered sample in memory.
 //!
 //! This is **not** true streaming: it is utterance-by-utterance live
@@ -22,16 +23,12 @@
 //!
 //! - [`run_live_local_transcription_with_config_and_events`] — the
 //!   canonical driver. Accepts a fully-formed
-//!   [`AppRuntimeConfig`] so the Tauri shell's UI-supplied
-//!   provider / language pair / chunk size / threshold flow
-//!   through end-to-end. Translation uses
-//!   `config.source_language` / `config.target_language` (no
-//!   hardcoded en/es).
-//! - [`run_live_local_transcription_with_events`] — back-compat
-//!   thin wrapper that builds an `AppRuntimeConfig` from
-//!   individual CLI args (defaulting the language pair and
-//!   threshold from centralised [`config`] constants). Used by
-//!   `cargo run -- live-local-transcribe --provider mock-local`.
+//!   [`AppRuntimeConfig`] so both the CLI (`main.rs` builds it from
+//!   the `--provider` / `--processor` / `--synthesizer` / `--device`
+//!   flags) and the Tauri shell's UI-supplied provider / language
+//!   pair / chunk size / threshold flow through end-to-end.
+//!   Translation uses `config.source_language` /
+//!   `config.target_language` (no hardcoded en/es).
 //!
 //! Pure helpers (`format_live_utterance_filename`,
 //! `should_transcribe_chunk`, `live_utterance_status_message`) live in this
@@ -48,8 +45,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::app::config::AppRuntimeConfig;
-use crate::app::events::{AppEvent, AppStatus, format_app_event_for_console};
+use crate::app::config::{AppMode, AppRuntimeConfig};
+use crate::app::events::{AppEvent, AppStatus};
 use crate::app::live_events::{
     build_error_event, build_output_event, build_speech_event, build_transcript_event,
 };
@@ -58,12 +55,12 @@ use crate::audio::capture::MicInput;
 use crate::audio::chunk_recorder::write_chunk_wav;
 use crate::audio::endpoint::{self, EndpointConfig, EndpointDecision, EndpointState};
 use crate::audio::gate::{HalfDuplexGate, playback_backlog};
-use crate::audio::player::{CountingPlayer, Player};
+use crate::audio::player::{CountingPlayer, CpalPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::processor::build_processor;
 use crate::processor::processor::{ProcessMode, Processor};
-use crate::synthesis::{AudioChunk, MockSynthesizer, Speech, Synthesizer, chunk_duration_ms};
+use crate::synthesis::{AudioChunk, Speech, Synthesizer, build_synthesizer, chunk_duration_ms};
 use crate::transcription;
 use crate::transcription::LocalTranscriptionProvider;
 
@@ -211,6 +208,46 @@ where
     // future provider config) must not leave the shell in a listening
     // state it never gets out of.
     let processor = build_processor(&config.processor_provider)?;
+    // The synthesizer is selected by the same dispatch the other stages
+    // use; "piper" only wires an HTTP client here, the server is
+    // contacted on the first utterance, where a failure becomes an
+    // error event and the session keeps running.
+    let synthesizer = build_synthesizer(&config.synthesizer_provider)?;
+
+    // The real player is CPAL glue and can fail on a machine with no
+    // output device, so like every stage that can fail it is built
+    // before the session announces Listening.
+    println!("synthesizer: {}", config.synthesizer_provider);
+    let mut player: Box<dyn Player> = if config.dry_run {
+        // A dry run decides and renders but never makes a sound: the
+        // counting sink keeps the event stream honest while the room
+        // stays silent.
+        println!("playback:  dry run (counted, silent)");
+        Box::new(CountingPlayer::new())
+    } else {
+        match config.synthesizer_provider.as_str() {
+            "piper" => {
+                let cpal_player =
+                    CpalPlayer::new(&cpal::default_host(), config.player_device.as_deref())?;
+                // The device rate is what the queue was resampled to; print
+                // it because a voice mismatch would be invisible otherwise.
+                match config.player_device.as_deref() {
+                    Some(device) => println!("player:    cpal output \"{device}\""),
+                    None => println!("player:    cpal output (system default)"),
+                }
+                println!(
+                    "playback:  {} Hz, {} ch",
+                    cpal_player.device_rate(),
+                    cpal_player.device_channels()
+                );
+                Box::new(cpal_player)
+            }
+            _ => {
+                println!("output:    mock player (counts chunks, silent)");
+                Box::new(CountingPlayer::new())
+            }
+        }
+    };
 
     // `None` in the config means "whatever the OS calls default"; a name that
     // no longer exists falls back to the default inside `MicInput`.
@@ -268,12 +305,20 @@ where
     let mut pending_samples: Vec<f32> = Vec::new();
     // The process stage is built above, with the other stages, so a
     // construction failure happens before the session announces Listening.
-    let process_mode = ProcessMode::Translate {
-        source_language: config.source_language.clone(),
-        target_language: config.target_language.clone(),
+    // The mode field is a lean discriminant: the languages the stage call
+    // carries come from the top-level pair, so there is one source of
+    // truth for both.
+    let process_mode = match &config.mode {
+        AppMode::Respond { policy } => ProcessMode::Respond {
+            source_language: config.source_language.clone(),
+            target_language: config.target_language.clone(),
+            policy: policy.clone(),
+        },
+        AppMode::Translate => ProcessMode::Translate {
+            source_language: config.source_language.clone(),
+            target_language: config.target_language.clone(),
+        },
     };
-    let synthesizer = MockSynthesizer::new();
-    let mut player = CountingPlayer::new();
     let mut gate = HalfDuplexGate::with_default_tail();
     // Duration of one drained/captured frame batch, for the gate's tail.
     let captured_ms = chunk_size as u64 * 1_000 / (sample_rate as u64 * channels as u64);
@@ -284,19 +329,21 @@ where
     // can flush an utterance both mid-session and at teardown without
     // repeating the stage sequence.
     let mut speaker = Speaker {
-        player: &mut player,
+        player: player.as_mut(),
         gate: &mut gate,
         mic: &mic,
         chunk_size,
         tick,
         captured_ms,
+        spoken: 0,
+        spoken_ms: 0,
     };
     let stages = UtteranceStages {
         provider: provider.as_ref(),
         provider_name: &provider_name,
         processor: processor.as_ref(),
         process_mode: &process_mode,
-        synthesizer: &synthesizer,
+        synthesizer: synthesizer.as_ref(),
         on_event: &on_event,
         output_dir,
         sample_rate,
@@ -401,14 +448,17 @@ where
         StopFlush::Drop => pending_samples.clear(),
     }
 
+    // Counters out of the speaker first: it borrows the mic (and the
+    // gate) for the whole session, and `drop(mic)` needs that borrow
+    // released.
+    let spoken = speaker.spoken;
+    let spoken_ms = speaker.spoken_ms;
     drop(mic);
 
     // Emit the final event: capture has stopped.
     on_event(AppEvent::StatusChanged(AppStatus::Stopped));
     println!(
-        "\nLive local transcription finished. {utterance_index} utterance(s) processed, {} spoken ({} ms, mock player).",
-        player.played_count(),
-        player.played_duration_ms(),
+        "\nLive local transcription finished. {utterance_index} utterance(s) processed, {spoken} spoken ({spoken_ms} ms)."
     );
 
     // Clean up the output directory if empty.
@@ -421,14 +471,20 @@ where
 /// the capture buffer they clear.
 ///
 /// Grouped so the per-utterance stages can speak without owning the loop's
-/// state (the capture loop keeps the endpointing state itself).
+/// state (the capture loop keeps the endpointing state itself). The spokes
+/// counters keep the final summary honest for the real player too, whose
+/// concrete type the runner no longer knows.
 struct Speaker<'a> {
-    player: &'a mut CountingPlayer,
+    player: &'a mut dyn Player,
     gate: &'a mut HalfDuplexGate,
     mic: &'a MicInput,
     chunk_size: usize,
     tick: Duration,
     captured_ms: u64,
+    /// Chunks handed to the player that reported success.
+    spoken: usize,
+    /// Rendered milliseconds actually played, on success.
+    spoken_ms: u64,
 }
 
 impl Speaker<'_> {
@@ -444,6 +500,10 @@ impl Speaker<'_> {
         self.gate.begin_speaking();
         let playback = self.player.play_chunk(chunk);
         self.gate.end_speaking();
+        if playback.is_ok() {
+            self.spoken += 1;
+            self.spoken_ms += crate::synthesis::chunk_duration_ms(chunk);
+        }
         let dropped = self.mic.clear();
 
         let backlog = playback_backlog(dropped, self.chunk_size);
@@ -564,45 +624,53 @@ where
                     Ok(Some(output)) => {
                         // The rendered text is both the UI payload and the
                         // thing to speak, so keep a copy before the event
-                        // takes ownership.
-                        let spoken_text = output.text.clone();
-                        (self.on_event)(build_output_event(
-                            utterance_index,
-                            output.kind,
-                            output.source_text,
-                            output.text,
-                            output.source_language,
-                            output.target_language,
-                            output.is_final,
-                        ));
+                        // takes ownership. The guard's verdict travels in
+                        // the event either way: silent in the room,
+                        // visible on screen.
+                        (self.on_event)(build_output_event(utterance_index, &output));
 
-                        // `None` from synthesis means "nothing to say": emit
-                        // no speech event and do not touch the player, so
-                        // silence never reaches the wire as a zero-length
-                        // utterance.
+                        // A blocked reply (layer a suggestion or layer b
+                        // refusal) is shown and never synthesized. Return
+                        // false: no speaker time was consumed, so the
+                        // caller must keep listening.
+                        if output.blocked.is_some() {
+                            return false;
+                        }
+
+                        // The three-way contract, same split the
+                        // processor has: `Ok(None)` is deliberate
+                        // silence (nothing to speak), `Err` is a real
+                        // failure the user must see, never silence.
                         let speech = Speech {
-                            text: spoken_text,
+                            text: output.text,
                             language: self.target_language.to_string(),
                         };
-                        let Some(chunk) = self.synthesizer.synthesize(&speech) else {
-                            return false;
-                        };
+                        match self.synthesizer.synthesize(&speech) {
+                            Ok(Some(chunk)) => {
+                                let duration_ms = chunk_duration_ms(&chunk);
+                                (self.on_event)(build_speech_event(
+                                    utterance_index,
+                                    speech.text,
+                                    speech.language,
+                                    duration_ms,
+                                    chunk.is_final,
+                                ));
 
-                        let duration_ms = chunk_duration_ms(&chunk);
-                        (self.on_event)(build_speech_event(
-                            utterance_index,
-                            speech.text,
-                            speech.language,
-                            duration_ms,
-                            chunk.is_final,
-                        ));
-
-                        if let Err(e) = speaker.speak(utterance_index, &chunk) {
-                            (self.on_event)(build_error_event(format!(
-                                "[utterance {utterance_index}] playback error: {e}"
-                            )));
+                                if let Err(e) = speaker.speak(utterance_index, &chunk) {
+                                    (self.on_event)(build_error_event(format!(
+                                        "[utterance {utterance_index}] playback error: {e}"
+                                    )));
+                                }
+                                true
+                            }
+                            Ok(None) => false,
+                            Err(e) => {
+                                (self.on_event)(build_error_event(format!(
+                                    "[utterance {utterance_index}] speech error: {e}"
+                                )));
+                                false
+                            }
                         }
-                        true
                     }
                     // Deliberate silence: the transcript already went out and
                     // there is nothing to render.
@@ -656,73 +724,6 @@ fn discard_blocked_capture(
             gate.advance(captured_ms.max(tick.as_millis() as u64));
         }
     }
-}
-
-/// Back-compat wrapper around
-/// [`run_live_local_transcription_with_config_and_events`] for the
-/// CLI's `--provider` flow.
-///
-/// Builds an [`AppRuntimeConfig`] from individual `&str` / `u64`
-/// args, defaulting the language pair and threshold from the
-/// centralised [`crate::config`] constants so the CLI's
-/// behaviour is unchanged when called via
-/// `cargo run -- live-local-transcribe --provider mock-local`.
-/// Keep this signature stable: the CLI in `src/main.rs` calls
-/// it directly. The Tauri shell never reaches this wrapper; it
-/// uses the config-based function above so the UI can pass a
-/// full [`AppRuntimeConfig`].
-pub fn run_live_local_transcription_with_events<F>(
-    provider_name: &str,
-    processor_name: &str,
-    seconds: u64,
-    chunk_duration_ms: u64,
-    should_stop: Option<Arc<AtomicBool>>,
-    on_event: F,
-) -> Result<()>
-where
-    F: Fn(AppEvent) + Send + Sync + 'static,
-{
-    let config = AppRuntimeConfig {
-        transcription_provider: provider_name.to_string(),
-        processor_provider: processor_name.to_string(),
-        chunk_duration_ms,
-        source_language: config::DEFAULT_SOURCE_LANGUAGE.to_string(),
-        target_language: config::DEFAULT_TARGET_LANGUAGE.to_string(),
-        volume_threshold: config::DEFAULT_VOLUME_THRESHOLD,
-        hangover_ms: config::DEFAULT_HANGOVER_MS,
-        min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
-        max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
-        input_device: None,
-    };
-    run_live_local_transcription_with_config_and_events(
-        config,
-        Some(seconds),
-        should_stop,
-        on_event,
-    )
-}
-
-/// CLI-facing wrapper that delegates to
-/// [`run_live_local_transcription_with_events`] with a
-/// console-formatting callback and no stop signal.
-///
-/// Preserves the exact same output behaviour the CLI expects.
-pub fn run_live_local_transcription_test(
-    provider_name: &str,
-    processor_name: &str,
-    seconds: u64,
-    chunk_duration_ms: u64,
-) -> Result<()> {
-    run_live_local_transcription_with_events(
-        provider_name,
-        processor_name,
-        seconds,
-        chunk_duration_ms,
-        None,
-        |event| {
-            println!("{}", format_app_event_for_console(&event));
-        },
-    )
 }
 
 // ===== Unit tests ========================================================

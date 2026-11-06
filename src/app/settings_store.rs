@@ -279,6 +279,7 @@ pub fn default_settings_file_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::config::AppMode;
 
     /// Allocate a fresh tempdir for a single test invocation. The
     /// name encodes the test name + pid + nanos so two parallel
@@ -320,6 +321,8 @@ mod tests {
         let cfg = AppRuntimeConfig {
             transcription_provider: "local-whisper".to_string(),
             processor_provider: "llm".to_string(),
+            synthesizer_provider: "piper".to_string(),
+            player_device: Some("macbook speakers".to_string()),
             source_language: "fr".to_string(),
             target_language: "it".to_string(),
             chunk_duration_ms: 750,
@@ -328,6 +331,8 @@ mod tests {
             min_speech_ms: 300,
             max_utterance_ms: 20_000,
             input_device: Some("External Microphone".to_string()),
+            mode: AppMode::Translate,
+            dry_run: false,
         };
         save_to_path(&path, &cfg).expect("save must succeed");
         let loaded = load_from_path_or_default(&path).expect("load must succeed");
@@ -383,6 +388,169 @@ mod tests {
         );
         assert!(!path.exists(), "rejected save must not touch disk");
         cleanup(&dir);
+    }
+
+    // ---- mode: the §2.4 seven -------------------------------------------
+
+    /// A respond policy that passes v1 validation, for the field tests
+    /// that start from a valid one. Clean names: normalization has its
+    /// own test.
+    fn valid_respond_policy() -> crate::processor::processor::RespondPolicy {
+        crate::processor::processor::RespondPolicy {
+            host_names: vec!["Ana".to_string()],
+            answer_questions_only: true,
+            require_name: true,
+            allow_commitments: false,
+        }
+    }
+
+    #[test]
+    fn legacy_json_without_mode_loads_as_translate() {
+        // `runtime.json` written before the mode field existed. The
+        // field is `#[serde(default)]`, so the session stays translate —
+        // exactly the behavior those files were saved with.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "hangover_ms": 400,
+  "min_speech_ms": 200,
+  "max_utterance_ms": 15000
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("legacy JSON must still load");
+        assert_eq!(cfg.mode, AppMode::Translate);
+    }
+
+    #[test]
+    fn legacy_json_with_mode_null_loads_as_translate() {
+        // An explicit `null` rides the same default: a UI that wrote the
+        // key but had no selection must never fail the load.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "hangover_ms": 400,
+  "min_speech_ms": 200,
+  "max_utterance_ms": 15000,
+  "mode": null
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("null mode must still load");
+        assert_eq!(cfg.mode, AppMode::Translate);
+    }
+
+    #[test]
+    fn round_trip_preserves_respond_mode() {
+        let config = AppRuntimeConfig {
+            mode: AppMode::Respond {
+                policy: valid_respond_policy(),
+            },
+            ..AppRuntimeConfig::default()
+        };
+        let json = serialize_runtime_config(&config).expect("serialize must succeed");
+        let loaded = deserialize_runtime_config(&json).expect("respond config must load");
+        assert_eq!(loaded.mode, config.mode);
+    }
+
+    #[test]
+    fn corrupt_json_with_unknown_mode_kind_is_rejected() {
+        // A wrong `kind` must be a parse error, not a silent fallback to
+        // translate: silently switching modes is exactly the risk this
+        // field exists to control.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "hangover_ms": 400,
+  "min_speech_ms": 200,
+  "max_utterance_ms": 15000,
+  "mode": { "kind": "interrogate" }
+}"#;
+        let err = deserialize_runtime_config(json).expect_err("unknown mode kind must be rejected");
+        let msg = format!("{err:#}").to_lowercase();
+        // The failure is a parse error, so the remediation reads "fix
+        // the settings file" and the cause names the unknown kind.
+        assert!(
+            msg.contains("unknown variant") || msg.contains("interrogate"),
+            "error must name the unknown kind, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn save_rejects_respond_mode_without_host_names() {
+        let dir = fresh_temp_dir("rejects_respond_no_hosts");
+        let path = settings_file_path(&dir);
+
+        let bad = AppRuntimeConfig {
+            mode: AppMode::Respond {
+                policy: crate::processor::processor::RespondPolicy {
+                    host_names: vec!["   ".to_string()],
+                    ..valid_respond_policy()
+                },
+            },
+            ..AppRuntimeConfig::default()
+        };
+        let err = save_to_path(&path, &bad).expect_err("must reject");
+        assert!(
+            matches!(err, SettingsStoreError::Validation(_)),
+            "expected Validation variant, got: {err:?}"
+        );
+        assert!(!path.exists(), "rejected save must not touch disk");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn save_rejects_allow_commitments_true() {
+        // A product promise, not a TODO: no settings file may turn it
+        // on.
+        let dir = fresh_temp_dir("rejects_allow_commitments");
+        let path = settings_file_path(&dir);
+
+        let bad = AppRuntimeConfig {
+            mode: AppMode::Respond {
+                policy: crate::processor::processor::RespondPolicy {
+                    allow_commitments: true,
+                    ..valid_respond_policy()
+                },
+            },
+            ..AppRuntimeConfig::default()
+        };
+        let err = save_to_path(&path, &bad).expect_err("must reject");
+        assert!(
+            matches!(err, SettingsStoreError::Validation(_)),
+            "expected Validation variant, got: {err:?}"
+        );
+        assert!(!path.exists(), "rejected save must not touch disk");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn padded_host_names_are_normalized() {
+        let config = AppRuntimeConfig {
+            mode: AppMode::Respond {
+                policy: crate::processor::processor::RespondPolicy {
+                    host_names: vec!["  Ana ".to_string(), "ana".to_string()],
+                    ..valid_respond_policy()
+                },
+            },
+            ..AppRuntimeConfig::default()
+        };
+        let normalized = normalize_runtime_config(config);
+        match normalized.mode {
+            AppMode::Respond { policy } => {
+                assert_eq!(
+                    policy.host_names,
+                    vec!["Ana".to_string()],
+                    "\"  Ana \" and \"ana\" collapse to one normalized name"
+                );
+            }
+            AppMode::Translate => panic!("the fixture is a respond config"),
+        }
     }
 
     #[test]

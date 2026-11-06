@@ -43,6 +43,11 @@ pub struct UiAppEvent {
     /// (`"translate"` or `"respond"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_kind: Option<String>,
+    /// Present for `output` events whose reply the respond-mode guard
+    /// blocked: the reason label (`"commitment"`, `"date"`, `"money"`,
+    /// `"acceptance"`, `"empty"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
     /// Present for `error` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -70,6 +75,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             source_language: None,
             target_language: None,
             output_kind: None,
+            blocked: None,
             message: None,
             is_final: None,
             duration_ms: None,
@@ -83,6 +89,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             source_language: None,
             target_language: None,
             output_kind: None,
+            blocked: None,
             message: None,
             is_final: Some(t.is_final),
             duration_ms: Some(t.duration_ms),
@@ -96,6 +103,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             source_language: Some(o.source_language.clone()),
             target_language: Some(o.target_language.clone()),
             output_kind: Some(o.kind.as_label().to_string()),
+            blocked: o.blocked.map(|reason| reason.as_label().to_string()),
             message: None,
             is_final: Some(o.is_final),
             duration_ms: None,
@@ -112,6 +120,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             // output events.
             target_language: Some(s.language.clone()),
             output_kind: None,
+            blocked: None,
             message: None,
             is_final: Some(s.is_final),
             duration_ms: Some(s.duration_ms),
@@ -125,6 +134,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
             source_language: None,
             target_language: None,
             output_kind: None,
+            blocked: None,
             message: Some(e.message.clone()),
             is_final: None,
             duration_ms: None,
@@ -187,6 +197,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         let ui = app_event_to_ui_event(&e);
         assert_eq!(ui.kind, "output");
