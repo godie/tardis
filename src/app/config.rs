@@ -82,6 +82,12 @@ pub struct AppRuntimeConfig {
     /// a silent fallback.
     #[serde(default, deserialize_with = "deserialize_mode_or_null")]
     pub mode: AppMode,
+    /// Never persisted and never sent by the UI: the CLI's
+    /// `--dry-run` turns playback into a counted, silent drain so a
+    /// respond session reveals its decisions without a sound. Sessions
+    /// started anywhere else are not dry runs.
+    #[serde(skip)]
+    pub dry_run: bool,
     /// Stable identifier for the active `Synthesizer` implementation:
     /// `"mock"` (deterministic offline tone, the default) or `"piper"`
     /// (the local Docker TTS server). `serde` defaults it: a
@@ -285,6 +291,7 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         input_device: normalize_optional_device(config.input_device),
         player_device: normalize_optional_device(config.player_device),
         mode: normalize_mode(config.mode),
+        dry_run: config.dry_run,
     }
 }
 
@@ -359,6 +366,8 @@ impl Default for AppRuntimeConfig {
             // Translate is the shipped mode; respond never loads from a
             // legacy file.
             mode: AppMode::Translate,
+            // A plain config never dry-runs; only the CLI flag sets it.
+            dry_run: false,
         }
     }
 }

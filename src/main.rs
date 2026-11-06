@@ -487,6 +487,9 @@ fn run_live_local_transcribe() -> Result<()> {
     let mut processor_name = processor::DEFAULT_PROCESSOR_NAME.to_string();
     let mut synthesizer_name = "mock".to_string();
     let mut player_device: Option<String> = None;
+    let mut host_names: Vec<String> = Vec::new();
+    let mut wants_respond = false;
+    let mut dry_run = false;
 
     // [0] = binary path, [1] = "live-local-transcribe"; start at [2].
     let mut i = 2;
@@ -500,13 +503,49 @@ fn run_live_local_transcribe() -> Result<()> {
             synthesizer_name = value;
         } else if let Some(value) = flag_value(arg, &args, &mut i, "--device", "<output device>")? {
             player_device = Some(value.trim().to_string());
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--mode", "respond")? {
+            match value.to_lowercase().trim() {
+                "translate" => {}
+                "respond" => wants_respond = true,
+                other => {
+                    return Err(anyhow!(
+                        "unknown mode \"{other}\": valid values are translate, respond"
+                    ));
+                }
+            }
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--host", "<name>")? {
+            host_names.push(value.trim().to_string());
+        } else if arg == "--dry-run" {
+            dry_run = true;
         } else {
             return Err(anyhow!(
-                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <output device>]"
+                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <output device>] [--mode translate|respond --host <name>] [--dry-run]"
             ));
         }
         i += 1;
     }
+    if dry_run && !wants_respond {
+        return Err(anyhow!(
+            "--dry-run only means something in --mode respond: translate has no decision step"
+        ));
+    }
+    if !wants_respond && !host_names.is_empty() {
+        return Err(anyhow!(
+            "--host is a respond-mode flag: add --mode respond or drop it"
+        ));
+    }
+    let mode = if wants_respond {
+        AppMode::Respond {
+            policy: crate::processor::processor::RespondPolicy {
+                host_names,
+                answer_questions_only: true,
+                require_name: true,
+                allow_commitments: false,
+            },
+        }
+    } else {
+        AppMode::Translate
+    };
 
     let config = AppRuntimeConfig {
         transcription_provider: provider_name,
@@ -521,7 +560,8 @@ fn run_live_local_transcribe() -> Result<()> {
         min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
         max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
         input_device: None,
-        mode: AppMode::Translate,
+        mode,
+        dry_run,
     };
     transcription::live_local::run_live_local_transcription_with_config_and_events(
         config,

@@ -332,6 +332,7 @@ mod tests {
             max_utterance_ms: 20_000,
             input_device: Some("External Microphone".to_string()),
             mode: AppMode::Translate,
+            dry_run: false,
         };
         save_to_path(&path, &cfg).expect("save must succeed");
         let loaded = load_from_path_or_default(&path).expect("load must succeed");

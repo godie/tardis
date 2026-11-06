@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::app::config::AppRuntimeConfig;
+use crate::app::config::{AppMode, AppRuntimeConfig};
 use crate::app::events::{AppEvent, AppStatus};
 use crate::app::live_events::{
     build_error_event, build_output_event, build_speech_event, build_transcript_event,
@@ -218,26 +218,34 @@ where
     // output device, so like every stage that can fail it is built
     // before the session announces Listening.
     println!("synthesizer: {}", config.synthesizer_provider);
-    let mut player: Box<dyn Player> = match config.synthesizer_provider.as_str() {
-        "piper" => {
-            let cpal_player =
-                CpalPlayer::new(&cpal::default_host(), config.player_device.as_deref())?;
-            // The device rate is what the queue was resampled to; print
-            // it because a voice mismatch would be invisible otherwise.
-            match config.player_device.as_deref() {
-                Some(device) => println!("player:    cpal output \"{device}\""),
-                None => println!("player:    cpal output (system default)"),
+    let mut player: Box<dyn Player> = if config.dry_run {
+        // A dry run decides and renders but never makes a sound: the
+        // counting sink keeps the event stream honest while the room
+        // stays silent.
+        println!("playback:  dry run (counted, silent)");
+        Box::new(CountingPlayer::new())
+    } else {
+        match config.synthesizer_provider.as_str() {
+            "piper" => {
+                let cpal_player =
+                    CpalPlayer::new(&cpal::default_host(), config.player_device.as_deref())?;
+                // The device rate is what the queue was resampled to; print
+                // it because a voice mismatch would be invisible otherwise.
+                match config.player_device.as_deref() {
+                    Some(device) => println!("player:    cpal output \"{device}\""),
+                    None => println!("player:    cpal output (system default)"),
+                }
+                println!(
+                    "playback:  {} Hz, {} ch",
+                    cpal_player.device_rate(),
+                    cpal_player.device_channels()
+                );
+                Box::new(cpal_player)
             }
-            println!(
-                "playback:  {} Hz, {} ch",
-                cpal_player.device_rate(),
-                cpal_player.device_channels()
-            );
-            Box::new(cpal_player)
-        }
-        _ => {
-            println!("output:    mock player (counts chunks, silent)");
-            Box::new(CountingPlayer::new())
+            _ => {
+                println!("output:    mock player (counts chunks, silent)");
+                Box::new(CountingPlayer::new())
+            }
         }
     };
 
@@ -297,9 +305,19 @@ where
     let mut pending_samples: Vec<f32> = Vec::new();
     // The process stage is built above, with the other stages, so a
     // construction failure happens before the session announces Listening.
-    let process_mode = ProcessMode::Translate {
-        source_language: config.source_language.clone(),
-        target_language: config.target_language.clone(),
+    // The mode field is a lean discriminant: the languages the stage call
+    // carries come from the top-level pair, so there is one source of
+    // truth for both.
+    let process_mode = match &config.mode {
+        AppMode::Respond { policy } => ProcessMode::Respond {
+            source_language: config.source_language.clone(),
+            target_language: config.target_language.clone(),
+            policy: policy.clone(),
+        },
+        AppMode::Translate => ProcessMode::Translate {
+            source_language: config.source_language.clone(),
+            target_language: config.target_language.clone(),
+        },
     };
     let mut gate = HalfDuplexGate::with_default_tail();
     // Duration of one drained/captured frame batch, for the gate's tail.
