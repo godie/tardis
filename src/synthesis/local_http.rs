@@ -199,9 +199,13 @@ fn pcm_samples(body: &[u8]) -> Result<Vec<f32>> {
                 bytes.len().is_multiple_of(2),
                 "WAV data chunk ends mid-sample"
             );
-            // 16-bit little-endian interleave.
-            for pair in bytes.chunks_exact(2) {
-                let value = i16::from_le_bytes([pair[0], pair[1]]);
+            // 16-bit little-endian interleave. `as_chunks` keeps the
+            // evenness guarantee visible and satisfies clippy's
+            // chunks_exact_to_as_chunks (rust-lang/rust-clippy#14788).
+            let (pairs, remainder) = bytes.as_chunks::<2>();
+            debug_assert!(remainder.is_empty());
+            for pair in pairs {
+                let value = i16::from_le_bytes(*pair);
                 samples.push(f32::from(value) / 32768.0);
             }
             return Ok(samples);
