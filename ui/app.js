@@ -17,6 +17,8 @@ const targetLanguage = document.querySelector("#target-language");
 const sourceLanguage = document.querySelector("#source-language");
 const providerSelect = document.querySelector("#provider-select");
 const processorSelect = document.querySelector("#processor-select");
+const modeSelect = document.querySelector("#mode-select");
+const hostNamesInput = document.querySelector("#host-names");
 const inputDeviceSelect = document.querySelector("#input-device");
 const chunkDurationMsInput = document.querySelector("#chunk-duration-ms");
 const volumeThresholdInput = document.querySelector("#volume-threshold");
@@ -32,6 +34,8 @@ const maxUtteranceMsInput = document.querySelector("#max-utterance-ms");
 const SESSION_SETTINGS_INPUTS = [
   providerSelect,
   processorSelect,
+  modeSelect,
+  hostNamesInput,
   inputDeviceSelect,
   sourceLanguage,
   targetLanguage,
@@ -142,7 +146,7 @@ function appendTranscript(text, durationMs, provider) {
 // Same shape as the transcript history: one row per rendered output, so the
 // two panels line up and a reader can see which language pair produced each
 // line. The text is what the process stage returned, not the transcript.
-function appendTranslation(text, sourceLang, targetLang) {
+function appendTranslation(text, sourceLang, targetLang, blocked) {
   if (!text) return;
   if (translationEmpty) translationEmpty.hidden = true;
 
@@ -166,6 +170,17 @@ function appendTranslation(text, sourceLang, targetLang) {
   meta.textContent = pair;
 
   item.append(time, body, meta);
+
+  // A guard block is a visible "silent in the room" marker on the
+  // entry itself: the reason and the never-spoken fact belong
+  // together.
+  if (blocked) {
+    const blockedBadge = document.createElement("strong");
+    blockedBadge.className = "blocked-badge";
+    blockedBadge.textContent = `blocked (${blocked})`;
+    item.append(blockedBadge);
+  }
+
   appendHistoryItem(translationPanel, item);
 }
 
@@ -206,6 +221,19 @@ function updateLanguageHint() {
 targetLanguage.addEventListener("change", updateLanguageHint);
 if (sourceLanguage) {
   sourceLanguage.addEventListener("change", updateLanguageHint);
+}
+
+// The host names input only matters in respond mode; in translate mode
+// it is disabled so Start cannot silently pair host names with a mode
+// that ignores them.
+function syncHostNamesField() {
+  if (hostNamesInput) {
+    hostNamesInput.disabled = modeSelect.value !== "respond";
+  }
+}
+if (modeSelect) {
+  modeSelect.addEventListener("change", syncHostNamesField);
+  syncHostNamesField();
 }
 
 // Read a numeric field the way the backend will see it. A cleared box, a
@@ -310,6 +338,7 @@ async function startLiveTranscription() {
   const config = {
     transcription_provider: providerSelect.value,
     processor_provider: processorSelect.value,
+    mode: buildAppMode(),
     source_language: sourceLanguage.value,
     target_language: targetLanguage.value,
     chunk_duration_ms: chunk.value,
@@ -337,8 +366,32 @@ async function startLiveTranscription() {
   }
 }
 
-function disableSessionSettings() {
-  for (const el of SESSION_SETTINGS_INPUTS) {
+// `AppMode` as the backend's serde expects: a `kind` tag, plus the
+// respond policy only when the mode select says respond. Host names
+// split on commas; blanks drop out, the rest go through as typed (the
+// backend normalizes and validates them).
+function buildAppMode() {
+  if (modeSelect.value !== "respond") {
+    return { kind: "translate" };
+  }
+  const hostNames = hostNamesInput.value
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  return {
+    kind: "respond",
+    policy: {
+      host_names: hostNames,
+      // v1 ships the conservative defaults; validation rejects anything
+      // looser, so the panel does not offer the loosened form.
+      answer_questions_only: true,
+      require_name: true,
+      allow_commitments: false,
+    },
+  };
+}
+
+function disableSessionSettings() {  for (const el of SESSION_SETTINGS_INPUTS) {
     if (el) el.disabled = true;
   }
 }
@@ -414,6 +467,7 @@ function setupEventListener() {
             payload.text,
             payload.source_language,
             payload.target_language,
+            payload.blocked,
           );
         }
         break;
@@ -500,6 +554,20 @@ async function loadFromBackendSettings() {
     }
     if (typeof defaults.processor_provider === "string") {
       processorSelect.value = defaults.processor_provider;
+    }
+    // The mode round-trips: a stored respond config restores its host
+    // names into the panel, so Stop + Start reproduces the same session
+    // the settings file describes.
+    if (defaults.mode && typeof defaults.mode === "object") {
+      if (defaults.mode.kind === "respond") {
+        modeSelect.value = "respond";
+        const names = defaults.mode.policy && Array.isArray(defaults.mode.policy.host_names)
+          ? defaults.mode.policy.host_names.join(", ")
+          : "";
+        hostNamesInput.value = names;
+      } else {
+        modeSelect.value = "translate";
+      }
     }
     if (typeof defaults.source_language === "string") {
       sourceLanguage.value = defaults.source_language;

@@ -16,6 +16,7 @@ const { test, expect } = require("@playwright/test");
 const DEFAULT_CONFIG = {
   transcription_provider: "mock-local",
   processor_provider: "mock",
+  mode: { kind: "translate" },
   source_language: "en",
   target_language: "es",
   chunk_duration_ms: 1000,
@@ -195,7 +196,7 @@ test("start sends the whole runtime config and locks the panel", async ({ page }
 
   // The panel is locked for the duration, endpointing fields included: a
   // mid-session edit would not reach the running worker.
-  for (const selector of ["#chunk-duration-ms", "#hangover-ms", "#min-speech-ms", "#max-utterance-ms"]) {
+  for (const selector of ["#chunk-duration-ms", "#hangover-ms", "#min-speech-ms", "#max-utterance-ms", "#mode-select", "#host-names"]) {
     await expect(page.locator(selector)).toBeDisabled();
   }
 });

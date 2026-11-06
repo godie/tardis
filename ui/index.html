@@ -45,6 +45,20 @@
             </select>
           </label>
 
+          <label class="provider-field-inline">
+            <span>Mode</span>
+            <select id="mode-select">
+              <option value="translate" selected>translate</option>
+              <option value="respond">respond</option>
+            </select>
+          </label>
+
+          <label class="provider-field-inline" id="host-names-field">
+            <span>Host names</span>
+            <input id="host-names" type="text" placeholder="Ana, Diego" aria-describedby="host-names-hint" />
+            <small id="host-names-hint" class="muted">respond mode only, comma-separated</small>
+          </label>
+
           <div class="button-row">
             <button id="start-button" class="action action-primary" type="button">
               Start Listening
