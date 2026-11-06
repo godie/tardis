@@ -374,7 +374,12 @@ fn run_mock_voice_flow() -> Result<()> {
 
     println!();
     for event in &events {
-        println!("{}", format_app_event_for_console(event));
+        // Errors to stderr, same routing as the live loop: scripts
+        // that read stdout must not end up swallowing a failure.
+        match event {
+            AppEvent::Error(_) => eprintln!("{}", format_app_event_for_console(event)),
+            _ => println!("{}", format_app_event_for_console(event)),
+        }
     }
 
     println!("\n=== summary ===");
@@ -530,7 +535,14 @@ fn run_live_local_transcribe() -> Result<()> {
         Some(config::DEFAULT_PIPELINE_TEST_SECONDS),
         None,
         |event| {
-            println!("{}", format_app_event_for_console(&event));
+            // Errors go to stderr so redirecting stdout keeps the
+            // transcript clean and scripts can detect failures.
+            match event {
+                AppEvent::Error(_) => {
+                    eprintln!("{}", format_app_event_for_console(&event))
+                }
+                _ => println!("{}", format_app_event_for_console(&event)),
+            }
         },
     )
 }
