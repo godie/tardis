@@ -258,12 +258,16 @@ impl Player for CpalPlayer {
             guard.extend(samples);
         }
 
-        // Block until the callback has consumed roughly what we pushed.
-        // A coarse deadline (three times the chunk's duration, plus a
-        // grace period for stream startup) bounds the wait even if the
-        // device stalls, and a coarse poll keeps the loop cheap.
+        // Block until the callback has consumed and rendered what we
+        // pushed. `render_deadline` is the chunk's own play time plus
+        // a grace period: draining the software queue is not enough,
+        // the last callback buffer is only queued for the device at
+        // that point, and returning early would drop the final
+        // syllable in `say-text`. `stall_deadline` bounds the wait if
+        // the device stops consuming.
         let duration_ms = crate::synthesis::chunk_duration_ms(chunk);
-        let deadline = Duration::from_millis(duration_ms * 3 + 500);
+        let render_deadline = Duration::from_millis(duration_ms + 100);
+        let stall_deadline = Duration::from_millis(duration_ms * 3 + 500);
         loop {
             let queue_has_samples = {
                 let guard = self
@@ -272,10 +276,11 @@ impl Player for CpalPlayer {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 !guard.is_empty()
             };
-            if !queue_has_samples {
+            let elapsed = start.elapsed();
+            if !queue_has_samples && elapsed >= render_deadline {
                 break;
             }
-            if start.elapsed() >= deadline {
+            if queue_has_samples && elapsed >= stall_deadline {
                 // Clear what the device did not take: a stalled
                 // callback must not play this chunk's tail later,
                 // on top of the next utterance.
