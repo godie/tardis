@@ -91,6 +91,10 @@ faster-whisper setup.
 ## 7. Privacy
 
 * Audio playback happens on the host; only the text to speak crosses
-  the loopback interface inside the machine.
-* The container has no cloud egress: the voice is downloaded once into
-  `./voices` and stays local.
+  the loopback interface inside the machine, and the port is bound to
+  `127.0.0.1` so nothing outside the machine can reach the server.
+* The voice file stays on the host in `./voices`. It is downloaded
+  once from Hugging Face on the first start, and the compose file does
+  not block the container's outbound connections — the loopback
+  binding covers inbound traffic only. If that matters to you,
+  download the voice into `./voices` yourself before the first start.
