@@ -268,8 +268,12 @@ fn select_device(host: &cpal::Host, selected: Option<&str>) -> Result<cpal::Devi
             None => {}
         }
     }
-    host.default_input_device()
-        .ok_or_else(|| anyhow!("No default input device available"))
+    host.default_input_device().ok_or_else(|| {
+        anyhow!(
+            "No default input device available; connect a microphone and \
+             check the OS input permission"
+        )
+    })
 }
 
 /// An unplayed capture stream feeding mono f32 samples into a shared buffer,
