@@ -7,9 +7,10 @@ TARDIS is a Rust-first foundation for a future desktop app that listens to audio
 
 - CLI modes exist for device inspection, microphone capture, WAV recording, chunking, chunk saving, mock transcription, mock translation, and file-based local transcription.
 - Live audio capture is implemented with `cpal 0.18`.
+- The process stage runs two modes on the same `Processor`: `translate` (mock + real LLM providers) and `respond`, which answers as the host under two-layer commitment safety (classifier + reply guard, `--dry-run` CLI path, mode select in the shell).
 - A real local transcription provider exists for WAV files sent to a self-hosted `faster-whisper` HTTP server.
 - A second local provider, `mock-local`, exists for deterministic offline development.
-- Translation is still mock-only.
+- Translation runs on the `mock` processor (deterministic) and on `llm` (OpenAI-compatible endpoint); the shell offers both in the Processor dropdown.
 - The Tauri shell supports live microphone transcription via `start_live_transcription` / `stop_live_transcription`. Backend `AppEvent`s are converted to serializable `UiAppEvent` payloads and emitted as Tauri events to the frontend. The UI offers two providers: `mock-local` without Docker and `local-whisper` with it.
 - The app-facing orchestration layer (`src/app/`) is in place: `AppService` + `AppState` + `AppRuntimeConfig` + a typed `AppEvent` stream. The CLI and the Tauri shell both reuse its config, event, and UI-payload types; `cargo run -- app-mock-flow` exercises the mock service without microphone or Docker.
 - The runtime settings selected in the UI (provider, language pair, capture window, volume threshold, utterance boundaries) **persist across sessions** in `<OS config dir>/tardis/runtime.json` via the `src/app/settings_store` pure helpers (atomic write-then-rename, load-returns-default-on-missing, normalize-and-validate round trip). See [Persistence](#persistence) below.
@@ -106,7 +107,7 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` | Run the mock transcriber over a saved WAV chunk. | Yes |
 | `cargo run -- mock-translate` | Capture, mock-transcribe, then mock-translate each chunk. | Yes |
 | `cargo run -- local-transcribe-file [--provider <name>] <path>` | Send a WAV file to a local transcription provider and print plaintext output. | Yes |
-| `cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <substring>]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Translation`, `Speech`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Defaults are `mock-local`, `mock` and `mock`, so it runs with no Docker, no TTS server and no sound device. `--synthesizer piper` speaks replies through the local Piper server; pair it with `--device` to pick a non-default output device. Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes (or Ctrl+C) |
+| `cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <substring>] [--mode translate\|respond [--host <name>] [--dry-run]]` | Utterance-by-utterance live transcription from the default microphone (silence endpointing decides where a turn ends). Emits typed `AppEvent`s (`StatusChanged`, `Transcript`, `Output`, `Speech`, `Error`) to the console via `format_app_event_for_console`, the same event stream the Tauri shell consumes. Defaults are `mock-local`, `mock`, `mock` and `translate`, so it runs with no Docker, no TTS server and no sound device. `--synthesizer piper` speaks replies through the local Piper server; pair it with `--device` to pick a non-default output device. `--mode respond` runs the host-answering mode under the two-layer commitment safety: only the named host's questions get answers, commitment-shaped requests surface as suggestions, and `--dry-run` decides without ever making a sound. Silence only closes an utterance; short bursts are discarded and never reach the provider. This is **not** true streaming. | Yes (or Ctrl+C) |
 | `cargo run -- say-text "<text>"` | One TTS round-trip with no microphone, session or LLM: the same `LocalHttpSynthesizer` + `CpalPlayer` the live loop uses, one request, the sentence out of the speakers. Needs the Piper container up (`docker compose -f docker/piper/docker-compose.yml up -d`) and an output device. | Yes |
 | `cargo run -- llm-translate-text "<text>"` | One LLM round-trip with no microphone, TTS or capture: the same translate prompt the live loop uses, one request, the rendered line on stdout. Use it to check `TARDIS_LLM_API_KEY`, base URL and model before wiring live capture. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
@@ -171,6 +172,31 @@ cargo run -- live-local-transcribe --processor llm
 thread: a cold 7B model stalls the loop (default timeout 20 s). Streaming
 needs the explicit go-ahead described in
 [docs/core-pipeline-plan.md](docs/core-pipeline-plan.md) §4.2.
+
+`processor::llm` is synchronous, one request at a time, from the capture
+thread: a cold 7B model stalls the loop (default timeout 20 s). Streaming
+needs the explicit go-ahead described in
+[docs/core-pipeline-plan.md](docs/core-pipeline-plan.md) §4.2.
+
+## Process Modes
+
+The process stage runs one of two modes (`mode` in `runtime.json`, or
+`--mode` / the **Mode** select in the shell). Both run on the same
+`Processor`; they differ in prompt and acting rule.
+
+| Mode | What it does | Safety |
+| --- | --- | --- |
+| `translate` (default) | Renders every speech segment in the target language. | n/a — it never decides, it restates. |
+| `respond` | Answers as the host. Only the named host's questions get an answer; everything else stays silent. | Two independent lexical layers: the classifier (`processor::decision`) and the reply guard (`processor::guard`). A commitment-shaped request (dates, money, "can you … by …") is surfaced as a suggestion and never spoken; a generated reply carrying a date, an acceptance word or an amount is blocked, shown in the UI, and not synthesized. `allow_commitments` is refused by validation in v1: a product promise, not a TODO. |
+
+```bash
+cargo run -- live-local-transcribe --mode respond --host "Ana" --dry-run
+```
+
+A blocked output still appears in the UI (and `[blocked=<reason>]` on the
+console): silent in the room, visible on screen. Both layers are lexical,
+so an unusual phrasing can slip through — hence suggestions for anything
+that even looks like a commitment.
 
 ## Synthesis Providers (TTS)
 
