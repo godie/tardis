@@ -10,7 +10,7 @@
 //! Tests live in `#[cfg(test)] mod tests` per AGENTS.md
 //! conventions; the helpers here are pure (no I/O, no CPAL).
 
-use crate::processor::processor::OutputKind;
+use crate::processor::processor::{BlockReason, OutputKind};
 
 /// Coarse-grained lifecycle state of the app.
 ///
@@ -96,12 +96,19 @@ pub fn format_app_event_for_console(event: &AppEvent) -> String {
             )
         }
         AppEvent::Output(o) => {
+            // The block rides on the same line: the reason is the first
+            // thing the operator sees when the room went silent.
+            let blocked = match o.blocked {
+                Some(reason) => format!(" [blocked={}] ", reason.as_label()),
+                None => String::new(),
+            };
             format!(
-                "[chunk {}][output {} {}->{}] {}",
+                "[chunk {}][output {} {}->{}]{} {}",
                 o.chunk_index,
                 o.kind.as_label(),
                 o.source_language,
                 o.target_language,
+                blocked,
                 o.text
             )
         }
@@ -165,6 +172,10 @@ pub struct AppOutputEvent {
     pub source_language: String,
     pub target_language: String,
     pub is_final: bool,
+    /// Why the reply must not be spoken, from the respond-mode guard;
+    /// `None` for a normal output. The event is emitted either way so
+    /// the operator sees exactly what stayed silent.
+    pub blocked: Option<BlockReason>,
 }
 
 /// Per-utterance speech event emitted after the [`crate::synthesis::Synthesizer`]
@@ -312,6 +323,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         };
         let b = a.clone();
         let mut c = a.clone();
@@ -362,6 +374,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         assert_ne!(transcript, translation);
     }
@@ -396,6 +409,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         assert_eq!(app_event_kind(&e), "output");
     }
@@ -478,6 +492,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         let s = format_app_event_for_console(&e);
         assert!(
@@ -496,6 +511,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         let s = format_app_event_for_console(&e);
         assert!(

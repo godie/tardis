@@ -180,6 +180,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         };
         state.apply_output(event.clone());
         assert_eq!(
@@ -199,6 +200,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         };
         let returned = state.apply_output(event.clone());
         assert_eq!(returned, AppEvent::Output(event));
@@ -236,6 +238,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         assert!(matches!(tl, AppEvent::Output(_)));
         assert_eq!(state.last_output.as_deref(), Some("[mock es] transcribed"));

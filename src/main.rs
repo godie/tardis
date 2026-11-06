@@ -31,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tardis::{
     app::{
-        config::AppRuntimeConfig,
+        config::{AppMode, AppRuntimeConfig},
         events::{AppEvent, format_app_event_for_console, status_label},
         live_events::{build_output_event, build_speech_event, build_transcript_event},
         service::AppService,
@@ -338,15 +338,7 @@ fn run_mock_voice_flow() -> Result<()> {
         .process(transcript_text, &mode)?
         .ok_or_else(|| anyhow!("mock processor returned no output for a non-empty transcript"))?;
     let spoken_text = output.text.clone();
-    events.push(build_output_event(
-        1,
-        output.kind,
-        output.source_text,
-        output.text,
-        output.source_language,
-        output.target_language,
-        output.is_final,
-    ));
+    events.push(build_output_event(1, &output));
 
     // 3. Synthesize + 4. play. `Ok(None)` is a normal "nothing to
     //    say"; for the canonical phrase it must not happen, so treat it
@@ -529,6 +521,7 @@ fn run_live_local_transcribe() -> Result<()> {
         min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
         max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
         input_device: None,
+        mode: AppMode::Translate,
     };
     transcription::live_local::run_live_local_transcription_with_config_and_events(
         config,

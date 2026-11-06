@@ -1036,7 +1036,7 @@ mod tests {
     fn history_records_transcripts_and_outputs_in_order_and_ignores_the_rest() {
         use tardis::app::events::{AppEvent, AppStatus, AppTranscriptEvent};
         use tardis::app::live_events::{build_output_event, build_speech_event, build_transcript_event};
-        use tardis::processor::processor::OutputKind;
+        use tardis::processor::processor::{Output, OutputKind};
 
         let dir = std::env::temp_dir().join(format!("tardis-history-order-{}", std::process::id()));
         let path = dir.join("history.jsonl");
@@ -1047,12 +1047,15 @@ mod tests {
             build_transcript_event(1, "hello".into(), "mock-local".into(), true, 4_320),
             build_output_event(
                 1,
-                OutputKind::Translate,
-                "hello".into(),
-                "hola".into(),
-                "en".into(),
-                "es".into(),
-                true,
+                &Output {
+                    kind: OutputKind::Translate,
+                    source_text: "hello".into(),
+                    text: "hola".into(),
+                    source_language: "en".into(),
+                    target_language: "es".into(),
+                    is_final: true,
+                    blocked: None,
+                },
             ),
             // Status and speech carry no text to record.
             build_speech_event(1, "hola".into(), "es".into(), 900, true),

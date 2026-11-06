@@ -187,6 +187,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         });
         let ui = app_event_to_ui_event(&e);
         assert_eq!(ui.kind, "output");

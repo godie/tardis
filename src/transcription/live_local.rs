@@ -606,24 +606,25 @@ where
                     Ok(Some(output)) => {
                         // The rendered text is both the UI payload and the
                         // thing to speak, so keep a copy before the event
-                        // takes ownership.
-                        let spoken_text = output.text.clone();
-                        (self.on_event)(build_output_event(
-                            utterance_index,
-                            output.kind,
-                            output.source_text,
-                            output.text,
-                            output.source_language,
-                            output.target_language,
-                            output.is_final,
-                        ));
+                        // takes ownership. The guard's verdict travels in
+                        // the event either way: silent in the room,
+                        // visible on screen.
+                        (self.on_event)(build_output_event(utterance_index, &output));
+
+                        // A blocked reply (layer a suggestion or layer b
+                        // refusal) is shown and never synthesized. Return
+                        // false: no speaker time was consumed, so the
+                        // caller must keep listening.
+                        if output.blocked.is_some() {
+                            return false;
+                        }
 
                         // The three-way contract, same split the
                         // processor has: `Ok(None)` is deliberate
                         // silence (nothing to speak), `Err` is a real
                         // failure the user must see, never silence.
                         let speech = Speech {
-                            text: spoken_text,
+                            text: output.text,
                             language: self.target_language.to_string(),
                         };
                         match self.synthesizer.synthesize(&speech) {

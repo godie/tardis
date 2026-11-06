@@ -12,7 +12,7 @@
 use crate::app::events::{
     AppErrorEvent, AppEvent, AppOutputEvent, AppSpeechEvent, AppTranscriptEvent,
 };
-use crate::processor::processor::OutputKind;
+use crate::processor::processor::Output;
 
 /// Build an [`AppEvent::Transcript`] from the raw fields.
 ///
@@ -51,23 +51,16 @@ pub fn build_transcript_event(
 /// * `source_language` — BCP-47-ish source code (e.g. `"en"`).
 /// * `target_language` — BCP-47-ish output code (e.g. `"es"`).
 /// * `is_final` — `true` for terminal outputs of a call.
-pub fn build_output_event(
-    chunk_index: usize,
-    kind: OutputKind,
-    source_text: String,
-    text: String,
-    source_language: String,
-    target_language: String,
-    is_final: bool,
-) -> AppEvent {
+pub fn build_output_event(chunk_index: usize, output: &Output) -> AppEvent {
     AppEvent::Output(AppOutputEvent {
         chunk_index,
-        kind,
-        source_text,
-        text,
-        source_language,
-        target_language,
-        is_final,
+        kind: output.kind,
+        source_text: output.source_text.clone(),
+        text: output.text.clone(),
+        source_language: output.source_language.clone(),
+        target_language: output.target_language.clone(),
+        is_final: output.is_final,
+        blocked: output.blocked,
     })
 }
 
@@ -110,6 +103,7 @@ pub fn build_error_event(message: impl Into<String>) -> AppEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::processor::{BlockReason, OutputKind};
 
     // ---- build_transcript_event ----------------------------------------
 
@@ -167,36 +161,46 @@ mod tests {
 
     // ---- build_output_event ---------------------------------------
 
+    fn translate_output() -> Output {
+        Output {
+            kind: OutputKind::Translate,
+            source_text: "hello".to_string(),
+            text: "hola".to_string(),
+            source_language: "en".to_string(),
+            target_language: "fr".to_string(),
+            is_final: true,
+            blocked: None,
+        }
+    }
+
     #[test]
     fn build_output_event_creates_translation_variant() {
-        let e = build_output_event(
-            1,
-            OutputKind::Translate,
-            "hello".to_string(),
-            "hola".to_string(),
-            "en".to_string(),
-            "es".to_string(),
-            true,
-        );
+        let e = build_output_event(1, &translate_output());
         assert!(matches!(e, AppEvent::Output(_)));
     }
 
     #[test]
     fn translation_event_includes_languages() {
-        let e = build_output_event(
-            2,
-            OutputKind::Translate,
-            "hello".to_string(),
-            "hola".to_string(),
-            "en".to_string(),
-            "fr".to_string(),
-            true,
-        );
+        let e = build_output_event(2, &translate_output());
         if let AppEvent::Output(t) = &e {
             assert_eq!(t.source_language, "en");
             assert_eq!(t.target_language, "fr");
         } else {
-            panic!("expected Translation, got {e:?}");
+            panic!("expected Output, got {e:?}");
+        }
+    }
+
+    #[test]
+    fn output_event_carries_the_block_reasons() {
+        let output = Output {
+            blocked: Some(BlockReason::Commitment),
+            ..translate_output()
+        };
+        let e = build_output_event(3, &output);
+        if let AppEvent::Output(t) = &e {
+            assert_eq!(t.blocked, Some(BlockReason::Commitment));
+        } else {
+            panic!("expected Output, got {e:?}");
         }
     }
 

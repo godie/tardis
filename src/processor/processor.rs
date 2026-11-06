@@ -72,7 +72,7 @@ pub enum ProcessMode {
 /// is a product promise, not a TODO — validation rejects `true` and the
 /// decision layer treats every commitment-shaped request as a
 /// suggestion regardless of the flag.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RespondPolicy {
     /// Who the host is. Matched case-insensitively, on a word boundary.
     pub host_names: Vec<String>,

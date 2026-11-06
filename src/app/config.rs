@@ -27,6 +27,42 @@ use crate::config as central;
 /// and is copied out into every emitted [`crate::app::events::AppEvent`].
 ///
 /// The `serde` derives let the Tauri shell round-trip the same
+/// Which process mode the app runs, as configuration stores it.
+///
+/// A lean discriminant: the languages stay top-level on
+/// [`AppRuntimeConfig`] and are carried into the per-call
+/// [`crate::processor::processor::ProcessMode`] by the runner, so there
+/// is one source of truth per piece of data. Serializes with a `kind`
+/// tag; a `runtime.json` written before this field existed, or with an
+/// explicit `null`, loads as translate — today's behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AppMode {
+    /// Translate every speech segment into the target language.
+    #[default]
+    Translate,
+    /// Answer as the host, under the two-layer commitment safety.
+    Respond {
+        /// What the decision step needs: who the host is and what never
+        /// gets spoken. Defaults on a respond payload that omits it;
+        /// validation then rejects what v1 does not support.
+        #[serde(default)]
+        policy: crate::processor::processor::RespondPolicy,
+    },
+}
+
+/// Accepts a `null` mode the way a missing one is accepted: a file may
+/// say `"mode": null` and still load as translate, but an unknown
+/// `kind` deserializing fails so a corrupt file is reported, not
+/// silently demoted.
+fn deserialize_mode_or_null<'de, D>(deserializer: D) -> Result<AppMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Deserialize;
+    Option::<AppMode>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 /// struct through its IPC boundary; the frontend sends the same
 /// shape and the backend validates before using it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -40,6 +76,12 @@ pub struct AppRuntimeConfig {
     /// written before the LLM processor existed still loads as the mock.
     #[serde(default = "default_processor_provider")]
     pub processor_provider: String,
+    /// Which process mode the session runs. `serde` defaults it so a
+    /// `runtime.json` written before it existed, or an explicit `null`,
+    /// still loads as translate; an unknown `kind` is a parse error, not
+    /// a silent fallback.
+    #[serde(default, deserialize_with = "deserialize_mode_or_null")]
+    pub mode: AppMode,
     /// Stable identifier for the active `Synthesizer` implementation:
     /// `"mock"` (deterministic offline tone, the default) or `"piper"`
     /// (the local Docker TTS server). `serde` defaults it: a
@@ -242,6 +284,43 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         // be resolved.
         input_device: normalize_optional_device(config.input_device),
         player_device: normalize_optional_device(config.player_device),
+        mode: normalize_mode(config.mode),
+    }
+}
+
+/// Trims and de-duplicates the respond policy's host names,
+/// case-insensitively, keeping the first casing ("  Ana " + "ana" →
+/// "Ana"). Nothing else about the mode is rewritten: the flags are
+/// validated, not normalized, so a config shipping v1's conservative
+/// defaults stays exactly that.
+fn normalize_mode(mode: AppMode) -> AppMode {
+    match mode {
+        AppMode::Translate => AppMode::Translate,
+        AppMode::Respond { policy } => {
+            let mut seen: Vec<String> = Vec::new();
+            let host_names = policy
+                .host_names
+                .iter()
+                .filter_map(|name| {
+                    let trimmed = name.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let key = trimmed.to_lowercase();
+                    if seen.contains(&key) {
+                        return None;
+                    }
+                    seen.push(key);
+                    Some(trimmed.to_string())
+                })
+                .collect();
+            AppMode::Respond {
+                policy: crate::processor::processor::RespondPolicy {
+                    host_names,
+                    ..policy
+                },
+            }
+        }
     }
 }
 
@@ -277,6 +356,9 @@ impl Default for AppRuntimeConfig {
             // `None` = the OS default output device, and the default
             // synthesizer is the mock, which never opens a device at all.
             player_device: None,
+            // Translate is the shipped mode; respond never loads from a
+            // legacy file.
+            mode: AppMode::Translate,
         }
     }
 }
@@ -303,17 +385,21 @@ impl Default for AppRuntimeConfig {
 ///    ([`normalize_runtime_config`] collapses a blank one to `None`;
 ///    a whitespace-only value that survives means a malformed
 ///    config).
-/// 7. `source_language` non-empty.
+/// 7. translate mode has nothing more to check; a respond `mode` must
+///    name at least one non-blank host and never err looser than v1
+///    (`allow_commitments` must stay `false`, while
+///    `answer_questions_only` and `require_name` must stay `true`).
+/// 8. `source_language` non-empty.
 /// 8. `target_language` non-empty.
 /// 9. `chunk_duration_ms > 0` (avoid divide-by-zero in
 ///    [`crate::audio::chunker::calculate_chunk_size_samples`]).
 /// 10. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
 ///     [`MAX_CHUNK_DURATION_MS`].
 /// 11. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
-/// 12. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
+/// 13. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
 ///     first non-speech frame).
-/// 13. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
-/// 14. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
+/// 14. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
+/// 15. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
 ///     least `min_speech_ms`, so a valid utterance can never exceed the
 ///     cap before it reaches the minimum.
 ///
@@ -366,6 +452,40 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
             "player_device must not be empty or whitespace; omit it to select the system default"
                 .to_string(),
         );
+    }
+    if let AppMode::Respond { policy } = &config.mode {
+        let host_count = policy
+            .host_names
+            .iter()
+            .filter(|name| !name.trim().is_empty())
+            .count();
+        if host_count == 0 {
+            return Err(
+                "mode.policy.host_names must name at least one host in respond mode".to_string(),
+            );
+        }
+        if policy.host_names.iter().any(|name| name.trim().is_empty()) {
+            return Err(
+                "mode.policy.host_names must not contain empty or whitespace names".to_string(),
+            );
+        }
+        if policy.allow_commitments {
+            return Err(
+                "allow_commitments is not supported yet; respond mode never speaks commitments"
+                    .to_string(),
+            );
+        }
+        if !policy.answer_questions_only {
+            return Err(
+                "answer_questions_only=false is not supported yet; v1 only answers questions"
+                    .to_string(),
+            );
+        }
+        if !policy.require_name {
+            return Err(
+                "require_name=false is not supported yet; v1 only answers the host".to_string(),
+            );
+        }
     }
     if config.source_language.trim().is_empty() {
         return Err("source_language must not be empty or whitespace".to_string());
