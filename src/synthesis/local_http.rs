@@ -192,6 +192,13 @@ fn pcm_samples(body: &[u8]) -> Result<Vec<f32>> {
                 "WAV data chunk is empty or truncated"
             );
             let bytes = &body[start..start + size];
+            // 16-bit little-endian interleave: no odd declared size is
+            // accepted, because a half sample is a truncation, not
+            // speech.
+            anyhow::ensure!(
+                bytes.len().is_multiple_of(2),
+                "WAV data chunk ends mid-sample"
+            );
             // 16-bit little-endian interleave.
             for pair in bytes.chunks_exact(2) {
                 let value = i16::from_le_bytes([pair[0], pair[1]]);
@@ -414,6 +421,23 @@ mod tests {
         // Declare four data bytes; deliver only the chunk header.
         body.truncate(body.len() - 2);
         assert!(parse_wav_body(&body).is_err());
+    }
+
+    /// A declared data size ending mid-sample is a truncation, not
+    /// speech: refuse it instead of silently dropping the half sample.
+    #[test]
+    fn rejects_a_data_chunk_ending_mid_sample() {
+        let mut body = wav_body(1, TTS_SAMPLE_RATE, 1, &[1, 2, 3], false);
+        // Declare five data bytes instead of six (size's low byte sits
+        // at offset 40; little-endian). The sixth byte stays in the
+        // body beyond the declared chunk, so only the mid-sample rule
+        // can fire.
+        body[40] = 5;
+        let err = parse_wav_body(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("mid-sample"),
+            "error must name the truncation, got: {err}"
+        );
     }
 
     /// A liying rate makes `resample_linear` expand samples by
