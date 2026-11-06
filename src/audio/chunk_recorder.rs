@@ -76,10 +76,8 @@ fn create_output_dir(output_dir: &str) -> Result<()> {
 pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &str) -> Result<()> {
     create_output_dir(output_dir)?;
 
-    let mic = MicInput::start("chunk recorder").context(
-        "could not open an input device for the chunk recorder; \
-         connect a microphone and check the OS microphone permission",
-    )?;
+    let mic = MicInput::start("chunk recorder")
+        .context("could not open an input device for the chunk recorder")?;
     println!("Chunk recorder device: {}", mic.input().device_label());
     println!("Default input config: {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
@@ -107,9 +105,8 @@ pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &s
             let avg_volume = calculate_average_volume(&samples);
             let filename = format_chunk_filename(chunk_index);
             let path = Path::new(output_dir).join(&filename);
-            write_chunk_wav(&path, &samples, channels, sample_rate).with_context(|| {
-                format!("could not save chunk {chunk_index} to {}", path.display())
-            })?;
+            write_chunk_wav(&path, &samples, channels, sample_rate)
+                .with_context(|| format!("could not save chunk {chunk_index}"))?;
 
             println!(
                 "[chunk {chunk_index}] saved to {} | samples: {chunk_size} | volume: {avg_volume:.4}",
