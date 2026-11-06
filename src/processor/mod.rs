@@ -13,6 +13,8 @@
 //! prompt and acting rule. Both the `Transcriber` and `Processor` traits
 //! stay audio-agnostic; only `pipeline` imports CPAL.
 
+pub mod decision;
+pub mod guard;
 pub mod llm;
 pub mod mock;
 pub mod pipeline;
@@ -24,8 +26,10 @@ pub mod prompt;
 #[allow(clippy::module_inception)]
 pub mod processor;
 
+pub use decision::{Decision, decide_should_respond, is_question};
+pub use guard::validate_reply;
 pub use mock::MockProcessor;
-pub use processor::{Output, OutputKind, ProcessMode, Processor};
+pub use processor::{BlockReason, Output, OutputKind, ProcessMode, Processor, RespondPolicy};
 
 /// Processor used when the config does not name one. Kept as a constant so
 /// the CLI, `AppService`, and the live runner cannot drift apart.

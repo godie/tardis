@@ -39,6 +39,12 @@ impl OutputKind {
 /// Passed per call rather than stored in the implementation: the same
 /// processor serves every mode, and switching modes becomes a config
 /// change instead of a rebuild.
+///
+/// The languages ride with the mode as they already ride with
+/// `Translate`: the config persists the mode discriminant
+/// (`app::config::AppRuntimeConfig`'s `mode` field) and the languages
+/// stay top-level — this enum carries the pair for the call, plus the
+/// respond policy, so the runner does not grow a second path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessMode {
     /// Render the utterance in `target_language`. `source_language` is
@@ -47,6 +53,67 @@ pub enum ProcessMode {
         source_language: String,
         target_language: String,
     },
+    /// Answer the utterance as the host would. In respond mode the
+    /// output language *is* the host's own `target_language`, so the
+    /// pair is the same kind of payload `Translate` takes; [`RespondPolicy`]
+    /// carries what the safety layers need.
+    Respond {
+        source_language: String,
+        target_language: String,
+        policy: RespondPolicy,
+    },
+}
+
+/// Acting policy for ([`ProcessMode::Respond`]).
+///
+/// v1 defaults: conservative. `answer_questions_only` and
+/// `require_name` default to `true`, and config validation rejects
+/// anything looser until there is evidence to change; `allow_commitments`
+/// is a product promise, not a TODO — validation rejects `true` and the
+/// decision layer treats every commitment-shaped request as a
+/// suggestion regardless of the flag.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RespondPolicy {
+    /// Who the host is. Matched case-insensitively, on a word boundary.
+    pub host_names: Vec<String>,
+    /// Only questions get answers. `true` in v1; validation rejects
+    /// `false`.
+    pub answer_questions_only: bool,
+    /// Only utterances that name the host get answered. `true` in v1;
+    /// validation rejects `false`.
+    pub require_name: bool,
+    /// Speaking commitments is deliberately not supported in v1;
+    /// `true` is rejected by config validation.
+    pub allow_commitments: bool,
+}
+
+/// Why a generated reply is blocked (layer b, [`crate::processor::guard`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockReason {
+    /// The request asked for a commitment; the reply is at most a
+    /// suggestion, never spoken.
+    Commitment,
+    /// The reply commits to a date or a booking window.
+    Date,
+    /// The reply names an amount or a currency.
+    Money,
+    /// The reply accepts or promises (`claro`, `I'll`, `lo haré`, `deal`).
+    Acceptance,
+    /// Nothing to say: empty or whitespace.
+    Empty,
+}
+
+impl BlockReason {
+    /// Stable lowercase label for logs, payloads, and the UI.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Commitment => "commitment",
+            Self::Date => "date",
+            Self::Money => "money",
+            Self::Acceptance => "acceptance",
+            Self::Empty => "empty",
+        }
+    }
 }
 
 /// One processed utterance.
@@ -71,6 +138,12 @@ pub struct Output {
     /// additionally yield `is_final = false` partials while the utterance
     /// is still being rendered; the mock always emits `is_final = true`.
     pub is_final: bool,
+    /// Why the reply must not be spoken, from the safety guard
+    /// ([`crate::processor::guard`]) — `None` for an allowed reply.
+    /// A blocked reply still reaches the event layer (silent in the
+    /// room, visible on screen); `is_final` keeps exactly the meaning
+    /// above and is never reused as a safety flag.
+    pub blocked: Option<BlockReason>,
 }
 
 /// Synchronous per-call processing contract.
@@ -105,6 +178,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "es".to_string(),
             is_final: true,
+            blocked: None,
         }
     }
 
@@ -138,6 +212,48 @@ mod tests {
                 assert_eq!(source_language, "en");
                 assert_eq!(target_language, "fr");
             }
+            ProcessMode::Respond { .. } => unreachable!("the fixture is a Translate mode"),
+        }
+    }
+
+    #[test]
+    fn process_mode_respond_carries_languages_and_policy() {
+        let mode = ProcessMode::Respond {
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+            policy: RespondPolicy {
+                host_names: vec!["Ana".to_string()],
+                answer_questions_only: true,
+                require_name: true,
+                allow_commitments: false,
+            },
+        };
+        match mode {
+            ProcessMode::Respond {
+                source_language,
+                target_language,
+                policy,
+            } => {
+                assert_eq!(source_language, "es");
+                assert_eq!(target_language, "es");
+                assert_eq!(policy.host_names, vec!["Ana".to_string()]);
+                assert!(policy.require_name && policy.answer_questions_only);
+                assert!(!policy.allow_commitments);
+            }
+            ProcessMode::Translate { .. } => unreachable!("the fixture is a Respond mode"),
+        }
+    }
+
+    #[test]
+    fn block_reason_labels_are_stable() {
+        for (reason, label) in [
+            (BlockReason::Commitment, "commitment"),
+            (BlockReason::Date, "date"),
+            (BlockReason::Money, "money"),
+            (BlockReason::Acceptance, "acceptance"),
+            (BlockReason::Empty, "empty"),
+        ] {
+            assert_eq!(reason.as_label(), label);
         }
     }
 }

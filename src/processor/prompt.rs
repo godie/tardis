@@ -29,6 +29,24 @@ pub fn build_translate_system_prompt(source_language: &str, target_language: &st
     )
 }
 
+/// System prompt for respond mode.
+///
+/// The host answers the utterance in the host's own `target_language`.
+/// The commitment ban is stated in the prompt AND enforced twice more
+/// (classifier on the request, guard on the reply): a prompt line is
+/// a mitigation, never a safety layer.
+pub fn build_respond_system_prompt(source_language: &str, target_language: &str) -> String {
+    format!(
+        "You are the host: answer the speech transcript as a helpful person on stage, \
+         in {target_language}. Keep answers short and direct; reply in the same \
+         language the question arrived in. \
+         Never commit to a date, a time, a payment, or an agreement; if the \
+         request needs one, suggest instead that the host decides later. \
+         {UNTRUSTED_DATA_NOTICE} \
+         (source language: {source_language}, prompt v{PROCESS_PROMPT_VERSION})"
+    )
+}
+
 /// Wrap one transcript in the tags the system prompt refers to.
 ///
 /// Trims surrounding whitespace: endpointing already hands over a whole
