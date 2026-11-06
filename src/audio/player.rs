@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::synthesis::AudioChunk;
@@ -393,35 +393,49 @@ pub fn select_output_device(
     host: &cpal::Host,
     wanted: Option<&str>,
 ) -> Result<(cpal::Device, String)> {
-    if let Some(wanted) = wanted {
-        let name = wanted.trim();
-        anyhow::ensure!(!name.is_empty(), "the output device name must not be empty");
-        for device in host.output_devices()? {
-            // Report the device's real label, not the searched
-            // substring: the caller prints it in errors, and "macbook"
-            // as a device name is a dead end.
-            if output_device_matches(&device.to_string(), name) {
-                let label = device.to_string();
-                return Ok((device, label));
-            }
-        }
-        // List a few real names in the error so a typo is fixable on
-        // the spot.
-        let available: Vec<String> = host
+    if wanted.is_some() {
+        let labels: Vec<String> = host
             .output_devices()?
             .map(|device| device.to_string())
-            .take(10)
             .collect();
-        anyhow::bail!(
-            "output device \"{name}\" was not found; available devices include: {}",
-            available.join(" | ")
-        );
+        let index = pick_output_device(&labels, wanted)?;
+        let device = host
+            .output_devices()?
+            .nth(index)
+            .context("the device list changed during selection")?;
+        return Ok((device, labels[index].clone()));
     }
     let device = host
         .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("no default output device available"))?;
+        .context("no default output device available")?;
     let label = device.to_string();
     Ok((device, label))
+}
+
+/// Pure selection decision over already-enumerated device labels:
+/// `wanted` substring-matches, the returned index's label is the
+/// device's real name (not the searched substring), and the error
+/// lists a few real names so a typo is fixable on the spot. Pure and
+/// unit-tested.
+pub fn pick_output_device(labels: &[String], wanted: Option<&str>) -> Result<usize> {
+    let name = wanted
+        .map(str::trim)
+        .context("the output device name is not configured")?;
+    anyhow::ensure!(!name.is_empty(), "the output device name must not be empty");
+    labels
+        .iter()
+        .position(|label| output_device_matches(label, name))
+        .ok_or_else(|| {
+            anyhow!(
+                "output device \"{name}\" was not found; available devices include: {}",
+                labels
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )
+        })
 }
 
 /// Name match for an output device: case-insensitive substring,
@@ -431,7 +445,6 @@ pub fn output_device_matches(device_label: &str, wanted: &str) -> bool {
     let wanted = wanted.trim().to_lowercase();
     !wanted.is_empty() && device_label.to_lowercase().contains(&wanted)
 }
-
 // ===== Unit tests ========================================================
 
 #[cfg(test)]
@@ -539,6 +552,41 @@ mod tests {
         for wanted in ["", "   "] {
             assert!(!output_device_matches("MacBook Pro Speakers", wanted));
         }
+    }
+
+    // ---- pick_output_device ----------------------------------------------
+
+    fn labels() -> Vec<String> {
+        vec![
+            "MacBook Pro Speakers".to_string(),
+            "BlackHole 2ch".to_string(),
+        ]
+    }
+
+    #[test]
+    fn picking_returns_the_first_device_containing_the_wanted_name() {
+        let labels = labels();
+        let index = pick_output_device(&labels, Some("  blackhole  ")).expect("must match");
+        assert_eq!(&labels[index], "BlackHole 2ch");
+    }
+
+    #[test]
+    fn picking_fails_with_the_real_names_on_a_typo() {
+        let err = pick_output_device(&labels(), Some("macbuk")).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("was not found"),
+            "error must name the failure, got: {message}"
+        );
+        assert!(
+            message.contains("MacBook Pro Speakers"),
+            "error must list real device names, got: {message}"
+        );
+    }
+
+    #[test]
+    fn picking_never_accepts_a_whitespace_only_wanted_name() {
+        assert!(pick_output_device(&labels(), Some("   ")).is_err());
     }
 
     fn chunk(frames: usize) -> AudioChunk {
