@@ -74,7 +74,7 @@ mirror one of these rows.
 | `audio::activity` (silence vs speech-like classification) | `tests` in `src/audio/activity.rs` | `cargo run -- mic`, `mock-transcribe`, `mock-translate`, `mock-transcribe-file output/chunks/chunk_001.wav` |
 | `audio::chunker` (chunk-size + zero-size guard + drain helpers) | `tests` in `src/audio/chunker.rs` | `cargo run -- chunk-test` |
 | `audio::capture` (device resolution, `mono_mix_weights` energy-based downmix, chunk drain) | `mono_mix_weights` tests in `src/audio/capture.rs`; the CPAL stream itself has none | every capture mode: `chunk-test`, `record-5s`, `save-chunks-test`, `mock-transcribe`, `mock-translate`, `live-local-transcribe` |
-| `audio::chunk_recorder` (chunk filename + f32->i16 WAV helpers) | `tests` in `src/audio/chunk_recorder.rs` | `cargo run -- save-chunks-test` |
+| `audio::chunk_recorder` (chunk filename + f32->i16 helpers + output-dir creation and WAV-write errors, temp-dir tested) | `tests` in `src/audio/chunk_recorder.rs` | `cargo run -- save-chunks-test` |
 | `audio::recorder::record_default_mic_to_wav_for_seconds` | n/a (hound + filesystem glue) | `cargo run -- record-5s` |
 | `audio::mic` (`start_default_mic_capture`: CPAL stream builder + volume logging) | n/a (CPAL + hardware) | `cargo run -- mic`, `mic-5s` |
 | `audio::player` (`Player` trait + `CountingPlayer` (counts chunks) + `CpalPlayer`'s pure adapters: `drain_output`, `adapt_chunk_to_device`, `output_device_matches`) | `tests` in `src/audio/player.rs` | `cargo run -- mock-voice-flow`, `cargo run -- live-local-transcribe`; the CPAL stream itself: `cargo run -- say-text "hola"` |

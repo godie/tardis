@@ -58,14 +58,28 @@ pub fn f32_samples_to_i16(samples: &[f32]) -> Vec<i16> {
 
 // ---- CPAL driver -----------------------------------------------------------
 
+/// Create `output_dir` and any missing parents, or explain why the chunks
+/// cannot be saved.
+fn create_output_dir(output_dir: &str) -> Result<()> {
+    fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "could not create chunk output directory \"{output_dir}\"; \
+             check that the path is not a file and that you can write to it"
+        )
+    })
+}
+
 /// Capture `seconds` from the default mic, write one WAV file per
 /// completed chunk of size `chunk_duration_ms` into `output_dir`.
 /// Mirrors channels + sample rate from the device's default input
 /// config into each WAV header.
 pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &str) -> Result<()> {
-    fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
+    create_output_dir(output_dir)?;
 
-    let mic = MicInput::start("chunk recorder")?;
+    let mic = MicInput::start("chunk recorder").context(
+        "could not open an input device for the chunk recorder; \
+         connect a microphone and check the OS microphone permission",
+    )?;
     println!("Chunk recorder device: {}", mic.input().device_label());
     println!("Default input config: {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
@@ -93,7 +107,9 @@ pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &s
             let avg_volume = calculate_average_volume(&samples);
             let filename = format_chunk_filename(chunk_index);
             let path = Path::new(output_dir).join(&filename);
-            write_chunk_wav(&path, &samples, channels, sample_rate)?;
+            write_chunk_wav(&path, &samples, channels, sample_rate).with_context(|| {
+                format!("could not save chunk {chunk_index} to {}", path.display())
+            })?;
 
             println!(
                 "[chunk {chunk_index}] saved to {} | samples: {chunk_size} | volume: {avg_volume:.4}",
@@ -122,18 +138,18 @@ pub fn write_chunk_wav(
         bits_per_sample: WAV_BITS_PER_SAMPLE,
         sample_format: HoundSampleFormat::Int,
     };
-    let mut writer =
-        WavWriter::create(path, spec).with_context(|| format!("create {}", path.display()))?;
+    let mut writer = WavWriter::create(path, spec)
+        .with_context(|| format!("could not create WAV file {}", path.display()))?;
 
     let i16_samples = f32_samples_to_i16(samples_f32);
     for s in i16_samples {
         writer
             .write_sample(s)
-            .with_context(|| format!("write sample to {}", path.display()))?;
+            .with_context(|| format!("could not write samples to {}", path.display()))?;
     }
     writer
         .finalize()
-        .with_context(|| format!("finalize {}", path.display()))?;
+        .with_context(|| format!("could not finalize {}", path.display()))?;
     Ok(())
 }
 
@@ -142,6 +158,25 @@ pub fn write_chunk_wav(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// Allocate a fresh tempdir for a single test invocation (same pattern as
+    /// `app::settings_store`'s tests).
+    fn fresh_temp_dir(test_name: &str) -> PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("tardis-chunk-recorder-{test_name}-{pid}-{nanos}"));
+        fs::create_dir_all(&dir).expect("tempdir create");
+        dir
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
 
     // ---- format_chunk_filename -----------------------------------------
 
@@ -212,5 +247,50 @@ mod tests {
         // Boundary values are exact.
         assert_eq!(output[0], i16::MIN);
         assert_eq!(output[4], i16::MAX);
+    }
+
+    // ---- create_output_dir ---------------------------------------------
+
+    #[test]
+    fn create_output_dir_makes_missing_nested_dirs() {
+        let root = fresh_temp_dir("create_output_dir_ok");
+        let nested = root.join("chunks").join("session");
+        create_output_dir(nested.to_str().unwrap()).expect("nested dir must be created");
+        assert!(nested.is_dir());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn create_output_dir_error_names_the_directory() {
+        let root = fresh_temp_dir("create_output_dir_fail");
+        let blocker = root.join("blocker");
+        fs::write(&blocker, b"not a directory").expect("write blocker file");
+        let target = blocker.join("chunks");
+
+        let err = create_output_dir(target.to_str().unwrap())
+            .expect_err("a regular file cannot hold a directory");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("could not create chunk output directory"),
+            "{message}"
+        );
+        assert!(message.contains("blocker"), "{message}");
+        cleanup(&root);
+    }
+
+    // ---- write_chunk_wav -----------------------------------------------
+
+    #[test]
+    fn write_chunk_wav_error_names_the_file() {
+        let root = fresh_temp_dir("write_chunk_wav_fail");
+        // Missing parent: `WavWriter::create` cannot open the file.
+        let path = root.join("missing").join("chunk_001.wav");
+
+        let err = write_chunk_wav(&path, &[0.0], 1, 16_000)
+            .expect_err("a missing parent directory must fail the write");
+        let message = format!("{err:#}");
+        assert!(message.contains("could not create WAV file"), "{message}");
+        assert!(message.contains("chunk_001.wav"), "{message}");
+        cleanup(&root);
     }
 }
