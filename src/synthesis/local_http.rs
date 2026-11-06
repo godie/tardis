@@ -87,8 +87,9 @@ impl Synthesizer for LocalHttpSynthesizer {
 /// `fmt ` chunk (16-bit PCM expected) and the `data` chunk. The
 /// returned chunk carries the rate and channel count the file
 /// declares, so rate/carrier adapters downstream can trust it.
-/// Invalid magic, a truncated header, a non-PCM format, or a missing
-/// `data` chunk is an error, never a panic.
+/// Invalid magic, a truncated header, a non-PCM format, a depth other
+/// than 16 bits, a payload shorter than declared, or a missing
+/// chunk is an error, never a panic.
 ///
 /// Pure: bytes in, chunk out. Unit-tested.
 pub fn parse_wav_body(body: &[u8]) -> Result<AudioChunk> {
@@ -122,6 +123,13 @@ fn fmt_chunk(body: &[u8]) -> Result<WavFmt> {
         if id == b"fmt " {
             anyhow::ensure!(size >= 16, "WAV fmt chunk is truncated");
             let start = offset + 8;
+            // Declared size can lie: a body cut mid-payload would make
+            // the field reads below slice past the end and panic. The
+            // parser treats that as a bad response, never a crash.
+            anyhow::ensure!(
+                start + 16 <= body.len(),
+                "WAV fmt chunk payload is truncated"
+            );
             let audio_format = u16::from_le_bytes(body[start..start + 2].try_into()?);
             anyhow::ensure!(
                 audio_format == 1,
@@ -129,8 +137,15 @@ fn fmt_chunk(body: &[u8]) -> Result<WavFmt> {
             );
             let channels = u16::from_le_bytes(body[start + 2..start + 4].try_into()?);
             let sample_rate = u32::from_le_bytes(body[start + 4..start + 8].try_into()?);
+            let bits = u16::from_le_bytes(body[start + 14..start + 16].try_into()?);
             anyhow::ensure!(channels > 0, "WAV declares 0 channels");
             anyhow::ensure!(sample_rate > 0, "WAV declares a 0 Hz sample rate");
+            // pcm_samples decodes exactly two-byte signed samples, so a
+            // different depth must be refused, not misread.
+            anyhow::ensure!(
+                bits == 16,
+                "WAV declares {bits}-bit PCM; only 16-bit is supported"
+            );
             return Ok(WavFmt {
                 sample_rate,
                 channels,
@@ -150,15 +165,17 @@ fn pcm_samples(body: &[u8]) -> Result<Vec<f32>> {
         let size = u32::from_le_bytes(body[offset + 4..offset + 8].try_into()?) as usize;
         if id == b"data" {
             let start = offset + 8;
-            let end = (start + size).min(body.len());
-            anyhow::ensure!(end > start, "WAV data chunk is empty");
-            let bytes = &body[start..end];
-            // 16-bit little-endian interleave. A truncated final frame's
-            // odd trailing byte is ignored rather than rejected: a
-            // half-frame carries no audible information.
-            let whole = bytes.len() / 2;
-            samples.reserve(whole);
-            for pair in bytes[..whole * 2].chunks_exact(2) {
+            // A truncated reply must be an error, not silence: the
+            // declared size and the actual bytes have to agree, or the
+            // runner would announce and play a shorter sentence as if
+            // it were complete.
+            anyhow::ensure!(
+                size > 0 && start + size <= body.len(),
+                "WAV data chunk is empty or truncated"
+            );
+            let bytes = &body[start..start + size];
+            // 16-bit little-endian interleave.
+            for pair in bytes.chunks_exact(2) {
                 let value = i16::from_le_bytes([pair[0], pair[1]]);
                 samples.push(f32::from(value) / 32768.0);
             }
@@ -333,6 +350,52 @@ mod tests {
         body.push(0); // half of a third sample
         let chunk = parse_wav_body(&body).expect("odd trailing byte must be dropped, not fatal");
         assert_eq!(chunk.samples.len(), 2);
+    }
+
+    /// One second of speech at the native voice rate: the parsed chunk
+    /// reports the duration the runner announces, straight from the
+    /// header rate, not from a constant.
+    #[test]
+    fn one_second_at_22050_reports_1000ms() {
+        let body = wav_body(1, TTS_SAMPLE_RATE, 1, &[0; 22_050], false);
+        let chunk = parse_wav_body(&body).expect("a 1 s WAV must parse");
+        assert_eq!(chunk.samples.len(), 22_050);
+        assert_eq!(
+            crate::synthesis::chunk_duration_ms(&chunk),
+            1000,
+            "22050 frames at 22050 Hz is one second"
+        );
+    }
+
+    /// The walker reads bits-per-sample; a different depth must be
+    /// refused, not decoded as two-byte samples.
+    #[test]
+    fn rejects_a_non_16_bit_depth() {
+        let mut body = wav_body(1, TTS_SAMPLE_RATE, 1, &[0], false);
+        // fmt payload starts at byte 20; bits-per-sample sits 14 bytes in.
+        body[34] = 8;
+        let err = parse_wav_body(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("16-bit"),
+            "error must name the depth, got: {err}"
+        );
+    }
+
+    /// A body cut inside the declared fmt payload must be an error,
+    /// not a slice out of bounds.
+    #[test]
+    fn rejects_a_fmt_payload_cut_midway() {
+        let mut body = wav_body(1, TTS_SAMPLE_RATE, 1, &[1], false);
+        body.truncate(24); // fmt id + size present, payload cut
+        assert!(parse_wav_body(&body).is_err());
+    }
+
+    #[test]
+    fn rejects_a_data_chunk_shorter_than_declared() {
+        let mut body = wav_body(1, TTS_SAMPLE_RATE, 1, &[1, 2], false);
+        // Declare four data bytes; deliver only the chunk header.
+        body.truncate(body.len() - 2);
+        assert!(parse_wav_body(&body).is_err());
     }
 
     // ---- resample_linear -------------------------------------------------
