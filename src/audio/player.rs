@@ -276,6 +276,14 @@ impl Player for CpalPlayer {
                 break;
             }
             if start.elapsed() >= deadline {
+                // Clear what the device did not take: a stalled
+                // callback must not play this chunk's tail later,
+                // on top of the next utterance.
+                let mut guard = self
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.clear();
                 anyhow::bail!(
                     "the output device did not consume the chunk within {duration_ms} ms x3"
                 );
@@ -301,13 +309,13 @@ impl Player for CpalPlayer {
 /// Audio-callback core: drain the queue into `output`, pad with
 /// silence.
 ///
-/// Deliberately tiny (no allocation beyond one copy, one lock) because
-/// it runs on the OS audio thread. Pure over its arguments;
+/// Deliberately allocation-free (one copy, one in-place drain) because
+/// this runs on the OS audio thread. Pure over its arguments;
 /// unit-tested.
 pub fn drain_output(output: &mut [f32], queue: &mut Vec<f32>) {
     let take = output.len().min(queue.len());
-    let taken: Vec<f32> = queue.drain(..take).collect();
-    output[..take].copy_from_slice(&taken);
+    output[..take].copy_from_slice(&queue[..take]);
+    queue.drain(..take);
     // Pad the remainder with silence so the device never underruns
     // while the queue empties at the end of an utterance.
     for slot in &mut output[take..] {
