@@ -298,7 +298,11 @@ impl Default for AppRuntimeConfig {
 ///    [`supported_processor_providers`].
 /// 5. `synthesizer_provider` non-empty (after trimming).
 /// 6. `synthesizer_provider` is one of
-///    [`supported_synthesizer_providers`].
+///    [`supported_synthesizer_providers`]; and `player_device`, when
+///    present, is not empty or whitespace
+///    ([`normalize_runtime_config`] collapses a blank one to `None`;
+///    a whitespace-only value that survives means a malformed
+///    config).
 /// 7. `source_language` non-empty.
 /// 8. `target_language` non-empty.
 /// 9. `chunk_duration_ms > 0` (avoid divide-by-zero in
@@ -354,6 +358,14 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
             trimmed_synthesizer,
             supported_synthesizer_providers().join(", ")
         ));
+    }
+    if let Some(device) = config.player_device.as_deref()
+        && device.trim().is_empty()
+    {
+        return Err(
+            "player_device must not be empty or whitespace; omit it to select the system default"
+                .to_string(),
+        );
     }
     if config.source_language.trim().is_empty() {
         return Err("source_language must not be empty or whitespace".to_string());
@@ -811,6 +823,20 @@ mod tests {
             err.contains("synthesizer_provider"),
             "error should name the offending field, got: {err}"
         );
+    }
+
+    #[test]
+    fn blank_player_device_is_invalid_and_omit_selects_the_system_default() {
+        let cfg = AppRuntimeConfig {
+            player_device: Some("   ".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("player_device"),
+            "error should name the offending field, got: {err}"
+        );
+        assert!(validate_runtime_config(&AppRuntimeConfig::default()).is_ok());
     }
 
     #[test]
