@@ -45,13 +45,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::app::config::{AppMode, AppRuntimeConfig};
+use crate::app::config::{AppMode, AppRuntimeConfig, AudioSource};
 use crate::app::events::{AppEvent, AppStatus};
 use crate::app::live_events::{
     build_error_event, build_output_event, build_speech_event, build_transcript_event,
 };
 use crate::audio::activity;
-use crate::audio::capture::MicInput;
+use crate::audio::capture::{
+    MicInput, SYSTEM_AUDIO_UNSUPPORTED, SystemInput, labels_name_the_same_device,
+    system_audio_supported,
+};
 use crate::audio::chunk_recorder::write_chunk_wav;
 use crate::audio::endpoint::{self, EndpointConfig, EndpointDecision, EndpointState};
 use crate::audio::gate::{HalfDuplexGate, playback_backlog};
@@ -195,6 +198,14 @@ pub fn run_live_local_transcription_with_config_and_events<F>(
 where
     F: Fn(AppEvent) + Send + Sync + 'static,
 {
+    // Check the platform before any fallible playback setup. A Linux or
+    // Windows system-source request with Piper must fail with the capture
+    // error, not with "no output device", and it must not build stages it
+    // can never use.
+    if config.audio_source == AudioSource::System && !system_audio_supported() {
+        return Err(anyhow::anyhow!(SYSTEM_AUDIO_UNSUPPORTED));
+    }
+
     let provider_name = config.transcription_provider.clone();
 
     let output_dir = config::LIVE_CHUNKS_DIR;
@@ -218,6 +229,10 @@ where
     // output device, so like every stage that can fail it is built
     // before the session announces Listening.
     println!("synthesizer: {}", config.synthesizer_provider);
+    // The real player's resolved label, when there is one. The system-source
+    // echo check below compares it with the actual capture device; the mock
+    // and dry-run players open nothing, so they leave it `None`.
+    let mut player_label: Option<String> = None;
     let mut player: Box<dyn Player> = if config.dry_run {
         // A dry run decides and renders but never makes a sound: the
         // counting sink keeps the event stream honest while the room
@@ -229,6 +244,7 @@ where
             "piper" => {
                 let cpal_player =
                     CpalPlayer::new(&cpal::default_host(), config.player_device.as_deref())?;
+                player_label = Some(cpal_player.device_label().to_string());
                 // The device rate is what the queue was resampled to; print
                 // it because a voice mismatch would be invisible otherwise.
                 match config.player_device.as_deref() {
@@ -250,9 +266,37 @@ where
     };
 
     // `None` in the config means "whatever the OS calls default"; a name that
-    // no longer exists falls back to the default inside `MicInput`.
-    let mic = MicInput::start_with_device("live-local", config.input_device.as_deref())?;
+    // no longer exists falls back to the default inside `MicInput`. A system
+    // source resolves a loopback, and `input_device` can pin one of several
+    // by stable id; a non-loopback id is rejected.
+    let mic: MicInput = match config.audio_source {
+        AudioSource::Mic => {
+            MicInput::start_with_device("live-local", config.input_device.as_deref())?
+        }
+        AudioSource::System => {
+            SystemInput::start("live-local", config.input_device.as_deref())?.into_mic()
+        }
+    };
+    println!(
+        "source:  {}",
+        match config.audio_source {
+            AudioSource::Mic => "microphone",
+            AudioSource::System => "system audio (loopback)",
+        }
+    );
     println!("device:  {}", mic.input().device_label());
+    // The config check can only inspect the requested substring. Here both
+    // devices are resolved, so an output that landed on the captured
+    // loopback (including the OS default) is caught before the first turn.
+    if config.audio_source == AudioSource::System
+        && let Some(output) = player_label.as_deref()
+        && labels_name_the_same_device(mic.input().device_label(), output)
+    {
+        return Err(anyhow::anyhow!(
+            "system-audio capture and playback both use \"{output}\"; choose a different \
+             --device so the pipeline does not transcribe its own speech"
+        ));
+    }
     println!("config:  {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
     let channels = mic.channels();

@@ -171,6 +171,9 @@ pub struct CpalPlayer {
     /// Device sample rate and channel count the queue is rendered at.
     device_rate: u32,
     device_channels: u16,
+    /// `Display` form of the output device, for the system-capture echo
+    /// check in the live runner.
+    device_label: String,
 }
 
 impl CpalPlayer {
@@ -227,6 +230,7 @@ impl CpalPlayer {
             _stream: stream,
             device_rate,
             device_channels,
+            device_label: label,
         })
     }
 
@@ -238,6 +242,11 @@ impl CpalPlayer {
     /// Device channel count the queue is rendered at.
     pub fn device_channels(&self) -> u16 {
         self.device_channels
+    }
+
+    /// `Display` form of the output device, e.g. `"BlackHole 2ch"`.
+    pub fn device_label(&self) -> &str {
+        &self.device_label
     }
 }
 

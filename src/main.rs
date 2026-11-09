@@ -3,6 +3,7 @@
 //! Modes:
 //!   cargo run                -> devices
 //!   cargo run -- devices     -> print host + input/output devices and exit
+//!   cargo run -- devices --source system -> print the loopback inputs and exit (macOS)
 //!   cargo run -- mic         -> capture from default mic until Ctrl+C
 //!   cargo run -- mic-5s      -> capture from default mic for 5 seconds and exit
 //!   cargo run -- record-5s   -> record 5 s of mic audio to output/mic_test.wav
@@ -12,7 +13,7 @@
 //!   cargo run -- mock-transcribe-file <path> -> read a saved WAV from disk, run MockTranscriber on it
 //!   cargo run -- mock-translate        -> 10 s of mic, mock transcript + mock translation per chunk (en -> es)
 //!   cargo run -- local-transcribe-file [--provider <name>] <path> -> send a WAV file to a LocalTranscriptionProvider (default local-whisper)
-//!   cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] -> utterance-by-utterance live transcription (defaults: mock-local, mock, mock)
+//!   cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--source mic|system] [--input-device <id>] -> utterance-by-utterance live transcription (defaults: mock-local, mock, mock, mic)
 //!   cargo run -- say-text "<text>"  -> speak one line through the local Piper TTS server + the real output device (needs Docker + a sound device)
 //!   cargo run -- llm-translate-text "<text>"                 -> one real LLM round-trip, no mic (needs the LLM server)
 //!   cargo run -- settings-default                           -> print the default AppRuntimeConfig as pretty JSON
@@ -31,7 +32,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tardis::{
     app::{
-        config::{AppMode, AppRuntimeConfig},
+        config::{AppMode, AppRuntimeConfig, AudioSource, validate_runtime_config},
         events::{AppEvent, format_app_event_for_console, status_label},
         live_events::{build_output_event, build_speech_event, build_transcript_event},
         service::AppService,
@@ -76,7 +77,7 @@ fn main() -> Result<()> {
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices [--output] | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] | -- say-text \"<text>\" | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices [--output] [--source mic|system] | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--source mic|system] [--input-device <id>] | -- say-text \"<text>\" | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -85,12 +86,51 @@ fn main() -> Result<()> {
 
 fn run_devices() -> Result<()> {
     let host = cpal::default_host();
-    if std::env::args().nth(2).is_some_and(|arg| arg == "--output") {
+    let args: Vec<String> = std::env::args().collect();
+    let mut output_only = false;
+    let mut audio_source = AudioSource::Mic;
+
+    let mut i = 2;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            "--output" => output_only = true,
+            "--source" => {
+                let value = args.get(i + 1).ok_or_else(|| {
+                    anyhow!(
+                        "--source requires a value (e.g. --source system)\nUsage: cargo run -- devices [--output] [--source mic|system]"
+                    )
+                })?;
+                audio_source = value.parse::<AudioSource>().map_err(|e| anyhow!("{e}"))?;
+                i += 1;
+            }
+            other if other.starts_with("--source=") => {
+                audio_source = other["--source=".len()..]
+                    .parse::<AudioSource>()
+                    .map_err(|e| anyhow!("{e}"))?;
+            }
+            other => {
+                return Err(anyhow!(
+                    "unexpected argument: {other}\nUsage: cargo run -- devices [--output] [--source mic|system]"
+                ));
+            }
+        }
+        i += 1;
+    }
+
+    if output_only && audio_source == AudioSource::System {
+        return Err(anyhow!(
+            "--output lists playback devices; --source system lists capture devices. Pick one."
+        ));
+    }
+    if output_only {
         // The situated check, per the piper ticket: without a sound
         // output device the real player cannot be exercised at all.
-        audio::devices::print_output_devices(&host)
-    } else {
-        audio::devices::print_device_info(&host)
+        return audio::devices::print_output_devices(&host);
+    }
+    match audio_source {
+        AudioSource::Mic => audio::devices::print_device_info(&host),
+        AudioSource::System => audio::devices::print_system_devices(&host),
     }
 }
 
@@ -486,6 +526,8 @@ fn run_live_local_transcribe() -> Result<()> {
     let mut provider_name = "mock-local".to_string();
     let mut processor_name = processor::DEFAULT_PROCESSOR_NAME.to_string();
     let mut synthesizer_name = "mock".to_string();
+    let mut audio_source = AudioSource::Mic;
+    let mut input_device: Option<String> = None;
     let mut player_device: Option<String> = None;
     let mut host_names: Vec<String> = Vec::new();
     let mut wants_respond = false;
@@ -501,6 +543,11 @@ fn run_live_local_transcribe() -> Result<()> {
             processor_name = value;
         } else if let Some(value) = flag_value(arg, &args, &mut i, "--synthesizer", "piper")? {
             synthesizer_name = value;
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--source", "system")? {
+            audio_source = value.parse::<AudioSource>().map_err(|e| anyhow!("{e}"))?;
+        } else if let Some(value) = flag_value(arg, &args, &mut i, "--input-device", "<device id>")?
+        {
+            input_device = Some(value.trim().to_string());
         } else if let Some(value) = flag_value(arg, &args, &mut i, "--device", "<output device>")? {
             player_device = Some(value.trim().to_string());
         } else if let Some(value) = flag_value(arg, &args, &mut i, "--mode", "respond")? {
@@ -519,7 +566,7 @@ fn run_live_local_transcribe() -> Result<()> {
             dry_run = true;
         } else {
             return Err(anyhow!(
-                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--device <output device>] [--mode translate|respond --host <name>] [--dry-run]"
+                "unexpected argument: {arg}\nUsage: cargo run -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--source mic|system] [--input-device <id>] [--device <output device>] [--mode translate|respond --host <name>] [--dry-run]"
             ));
         }
         i += 1;
@@ -559,10 +606,16 @@ fn run_live_local_transcribe() -> Result<()> {
         hangover_ms: config::DEFAULT_HANGOVER_MS,
         min_speech_ms: config::DEFAULT_MIN_SPEECH_MS,
         max_utterance_ms: config::DEFAULT_MAX_UTTERANCE_MS,
-        input_device: None,
+        input_device,
+        audio_source,
         mode,
         dry_run,
     };
+    // The CLI builds its own config rather than loading one, so it runs the
+    // same validation the Tauri command does: a system session whose player
+    // names the captured loopback must fail here, not echo on the first
+    // utterance.
+    validate_runtime_config(&config).map_err(|e| anyhow!("invalid session config: {e}"))?;
     transcription::live_local::run_live_local_transcription_with_config_and_events(
         config,
         Some(config::DEFAULT_PIPELINE_TEST_SECONDS),
