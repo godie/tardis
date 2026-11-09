@@ -66,7 +66,7 @@ BlackHole 2ch is the tested driver.
      --input-device "coreaudio:BlackHole2ch_UID"
    ```
 
-   `--source system` ignores a microphone id: the selected device must
+   `--source system` rejects a microphone id: the selected device must
    match a loopback name, and the session fails with the id in the error
    otherwise.
 

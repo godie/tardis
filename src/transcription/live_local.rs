@@ -267,7 +267,8 @@ where
 
     // `None` in the config means "whatever the OS calls default"; a name that
     // no longer exists falls back to the default inside `MicInput`. A system
-    // source ignores `input_device`: the loopback device is resolved by name.
+    // source resolves a loopback, and `input_device` can pin one of several
+    // by stable id; a non-loopback id is rejected.
     let mic: MicInput = match config.audio_source {
         AudioSource::Mic => {
             MicInput::start_with_device("live-local", config.input_device.as_deref())?
