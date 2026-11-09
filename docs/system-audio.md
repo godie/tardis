@@ -63,7 +63,7 @@ BlackHole 2ch is the tested driver.
 
    ```sh
    cargo run -- live-local-transcribe --source system \
-     --input-device "coreaudio:BlackHole2ch_UID"
+     --input-device "<id printed by devices --source system>"
    ```
 
    `--source system` rejects a microphone id: the selected device must
