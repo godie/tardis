@@ -8,6 +8,27 @@ the existing `transcription::local_whisper::LocalWhisperClient` against
 `docker/faster-whisper/`. It also keeps a set of zero-side-effect mock
 commands for UI development.
 
+## The session state machine, in one place
+
+The lifecycle every surface agrees on lives in
+[`src/app/session_phase.rs`](../src/app/session_phase.rs): `idle →
+starting → listening → stopping → (stopped) → idle`, plus `error →
+idle`. The backend stays the source of truth — `AppStatus` events carry
+only `listening` / `stopped` / `idle` / `error`, with the same labels
+they always had — and the UI derives its locked-panel state from one
+`sessionPhase` variable (the table in `ui/app.js` mirrors the Rust one).
+Nothing else in the app is allowed to hold a second copy of this machine.
+
+Every other implicit state machine in the repo is already pure and
+table-tested where it matters, so new work should read them instead of
+re-derivating: `audio::endpoint` (open / accruing / hangover / flush or
+discard, from counters), `audio::gate` (speaking + reverb tail), the
+respond-mode decision (`processor::decision`, Answer / Suggest /
+Ignore), and the backlog-trigger labels
+(`ready-for-agent → agent-wip → agent-stuck`,
+[docs/agent-backlog-trigger.md](agent-backlog-trigger.md)).
+
+
 It does **not** call a real translation provider yet, and it does
 **not** alter the existing CLI audio or transcription pipeline.
 

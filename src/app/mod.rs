@@ -25,6 +25,7 @@ pub mod events;
 pub mod history;
 pub mod live_events;
 pub mod service;
+pub mod session_phase;
 pub mod settings_store;
 pub mod state;
 pub mod ui_events;

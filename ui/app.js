@@ -204,9 +204,18 @@ function clearSpokenAudio() {
 
 // ===== Live transcription via Tauri events ================================
 
-let isListening = false;
-let isStarting = false;
-let isStopping = false;
+// Canonical session phase, one variable instead of three booleans.
+// The transition table mirrors `src/app/session_phase.rs` (pure, Rust),
+// so the shell's answer to "can this click do anything" is a lookup:
+// only listening-phase traffic reaches Stop, and a Start click while
+// anything is already in flight is a no-op, not a double spawn.
+const SESSION_PHASES = ["idle", "starting", "listening", "stopping"];
+
+
+function isSessionLive(phase) {
+  return phase === "listening" || phase === "stopping";
+}
+let sessionPhase = "idle";
 
 const languageHint = document.querySelector("#language-hint");
 
@@ -312,8 +321,9 @@ function setSessionControls(running) {
 
 async function startLiveTranscription() {
   // A second click while the first invoke is still in flight would spawn
-  // two backend runners; the isListening flag alone lands too late.
-  if (isListening || isStarting || isStopping) return;
+  // two backend runners; the phase only leaves `starting` when the
+  // command resolves or fails.
+  if (sessionPhase !== "idle") return;
 
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
@@ -326,8 +336,7 @@ async function startLiveTranscription() {
     return;
   }
 
-  isStarting = true;
-  isStopping = false;
+  sessionPhase = "starting";
   setStatus("Starting\u2026");
   setLiveError("");
   // A new session starts with no spoken line: the previous run's
@@ -354,15 +363,13 @@ async function startLiveTranscription() {
   try {
     const msg = await invoke("start_live_transcription", { config });
     log("start_live_transcription:", msg, "config:", config);
-    isListening = true;
-    setSessionControls(true);
+    sessionPhase = "listening";
+    setSessionControls(isSessionLive(sessionPhase));
   } catch (error) {
     setStatus("Error");
     setLiveError(`Failed to start: ${error}`);
-    isListening = false;
+    sessionPhase = "idle";
     setSessionControls(false);
-  } finally {
-    isStarting = false;
   }
 }
 
@@ -403,13 +410,13 @@ function enableSessionSettings() {
 }
 
 async function stopLiveTranscription() {
-  if (!isListening || isStopping) return;
+  if (sessionPhase !== "listening") return;
 
   // The command returns once the worker has the stop flag, not once it has
   // exited, so the session is still running at this point. Keep the panel
-  // locked and `isListening` true; the "stopped" status event is what
+  // locked and the phase stays `stopping`; the "stopped" status event is what
   // unlocks the settings and Start.
-  isStopping = true;
+  sessionPhase = "stopping";
   setStatus("Stopping\u2026");
 
   try {
@@ -419,7 +426,7 @@ async function stopLiveTranscription() {
   } catch (error) {
     // Still listening: leave the controls as they are so Stop stays
     // clickable and the user can retry.
-    isStopping = false;
+    sessionPhase = "listening";
     log("stop error:", error);
     setLiveError(`Failed to stop: ${error}`);
   }
@@ -442,13 +449,12 @@ function setupEventListener() {
         if (status) {
           setStatus(status.charAt(0).toUpperCase() + status.slice(1));
           if (status === "listening") {
-            isListening = true;
-            setSessionControls(true);
+            sessionPhase = "listening";
+            setSessionControls(isSessionLive(sessionPhase));
           } else if (status === "stopped") {
             // Worker has fully exited; let the user adjust settings
             // before pressing Start again.
-            isListening = false;
-            isStopping = false;
+            sessionPhase = "idle";
             setSessionControls(false);
           }
         }
