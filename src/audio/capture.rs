@@ -59,9 +59,29 @@ impl DefaultInput {
     /// role in CPAL: it is an ordinary input device that the user installs
     /// and routes output into. [`is_system_audio_device_name`] owns the
     /// matching rule; this resolves the real device once the rule has a
-    /// candidate.
-    fn resolve_system() -> Result<Self> {
+    /// candidate. When `selected` is set (the persisted `input_device` id),
+    /// it must identify a loopback; otherwise the session could silently
+    /// capture a microphone while the config says `system`.
+    fn resolve_system(selected: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
+        if let Some(wanted) = selected.filter(|id| !id.trim().is_empty()) {
+            let id = parse_device_id(wanted)
+                .ok_or_else(|| anyhow!("input_device \"{wanted}\" is not a valid device id"))?;
+            let device = host.device_by_id(&id).ok_or_else(|| {
+                anyhow!(
+                    "input_device \"{wanted}\" is not available; run \
+                     `cargo run -- devices --source system` to list loopback ids"
+                )
+            })?;
+            if !is_system_audio_device_name(&device.to_string()) {
+                return Err(anyhow!(
+                    "input_device \"{wanted}\" ({device}) is not a system-audio loopback; \
+                     run `cargo run -- devices --source system` to list loopback ids"
+                ));
+            }
+            return Self::from_device(device);
+        }
+
         let devices = host
             .input_devices()
             .map_err(|e| anyhow!("Could not enumerate input devices: {e}"))?;
@@ -274,13 +294,38 @@ pub fn list_system_input_devices(host: &cpal::Host) -> Result<Vec<InputDeviceInf
     Ok(devices
         .filter(|device| is_system_audio_device_name(&device.to_string()))
         .filter_map(|device| {
-            let id = device.id().ok()?;
+            let name = device.to_string();
+            let id = match device.id() {
+                Ok(id) => id,
+                Err(e) => {
+                    // Skipping is the only option (the id is what selection
+                    // persists), but say so: an empty list would otherwise
+                    // read as "driver not installed".
+                    eprintln!(
+                        "skipping system-audio device \"{name}\": could not read its id: {e}"
+                    );
+                    return None;
+                }
+            };
             Some(InputDeviceInfo {
                 id: id.to_string(),
-                name: device.to_string(),
+                name,
             })
         })
         .collect())
+}
+
+/// Do two resolved device labels name the same device?
+///
+/// Capture and playback labels come from CPAL's `Display` form, which is
+/// the same name for a duplex device. The comparison is trimmed and
+/// case-insensitive because a persisted preference and a driver name can
+/// differ only in case. Pure, so the echo check is testable without a sound
+/// card.
+pub fn labels_name_the_same_device(capture_label: &str, output_label: &str) -> bool {
+    capture_label
+        .trim()
+        .eq_ignore_ascii_case(output_label.trim())
 }
 
 /// Parse a persisted device id string, rejecting blanks.
@@ -450,17 +495,16 @@ pub struct SystemInput {
 impl SystemInput {
     /// Resolve the system-audio device and build its capture stream.
     ///
-    /// Platforms without a loopback backend return a clear error instead of
-    /// panicking or leaving a `todo!()`: see [`system_audio_supported`] and
+    /// `selected` is the persisted `input_device` id. It must name a
+    /// loopback when set; `None` captures the first one found. Platforms
+    /// without a loopback backend return a clear error instead of panicking
+    /// or leaving a `todo!()`: see [`system_audio_supported`] and
     /// `docs/system-audio.md`.
-    pub fn start(error_prefix: &'static str) -> Result<Self> {
+    pub fn start(error_prefix: &'static str, selected: Option<&str>) -> Result<Self> {
         if !system_audio_supported() {
-            return Err(anyhow!(
-                "system audio capture is not supported on this platform; \
-                 see docs/system-audio.md"
-            ));
+            return Err(anyhow!(SYSTEM_AUDIO_UNSUPPORTED));
         }
-        let input = DefaultInput::resolve_system()?;
+        let input = DefaultInput::resolve_system(selected)?;
         Ok(Self {
             inner: MicInput::from_input(input, error_prefix)?,
         })
@@ -472,6 +516,12 @@ impl SystemInput {
         self.inner
     }
 }
+
+/// The error every system-audio entry point returns on a platform without a
+/// loopback backend. One string so the preflight, the runner and
+/// [`SystemInput`] cannot drift.
+pub const SYSTEM_AUDIO_UNSUPPORTED: &str =
+    "system audio capture is not supported on this platform; see docs/system-audio.md";
 
 /// Names that identify a system-audio loopback input.
 ///
@@ -602,6 +652,27 @@ mod tests {
         // contract without making the test depend on what hardware is
         // plugged into the machine running it.
         assert_eq!(system_audio_supported(), cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn device_labels_compare_case_insensitively_and_trimmed() {
+        assert!(labels_name_the_same_device(
+            "BlackHole 2ch",
+            "BlackHole 2ch"
+        ));
+        assert!(labels_name_the_same_device(
+            "  blackhole 2CH ",
+            "BlackHole 2ch"
+        ));
+        assert!(!labels_name_the_same_device(
+            "BlackHole 2ch",
+            "MacBook Pro Speakers"
+        ));
+        // Two different loopbacks are still different devices.
+        assert!(!labels_name_the_same_device(
+            "BlackHole 2ch",
+            "BlackHole 16ch"
+        ));
     }
 
     /// Mix one frame of `channels` samples with the weights those peaks

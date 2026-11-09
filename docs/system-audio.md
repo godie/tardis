@@ -39,7 +39,8 @@ BlackHole 2ch is the tested driver.
    cargo run -- devices --source system
    ```
 
-   The listing should include `BlackHole 2ch` (or `BlackHole 16ch/64ch`).
+   The listing should include `BlackHole 2ch` (or `BlackHole 16ch/64ch`)
+   with its device id.
 
 4. Start the live loop. With the default mock synthesizer the pipeline is
    silent, so the simplest end-to-end check is:
@@ -56,6 +57,19 @@ BlackHole 2ch is the tested driver.
      --device "MacBook Pro Speakers"
    ```
 
+5. If more than one loopback is installed, pick the one that receives the
+   audio. `devices --source system` prints each device id; pass it with
+   `--input-device`, or set `input_device` in `runtime.json` for the shell:
+
+   ```sh
+   cargo run -- live-local-transcribe --source system \
+     --input-device "coreaudio:BlackHole2ch_UID"
+   ```
+
+   `--source system` ignores a microphone id: the selected device must
+   match a loopback name, and the session fails with the id in the error
+   otherwise.
+
 ## Capture and playback must be distinct
 
 The pipeline speaks its own translations. If the player writes into the
@@ -67,10 +81,11 @@ transcribing itself. Keep the two apart:
   default when that default is not BlackHole.
 
 Validation rejects an explicit `player_device` that names a loopback
-device (`"BlackHole 2ch"`), and `live-local-transcribe` runs that
-validation before the session starts. The half-duplex gate is a second
-line of defence while a reply is playing, not a substitute for distinct
-devices.
+device (`"BlackHole 2ch"`), and the live runner compares the two resolved
+device labels before capture starts. That catches a substring (`"2ch"`) or
+an OS default that landed on the loopback too. The half-duplex gate is a
+second line of defence while a reply is playing, not a substitute for
+distinct devices.
 
 ## Linux (documented, not shipped in this release)
 

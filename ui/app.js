@@ -54,6 +54,12 @@ const DEV = true; // Set to false before release to suppress console logs
 // the session.
 const MAX_HISTORY_ROWS = 200;
 
+// The persisted capture source. The panel has no source control yet (the
+// CLI and `runtime.json` select it), but Start and Save must send the loaded
+// value back: omitting it lets serde's default silently turn a system
+// session into a microphone session.
+let currentAudioSource = "mic";
+
 // Append one row to a history panel and retire the oldest rows past the cap,
 // keeping the newest row in view.
 function appendHistoryItem(panel, item) {
@@ -349,6 +355,7 @@ async function startLiveTranscription() {
     // `""` is the "System default" option; the backend reads `null` as
     // "let the OS choose".
     input_device: inputDeviceSelect.value || null,
+    audio_source: currentAudioSource,
   };
 
   try {
@@ -593,6 +600,9 @@ async function loadFromBackendSettings() {
     if (typeof defaults.input_device === "string") {
       savedDevice = defaults.input_device;
     }
+    if (defaults.audio_source === "system" || defaults.audio_source === "mic") {
+      currentAudioSource = defaults.audio_source;
+    }
   }
 
   try {
@@ -723,6 +733,7 @@ async function saveCurrentSettings() {
     min_speech_ms: endpointing.min_speech_ms,
     max_utterance_ms: endpointing.max_utterance_ms,
     input_device: inputDeviceSelect.value || null,
+    audio_source: currentAudioSource,
   };
   try {
     await invoke("save_runtime_settings", { config });

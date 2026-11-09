@@ -25,6 +25,7 @@ const DEFAULT_CONFIG = {
   min_speech_ms: 200,
   max_utterance_ms: 15000,
   input_device: null,
+  audio_source: "mic",
 };
 
 // Two fake input devices: the selector shows `name` and persists `id`.
@@ -151,6 +152,27 @@ test("a persisted device is preselected, and a missing one stays selected", asyn
   );
   const save = await findCall(page, "save_runtime_settings");
   expect(save.args.config.input_device).toBe("coreaudio:gone");
+});
+
+test("a persisted system source survives save and start", async ({ page }) => {
+  await installFakeBridge(page, { ...DEFAULT_CONFIG, audio_source: "system" });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "load_runtime_settings"),
+  );
+
+  // An unrelated settings change must not write `mic` back over the
+  // persisted source (serde would otherwise default the omitted field).
+  await page.locator("#target-language").selectOption("it");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "save_runtime_settings"),
+  );
+  const save = await findCall(page, "save_runtime_settings");
+  expect(save.args.config.audio_source).toBe("system");
+
+  await page.locator("#start-button").click();
+  const start = await findCall(page, "start_live_transcription");
+  expect(start.args.config.audio_source).toBe("system");
 });
 
 test("a failed device enumeration does not erase the saved id", async ({ page }) => {

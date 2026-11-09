@@ -6,7 +6,9 @@
 use anyhow::{Result, bail};
 use cpal::traits::HostTrait;
 
-use crate::audio::capture::{list_system_input_devices, system_audio_supported};
+use crate::audio::capture::{
+    SYSTEM_AUDIO_UNSUPPORTED, list_system_input_devices, system_audio_supported,
+};
 
 /// Prints the active audio host, available input/output devices, and
 /// the default input/output devices. Returns `Ok(())` after printing.
@@ -67,7 +69,7 @@ pub fn print_output_devices(host: &cpal::Host) -> Result<()> {
 /// input whose name matches [`crate::audio::capture::is_system_audio_device_name`].
 pub fn print_system_devices(host: &cpal::Host) -> Result<()> {
     if !system_audio_supported() {
-        bail!("system audio capture is not supported on this platform; see docs/system-audio.md");
+        bail!(SYSTEM_AUDIO_UNSUPPORTED);
     }
 
     println!("Audio Host: {:?}", host.id());
@@ -81,11 +83,12 @@ pub fn print_system_devices(host: &cpal::Host) -> Result<()> {
 
     println!("\nSystem audio input devices:");
     for (i, device) in devices.iter().enumerate() {
-        println!("  [{}] {}", i, device.name);
+        println!("  [{}] {} ({})", i, device.name, device.id);
     }
 
     println!("\nDefault system audio input device:");
     println!("  {}", devices[0].name);
+    println!("\nMore than one loopback? Set that device's id as input_device in runtime.json.");
 
     Ok(())
 }
