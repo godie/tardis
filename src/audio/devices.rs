@@ -88,7 +88,9 @@ pub fn print_system_devices(host: &cpal::Host) -> Result<()> {
 
     println!("\nDefault system audio input device:");
     println!("  {}", devices[0].name);
-    println!("\nMore than one loopback? Set that device's id as input_device in runtime.json.");
+    if devices.len() > 1 {
+        println!("\nMore than one loopback? Set that device's id as input_device in runtime.json.");
+    }
 
     Ok(())
 }
