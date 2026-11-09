@@ -279,7 +279,7 @@ pub fn default_settings_file_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::config::AppMode;
+    use crate::app::config::{AppMode, AudioSource};
 
     /// Allocate a fresh tempdir for a single test invocation. The
     /// name encodes the test name + pid + nanos so two parallel
@@ -331,6 +331,7 @@ mod tests {
             min_speech_ms: 300,
             max_utterance_ms: 20_000,
             input_device: Some("External Microphone".to_string()),
+            audio_source: AudioSource::System,
             mode: AppMode::Translate,
             dry_run: false,
         };
@@ -865,6 +866,61 @@ mod tests {
         let cfg = deserialize_runtime_config(json)
             .expect("unknown fields are currently ignored (no deny_unknown_fields)");
         assert_eq!(cfg.transcription_provider, "mock-local");
+    }
+
+    // ---- audio_source (persisted capture source) ----------------------
+
+    #[test]
+    fn legacy_config_without_audio_source_loads_as_mic() {
+        // A `runtime.json` written before the system-audio field existed
+        // must keep loading, on the microphone, which is the only source
+        // those versions had.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("legacy JSON must load");
+        assert_eq!(cfg.audio_source, AudioSource::Mic);
+    }
+
+    #[test]
+    fn corrupt_audio_source_is_a_parse_error() {
+        // An unknown source must fail loudly at load instead of being
+        // silently demoted to the microphone: the user would spend a
+        // session wondering why BlackHole was ignored.
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "audio_source": "speaker"
+}"#;
+        let err = deserialize_runtime_config(json).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("audio_source") || msg.contains("speaker"),
+            "error must name the bad value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn system_audio_source_round_trips_through_the_store() {
+        let json = r#"{
+  "transcription_provider": "mock-local",
+  "source_language": "en",
+  "target_language": "es",
+  "chunk_duration_ms": 1000,
+  "volume_threshold": 0.01,
+  "audio_source": "system"
+}"#;
+        let cfg = deserialize_runtime_config(json).expect("system source must load");
+        assert_eq!(cfg.audio_source, AudioSource::System);
+        let out = serialize_runtime_config(&cfg).expect("serializes");
+        assert!(out.contains(r#""audio_source": "system""#), "got: {out}");
     }
 
     // ---- default_settings_file_name / settings_file_path -------------

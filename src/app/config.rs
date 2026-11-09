@@ -63,6 +63,39 @@ where
     Option::<AppMode>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
+/// Where a session captures audio from.
+///
+/// `Mic` is the OS default (or `input_device`) microphone and stays the
+/// default for every `runtime.json` written before this field existed.
+/// `System` captures a loopback device on platforms that ship one; see
+/// `docs/system-audio.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioSource {
+    /// The default microphone, or the persisted `input_device`.
+    #[default]
+    Mic,
+    /// A system-audio loopback input (BlackHole on macOS).
+    System,
+}
+
+impl std::str::FromStr for AudioSource {
+    type Err = String;
+
+    /// Parse a CLI `--source` value. Case-insensitive and trimmed, because
+    /// it comes from a shell; an unknown value lists the two accepted names
+    /// so the typo is fixable from the error alone.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mic" => Ok(Self::Mic),
+            "system" => Ok(Self::System),
+            other => Err(format!(
+                "audio_source \"{other}\" is not supported; valid values are: mic, system"
+            )),
+        }
+    }
+}
+
 /// struct through its IPC boundary; the frontend sends the same
 /// shape and the backend validates before using it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -147,6 +180,12 @@ pub struct AppRuntimeConfig {
     /// therefore does nothing but trigger that fallback.
     #[serde(default)]
     pub input_device: Option<String>,
+    /// Which capture source the session opens: the microphone (`Mic`, the
+    /// legacy default) or a system-audio loopback (`System`). `serde`
+    /// defaults it to `Mic`, so every `runtime.json` written before this
+    /// field existed still loads on the microphone.
+    #[serde(default)]
+    pub audio_source: AudioSource,
 }
 
 fn default_hangover_ms() -> u64 {
@@ -290,6 +329,7 @@ pub fn normalize_runtime_config(config: AppRuntimeConfig) -> AppRuntimeConfig {
         // be resolved.
         input_device: normalize_optional_device(config.input_device),
         player_device: normalize_optional_device(config.player_device),
+        audio_source: config.audio_source,
         mode: normalize_mode(config.mode),
         dry_run: config.dry_run,
     }
@@ -360,6 +400,9 @@ impl Default for AppRuntimeConfig {
             max_utterance_ms: central::DEFAULT_MAX_UTTERANCE_MS,
             // `None` = the OS default input device.
             input_device: None,
+            // Microphone is the legacy default and the source every
+            // pre-existing settings file means.
+            audio_source: AudioSource::Mic,
             // `None` = the OS default output device, and the default
             // synthesizer is the mock, which never opens a device at all.
             player_device: None,
@@ -394,21 +437,23 @@ impl Default for AppRuntimeConfig {
 ///    ([`normalize_runtime_config`] collapses a blank one to `None`;
 ///    a whitespace-only value that survives means a malformed
 ///    config).
-/// 7. translate mode has nothing more to check; a respond `mode` must
+/// 7. a `System` audio source must not name the loopback capture device as
+///    its player, or playback would re-enter capture.
+/// 8. translate mode has nothing more to check; a respond `mode` must
 ///    name at least one non-blank host and never err looser than v1
 ///    (`allow_commitments` must stay `false`, while
 ///    `answer_questions_only` and `require_name` must stay `true`).
-/// 8. `source_language` non-empty.
-/// 8. `target_language` non-empty.
-/// 9. `chunk_duration_ms > 0` (avoid divide-by-zero in
-///    [`crate::audio::chunker::calculate_chunk_size_samples`]).
-/// 10. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
+/// 9. `source_language` non-empty.
+/// 10. `target_language` non-empty.
+/// 11. `chunk_duration_ms > 0` (avoid divide-by-zero in
+///     [`crate::audio::chunker::calculate_chunk_size_samples`]).
+/// 12. `chunk_duration_ms` within [`MIN_CHUNK_DURATION_MS`] ..
 ///     [`MAX_CHUNK_DURATION_MS`].
-/// 11. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
-/// 13. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
+/// 13. `volume_threshold >= 0.0` and `<=` [`MAX_VOLUME_THRESHOLD`].
+/// 14. `hangover_ms <=` [`MAX_HANGOVER_MS`] (0 is allowed: close on the
 ///     first non-speech frame).
-/// 14. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
-/// 15. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
+/// 15. `min_speech_ms <=` [`MAX_MIN_SPEECH_MS`].
+/// 16. `max_utterance_ms > 0`, `<=` [`MAX_MAX_UTTERANCE_MS`] and at
 ///     least `min_speech_ms`, so a valid utterance can never exceed the
 ///     cap before it reaches the minimum.
 ///
@@ -461,6 +506,20 @@ pub fn validate_runtime_config(config: &AppRuntimeConfig) -> Result<(), String> 
             "player_device must not be empty or whitespace; omit it to select the system default"
                 .to_string(),
         );
+    }
+    // Capture and playback must not share the loopback: a real player
+    // writing into the device being captured would feed the session its own
+    // speech. `None` is allowed because the default output is normally a
+    // speaker; the explicit case is the one worth rejecting.
+    if config.audio_source == AudioSource::System
+        && let Some(device) = config.player_device.as_deref()
+        && crate::audio::capture::is_system_audio_device_name(device)
+    {
+        return Err(format!(
+            "player_device \"{device}\" selects a system-audio capture device; choose a \
+             distinct output device so the pipeline does not transcribe its own speech \
+             (see docs/system-audio.md)"
+        ));
     }
     if let AppMode::Respond { policy } = &config.mode {
         let host_count = policy
@@ -1323,5 +1382,115 @@ mod tests {
         assert_eq!(out.hangover_ms, 0);
         assert_eq!(out.min_speech_ms, 300);
         assert_eq!(out.max_utterance_ms, 20_000);
+    }
+
+    // ---- audio_source -------------------------------------------------
+
+    #[test]
+    fn default_audio_source_is_the_microphone() {
+        assert_eq!(AppRuntimeConfig::default().audio_source, AudioSource::Mic);
+    }
+
+    #[test]
+    fn audio_source_names_parse_case_insensitively() {
+        assert_eq!("mic".parse::<AudioSource>().unwrap(), AudioSource::Mic);
+        assert_eq!(
+            "  SyStEm \t".parse::<AudioSource>().unwrap(),
+            AudioSource::System
+        );
+    }
+
+    #[test]
+    fn unknown_audio_source_lists_the_valid_values() {
+        let err = "speaker".parse::<AudioSource>().unwrap_err();
+        assert!(err.contains("speaker"), "error must name the value: {err}");
+        assert!(err.contains("mic"), "error must list valid values: {err}");
+        assert!(
+            err.contains("system"),
+            "error must list valid values: {err}"
+        );
+    }
+
+    #[test]
+    fn legacy_config_without_audio_source_defaults_to_mic() {
+        let json = r#"{
+            "transcription_provider": "mock-local",
+            "source_language": "en",
+            "target_language": "es",
+            "chunk_duration_ms": 1000,
+            "volume_threshold": 0.01
+        }"#;
+        let cfg: AppRuntimeConfig = serde_json::from_str(json).expect("legacy JSON must load");
+        assert_eq!(cfg.audio_source, AudioSource::Mic);
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn system_audio_source_round_trips_through_json() {
+        let cfg = AppRuntimeConfig {
+            audio_source: AudioSource::System,
+            ..AppRuntimeConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serializes");
+        assert!(json.contains(r#""audio_source":"system""#), "got: {json}");
+        let back: AppRuntimeConfig = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.audio_source, AudioSource::System);
+        assert!(validate_runtime_config(&back).is_ok());
+    }
+
+    #[test]
+    fn system_audio_source_rejects_the_capture_device_as_its_player() {
+        // Playing the translation into the loopback being captured would
+        // feed the pipeline its own speech; the explicit misconfiguration
+        // is rejected instead of silently echoing.
+        let cfg = AppRuntimeConfig {
+            audio_source: AudioSource::System,
+            player_device: Some("BlackHole 2ch".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        let err = validate_runtime_config(&cfg).unwrap_err();
+        assert!(
+            err.contains("player_device") && err.contains("distinct output"),
+            "error must name the field and the fix, got: {err}"
+        );
+    }
+
+    #[test]
+    fn system_audio_source_accepts_a_distinct_player_or_the_default() {
+        for player_device in [None, Some("MacBook Pro Speakers".to_string())] {
+            let cfg = AppRuntimeConfig {
+                audio_source: AudioSource::System,
+                player_device,
+                ..AppRuntimeConfig::default()
+            };
+            assert!(
+                validate_runtime_config(&cfg).is_ok(),
+                "system source with a speaker target must validate"
+            );
+        }
+    }
+
+    #[test]
+    fn mic_audio_source_may_name_a_loopback_as_its_player() {
+        // The rule only exists for system capture; a microphone session
+        // playing into BlackHole is unusual but cannot echo its own input.
+        let cfg = AppRuntimeConfig {
+            audio_source: AudioSource::Mic,
+            player_device: Some("BlackHole 2ch".to_string()),
+            ..AppRuntimeConfig::default()
+        };
+        assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn normalize_preserves_audio_source() {
+        let cfg = AppRuntimeConfig {
+            audio_source: AudioSource::System,
+            ..AppRuntimeConfig::default()
+        };
+        assert_eq!(
+            normalize_runtime_config(cfg).audio_source,
+            AudioSource::System
+        );
     }
 }

@@ -45,13 +45,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::app::config::{AppMode, AppRuntimeConfig};
+use crate::app::config::{AppMode, AppRuntimeConfig, AudioSource};
 use crate::app::events::{AppEvent, AppStatus};
 use crate::app::live_events::{
     build_error_event, build_output_event, build_speech_event, build_transcript_event,
 };
 use crate::audio::activity;
-use crate::audio::capture::MicInput;
+use crate::audio::capture::{MicInput, SystemInput};
 use crate::audio::chunk_recorder::write_chunk_wav;
 use crate::audio::endpoint::{self, EndpointConfig, EndpointDecision, EndpointState};
 use crate::audio::gate::{HalfDuplexGate, playback_backlog};
@@ -250,8 +250,21 @@ where
     };
 
     // `None` in the config means "whatever the OS calls default"; a name that
-    // no longer exists falls back to the default inside `MicInput`.
-    let mic = MicInput::start_with_device("live-local", config.input_device.as_deref())?;
+    // no longer exists falls back to the default inside `MicInput`. A system
+    // source ignores `input_device`: the loopback device is resolved by name.
+    let mic: MicInput = match config.audio_source {
+        AudioSource::Mic => {
+            MicInput::start_with_device("live-local", config.input_device.as_deref())?
+        }
+        AudioSource::System => SystemInput::start("live-local")?.into_mic(),
+    };
+    println!(
+        "source:  {}",
+        match config.audio_source {
+            AudioSource::Mic => "microphone",
+            AudioSource::System => "system audio (loopback)",
+        }
+    );
     println!("device:  {}", mic.input().device_label());
     println!("config:  {}", mic.input().supported_label());
     let sample_rate = mic.sample_rate();
