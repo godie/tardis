@@ -276,6 +276,23 @@ has set that convention locally. Do not commit unless the user asks.
 
 - A failing test in the pure-helper surface is a real bug. Do not widen the
   assertion to make it pass; confirm the behaviour is correct first.
+- An `anyhow` `.context(...)` message may only assert what its specific
+  failure path guarantees. When the inner layer can fail for several
+  reasons, the locally-specific context moves one layer down — hanging
+  off the branch or the dedicated error variant that is the only path the
+  message is true for — so a general failure never wears a cause it does
+  not have. Came out of PR #59, where a one-line context around
+  `MicInput::start` misreported unsupported-sample-format and stream-build
+  failures as "no input device.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- A failing test in the pure-helper surface is a real bug. Do not widen the
+  assertion to make it pass; confirm the behaviour is correct first.
+- An `anyhow` `.context(...)` message may only assert what its specific
+  failure path guarantees. When the inner layer can fail for several
+  reasons, the specific context moves one layer down — attached to the
+  branch or the dedicated error variant that is the only path it is true
+  for — so a general failure never wears a cause it does not have. Came
+  out of the PR #59 review, where a context line around `MicInput::start`
+  misreported unsupported-sample-format and stream-build failures as
+  "no input device — check the permission".
 - f32 boundaries (`avg <= threshold`): assert on exact values, not on
   accumulations. The canonical case is in `DEVELOPMENT_RULES.md`.
 - For per-chunk drivers, reuse `audio::chunker`'s
@@ -318,6 +335,11 @@ A finding you decide not to fix belongs in the PR body with the reason.
    ([DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md#validation-matrix)). For code
    or test changes, paste the resulting counts into the PR body next to each
    command. A docs-only PR reports no counts.
+   The matrix binds to the toolchain that runs it: CI may carry a newer
+   clippy/rustc than the workstation, so a green local matrix does not close
+   the gate. Re-check the CI run after pushing (or update the local
+   toolchain from CI's version) before reporting the PR done — a new lint
+   error in CI on the same code is a gate miss, not a review finding.
 2. **Prose pass** with the `no-ai-slop` skill: PR body, commit messages, and
    the doc comments this PR adds. Cut em-dash asides, bold mid-sentence,
    tables that carry three bullets, and claims the diff does not support.
