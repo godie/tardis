@@ -278,21 +278,12 @@ has set that convention locally. Do not commit unless the user asks.
   assertion to make it pass; confirm the behaviour is correct first.
 - An `anyhow` `.context(...)` message may only assert what its specific
   failure path guarantees. When the inner layer can fail for several
-  reasons, the locally-specific context moves one layer down — hanging
-  off the branch or the dedicated error variant that is the only path the
-  message is true for — so a general failure never wears a cause it does
-  not have. Came out of PR #59, where a one-line context around
-  `MicInput::start` misreported unsupported-sample-format and stream-build
-  failures as "no input device.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- A failing test in the pure-helper surface is a real bug. Do not widen the
-  assertion to make it pass; confirm the behaviour is correct first.
-- An `anyhow` `.context(...)` message may only assert what its specific
-  failure path guarantees. When the inner layer can fail for several
   reasons, the specific context moves one layer down — attached to the
   branch or the dedicated error variant that is the only path it is true
-  for — so a general failure never wears a cause it does not have. Came
-  out of the PR #59 review, where a context line around `MicInput::start`
-  misreported unsupported-sample-format and stream-build failures as
-  "no input device — check the permission".
+  for — so a general failure never wears a cause it does not have (a
+  context line around `MicInput::start`, for example, would misreport
+  unsupported-sample-format or stream-build failures as "no input
+  device").
 - f32 boundaries (`avg <= threshold`): assert on exact values, not on
   accumulations. The canonical case is in `DEVELOPMENT_RULES.md`.
 - For per-chunk drivers, reuse `audio::chunker`'s
