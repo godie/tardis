@@ -191,6 +191,15 @@ Each issue is written to be pasted into GitHub as is: title, labels, context, ac
 
 **Validation.** Docs: none; check that links resolve.
 
+
+## Decisions (2026-11-10)
+
+The execution order and scope above were adjusted by the owner:
+
+- **#64 ships after #65** (worker-emit shape): the terminal `stopped` on failure is emitted by the worker closure right after the `Error` event; the runner's success-path emission stays and the CLI contract does not change. Immediate-restart acceptance is a Playwright spec, not a Rust one.
+- **#67 keeps `phase` on status events only**; the existing serialization test grows the assertion, non-status kinds stay byte-identical, and the field is documented in `AGENTS.md` (issue #72's scope).
+- **#71 was closed as "in-use"**: `get_app_status` feeds `syncInitialState()` and the saved device-id spec stubs it, so the deletion premise did not hold; cleanup becomes possible only after the #67/#68 migration.
+
 ## Out of scope and risks
 
 **Out of scope:** adopting XState or another library (the repo requires static JS and no new dependencies without sign-off); touching `HalfDuplexGate`, `EndpointState` or `Decision`, which are already pure, explicit and tested; changing visible texts or styles.
