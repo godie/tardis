@@ -454,18 +454,17 @@ test("a rejected event subscription surfaces an error instead of hanging", async
 // rules the Rust transition tests cover, through the UI's real event
 // listener and invoke guards.
 
-test("the phase rules hold when backend events land before the start response", async ({ page }) => {
+test("a listening event cannot open the lifecycle before the start response", async ({ page }) => {
   await openShell(page);
   await page.evaluate(() => {
     window.__tauriTest.holdStart = true;
   });
 
   await page.locator("#start-button").click();
-  // Stale events from a previous session must not open or close the
+  // A non-terminal event from a previous session must not open the
   // lifecycle for an invoke still settling.
   await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "listening" }));
-  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "stopped" }));
-  // A second click while in flight is a no-op even though events just
+  // A second click while in flight is a no-op even though an event just
   // moved the phase state around.
   await page.locator("#start-button").dispatchEvent("click");
   await page.waitForTimeout(30);
@@ -482,6 +481,71 @@ test("the phase rules hold when backend events land before the start response", 
   // The settled invoke owns the move: the session is live afterwards.
   await expect(page.locator("#start-button")).toBeDisabled();
   await expect(page.locator("#stop-button")).toBeEnabled();
+});
+
+// ---- worker failure (#64) ---------------------------------------------
+// The worker runs inside the start invoke, so a failed start (no
+// microphone permission, no output device, or a mid-session provider error)
+// reaches the UI as `error` followed by `stopped`. The status reports are
+// what unlocks Start; the error alone must not leave the panel locked on a
+// session the backend has already given up on.
+
+test("a worker failure unlocks the panel once error is followed by stopped", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+  await expect(page.locator("#start-button")).toBeDisabled();
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "listening" }));
+
+  const failure = "Live transcription failed: no input device available";
+  await page.evaluate((message) => window.emitAppEvent({ kind: "error", message }), failure);
+  // The error is the operator's explanation, not a lifecycle event: the
+  // panel stays locked until the worker says it is gone.
+  await expect(page.locator("#live-error")).toHaveText(failure);
+  await expect(page.locator("#start-button")).toBeDisabled();
+
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "stopped" }));
+
+  await expect(page.locator("#status-indicator")).toHaveText("Stopped");
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await expect(page.locator("#stop-button")).toBeDisabled();
+  // Every settings field unlocks with Start, endpointing included.
+  for (const selector of ["#chunk-duration-ms", "#hangover-ms", "#min-speech-ms", "#max-utterance-ms", "#mode-select", "#host-names"]) {
+    await expect(page.locator(selector)).toBeEnabled();
+  }
+  // The failure stays readable after the session ends.
+  await expect(page.locator("#live-error")).toHaveText(failure);
+});
+
+test("a stopped event before the start response ends the UI in idle", async ({ page }) => {
+  await openShell(page);
+  await page.evaluate(() => {
+    window.__tauriTest.holdStart = true;
+  });
+  await page.locator("#start-button").click();
+
+  // A start that dies immediately: the worker emits its terminal pair while
+  // the invoke that spawned it is still settling.
+  await page.evaluate(() => {
+    window.emitAppEvent({
+      kind: "error",
+      message: "Live transcription failed: microphone access denied",
+    });
+    window.emitAppEvent({ kind: "status", status: "stopped" });
+  });
+  await page.evaluate(() => {
+    window.__tauriTest.startResolvers.forEach((resolver) =>
+      resolver.resolve("started with provider mock-local"),
+    );
+    window.__tauriTest.holdStart = false;
+  });
+  await page.waitForTimeout(30);
+
+  // The settled invoke must not revive the session it learned was over.
+  await expect(page.locator("#status-indicator")).toHaveText("Stopped");
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await expect(page.locator("#stop-button")).toBeDisabled();
+  await expect(page.locator("#hangover-ms")).toBeEnabled();
+  await expect(page.locator("#live-error")).toContainText("microphone access denied");
 });
 
 test("a delayed listening event cannot pull a Stop attempt back to listening", async ({ page }) => {

@@ -373,10 +373,14 @@ async function startLiveTranscription() {
   try {
     const msg = await invoke("start_live_transcription", { config });
     log("start_live_transcription:", msg, "config:", config);
-    // Only the settled invoke owns the transition out of `starting`:
-    // events that arrived while it was in flight were held off below.
-    sessionPhase = "listening";
-    setSessionControls(isSessionLive(sessionPhase));
+    // Only the settled invoke owns the transition out of `starting`, and
+    // only while the phase is still there: a `stopped` that landed during
+    // the flight already ended the session (failed start, or an immediate
+    // Stop) and must not be revived here.
+    if (sessionPhase === "starting") {
+      sessionPhase = "listening";
+      setSessionControls(isSessionLive(sessionPhase));
+    }
   } catch (error) {
     setStatus("Error");
     setLiveError(`Failed to start: ${error}`);
@@ -469,21 +473,23 @@ function setupEventListener() {
         const status = payload.status;
         if (status) {
           setStatus(status.charAt(0).toUpperCase() + status.slice(1));
-          // Request-aware transitions: while a Start invoke is
-          // unresolved the events cannot open or close the lifecycle
-          // for it (the settle branch owns that move); a Stop that
-          // still owns `stopping` listens only for the `stopped`
-          // event, and a delayed `listening` cannot pull it back.
+          // `stopped` is terminal and outranks a settling Start: the
+          // worker runs inside the invoke, so a failed start or an
+          // immediate Stop ends the session before the command returns
+          // `started`. Honoring it keeps the UI off a session the
+          // backend no longer has.
           const startOwnsResolution = startInFlight;
           const stopOwnsResolution = sessionPhase === "stopping";
-          if (!startOwnsResolution && status === "listening" && !stopOwnsResolution) {
-            sessionPhase = "listening";
-            setSessionControls(isSessionLive(sessionPhase));
-          } else if (!startOwnsResolution && status === "stopped") {
+          if (status === "stopped") {
             // Worker has fully exited; let the user adjust settings
             // before pressing Start again.
             sessionPhase = "idle";
             setSessionControls(false);
+          } else if (!startOwnsResolution && status === "listening" && !stopOwnsResolution) {
+            // The settle branch owns a start still in flight, and a
+            // delayed `listening` cannot pull a Stop attempt back.
+            sessionPhase = "listening";
+            setSessionControls(isSessionLive(sessionPhase));
           }
         }
         break;

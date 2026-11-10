@@ -199,6 +199,42 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
+/// Persist one backend event, then emit it to the frontend.
+///
+/// Order matters: anything the user can already see is already on disk.
+/// Infallible on purpose: [`append_history`] reports its own failures and
+/// must not swallow the event, and an emit failure on the worker thread has
+/// no recovery path.
+fn emit_app_event(app: &tauri::AppHandle, event: &tardis::app::events::AppEvent) {
+    append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    let _ = app.emit(
+        "app-event",
+        tardis::app::ui_events::app_event_to_ui_event(event),
+    );
+}
+
+/// The extra events the worker emits once the runner call has resolved.
+///
+/// `None` is the runner's success path, which emits
+/// `StatusChanged(Stopped)` itself: adding nothing there is what keeps a
+/// session at exactly one terminal event. `Some(message)` is a failure,
+/// either before capture started (microphone or player set-up) or inside
+/// the loop; that path emitted at most a per-chunk `error` and no terminal
+/// status, so the worker owes the user the top-level error and then the
+/// `stopped` that re-enables Start.
+fn worker_exit_events(error: Option<String>) -> Vec<tardis::app::events::AppEvent> {
+    use tardis::app::events::{AppErrorEvent, AppEvent, AppStatus};
+
+    error
+        .map(|message| {
+            vec![
+                AppEvent::Error(AppErrorEvent { message }),
+                AppEvent::StatusChanged(AppStatus::Stopped),
+            ]
+        })
+        .unwrap_or_default()
+}
+
 /// Start a live transcription session in the background.
 ///
 /// Spawns a thread that captures audio from the default microphone,
@@ -280,35 +316,18 @@ fn start_live_transcription(
                 config_clone,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| {
-                    // Persist before emitting: anything the user can already
-                    // see should already be on disk.
-                    append_history(
-                        &event,
-                        std::path::Path::new(tardis::config::HISTORY_PATH),
-                    );
-                    let ui_event =
-                        tardis::app::ui_events::app_event_to_ui_event(&event);
-                    let _ = app_clone.emit("app-event", ui_event);
-                },
+                move |event| emit_app_event(&app_clone, &event),
             );
 
-            if let Err(e) = result {
-                // Surface the runner's top-level error to the UI as a
-                // `kind = "error"` event so the user sees something
-                // even if the per-chunk provider path swallowed its
-                // own errors. Note: per-chunk errors are already                //    surfaced via `build_error_event` inside
-                //    `run_live_local_transcription_with_config_and_events`.
-                let _ = app.emit(
-                    "app-event",
-                    tardis::app::ui_events::app_event_to_ui_event(
-                        &tardis::app::events::AppEvent::Error(
-                            tardis::app::events::AppErrorEvent {
-                                message: format!("Live transcription failed: {e}"),
-                            },
-                        ),
-                    ),
-                );
+            // The runner emits `stopped` itself on its success path, so a
+            // clean exit pins nothing here and a session sees exactly one
+            // terminal event. A failed one has emitted no terminal status at
+            // all, and the UI unlocks Start only on `stopped`.
+            let error = result
+                .err()
+                .map(|e| format!("Live transcription failed: {e}"));
+            for event in worker_exit_events(error) {
+                emit_app_event(&app, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -1400,6 +1419,50 @@ mod tests {
         assert!(
             state.take_stop_signal().is_none(),
             "guard's Drop must have reset stop_signal"
+        );
+    }
+
+    // ---- worker terminal events ---------------------------------------
+
+    fn ui_payloads(
+        events: &[tardis::app::events::AppEvent],
+    ) -> Vec<(String, Option<String>, Option<String>)> {
+        events
+            .iter()
+            .map(|event| {
+                let ui = tardis::app::ui_events::app_event_to_ui_event(event);
+                (ui.kind, ui.status, ui.message)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_clean_exit_pins_nothing_because_the_runner_already_emits_stopped() {
+        // The happy path's single `stopped` comes from the runner; a second
+        // one here would duplicate the terminal event the UI unlocks on.
+        assert!(worker_exit_events(None).is_empty());
+    }
+
+    #[test]
+    fn a_failure_pins_error_then_stopped_so_start_unlocks() {
+        // Both failure sites funnel through here: a microphone or player
+        // that refuses to start, and a stage error mid-session.
+        let events = worker_exit_events(Some(
+            "Live transcription failed: no input device available".to_string(),
+        ));
+
+        // Exactly two events, in this order, in the payload shape the UI
+        // already switches on: no new kind, no relabelled status.
+        assert_eq!(
+            ui_payloads(&events),
+            vec![
+                (
+                    "error".to_string(),
+                    None,
+                    Some("Live transcription failed: no input device available".to_string()),
+                ),
+                ("status".to_string(), Some("stopped".to_string()), None),
+            ]
         );
     }
 }
