@@ -17,7 +17,8 @@
 //! ```
 //!
 //! `worker-exited` returns any phase to [`SessionPhase::Idle`], as do the
-//! `stopped` and `error` statuses; a status input otherwise keeps the
+//! `stopped` and `error` statuses. A late `listening` status leaves
+//! [`SessionPhase::Stopping`] alone; every other status input keeps the
 //! [`SessionPhase::apply_status`] rules the UI mirrors. Every other pair
 //! is an [`IllegalTransition`].
 //!
@@ -96,10 +97,15 @@ impl SessionPhase {
     ///
     /// `Stopped` lands as [`SessionPhase::Idle`] (the backend event is
     /// the only thing that unlocks the panel) and `Error` also returns
-    /// to Idle. An `Idle` report leaves a non-Idle phase alone, so a
-    /// stale event cannot swallow the starting click.
+    /// to Idle, from any phase: a failed worker emits the terminal pair
+    /// before it ever reports listening, so a settled start must not
+    /// revive a session that already ended. An `Idle` report leaves a
+    /// non-Idle phase alone, and a late `Listening` cannot pull a
+    /// `Stopping` session back to listening, so stale events cannot
+    /// swallow the starting click or reopen a stop that is draining.
     pub fn apply_status(self, status: AppStatus) -> Self {
         match (self, status) {
+            (Self::Stopping, AppStatus::Listening) => Self::Stopping,
             (_, AppStatus::Listening) => Self::Listening,
             (_, AppStatus::Stopped) => Self::Idle,
             (_, AppStatus::Error) => Self::Idle,
@@ -297,7 +303,7 @@ mod tests {
             (
                 SessionPhase::Stopping,
                 Status(StatusListening),
-                Some(SessionPhase::Listening),
+                Some(SessionPhase::Stopping),
             ),
             (
                 SessionPhase::Stopping,
@@ -339,5 +345,15 @@ mod tests {
                 Ok(SessionPhase::Idle)
             );
         }
+    }
+
+    /// A stop owns the phase until the backend reports the worker gone; a
+    /// late `listening` must not reopen it, matching the UI's guard.
+    #[test]
+    fn a_late_listening_does_not_reopen_a_stopping_session() {
+        assert_eq!(
+            SessionPhase::Stopping.apply(SessionInput::Status(AppStatus::Listening)),
+            Ok(SessionPhase::Stopping)
+        );
     }
 }
