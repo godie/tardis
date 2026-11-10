@@ -526,17 +526,21 @@ pub const SYSTEM_AUDIO_UNSUPPORTED: &str =
 /// Names that identify a system-audio loopback input.
 ///
 /// macOS routes output into a virtual input driver (`BlackHole`,
-/// `Soundflower`, `Loopback Audio`). Linux exposes a monitor source whose
-/// display name starts with `Monitor of`, with `.monitor` in the raw
-/// PulseAudio/PipeWire node name. Matching is case-insensitive and
-/// substring-based because drivers append channel counts and device
-/// suffixes (`BlackHole 2ch`, `BlackHole 64ch`).
+/// `Soundflower`, `Loopback Audio`). Windows exposes the loopback as
+/// `CABLE Output (VB-Audio Virtual Cable Device)` when VB-Cable is
+/// installed. Linux exposes a monitor source whose display name starts
+/// with `Monitor of`, with `.monitor` in the raw PulseAudio/PipeWire
+/// node name. Matching is case-insensitive and substring-based because
+/// drivers append channel counts and device suffixes (`BlackHole 2ch`,
+/// `BlackHole 64ch`).
 const SYSTEM_AUDIO_DEVICE_HINTS: &[&str] = &[
     "blackhole",
     "soundflower",
     "loopback audio",
     "monitor of",
     ".monitor",
+    "vb-audio",
+    "cable output",
 ];
 
 /// Does `name` identify a system-audio loopback input?
@@ -596,6 +600,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_cable_devices_match_the_hint_list() {
+        // VB-Cable on Windows surfaces its loopback input as
+        // `CABLE Output (VB-Audio Virtual Cable Device)`; without the
+        // vb-audio/cable-output hints the session reports "not supported"
+        // while the driver is installed.
+        for name in [
+            "CABLE output",
+            "Cable Output (VB-Audio Virtual Cable Device)",
+            "vb-audio virtual cable",
+        ] {
+            assert!(is_system_audio_device_name(name), "{name} must match");
+        }
+        // Non-cable names that merely contain the word 'cable' must not
+        // match: e.g. 'HDMI cable' is a playback-side name.
+        assert!(!is_system_audio_device_name("MacBook Pro Speakers"));
+        assert!(!is_system_audio_device_name("USB HDMI cable adapter"));
+    }
+
     use super::*;
 
     #[test]
