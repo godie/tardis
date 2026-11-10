@@ -887,9 +887,14 @@ for anything that even looks like a commitment.
 
 ### PR 7 — System-audio capture and virtual output device
 
-**Approved in principle** (new capture source; AGENTS.md's "extend, don't
-start parallel paths" is satisfied by extending `audio/capture.rs`). Ask
-again only if a second capture path becomes necessary.
+**Implemented** (PR #61): `SystemInput` extends `audio/capture.rs`
+(no second capture path), `AudioSource` is a validated
+`AppRuntimeConfig` field, `devices --source system` is the preflight,
+Windows' VB-Cable loopback matcher follows in the datasource hint
+table, and `docs/system-audio.md` carries the per-OS setup plus the
+research ticket #14 asked for. Windows and Linux ship as documentation
+(fail with `SYSTEM_AUDIO_UNSUPPORTED` on this release), per the
+ticket's out-of-scope line.
 
 **Files.** `src/audio/capture.rs` (a `SystemInput` next to `MicInput`
 behind `cfg(target_os)`), `src/config.rs`, `src/app/config.rs`
