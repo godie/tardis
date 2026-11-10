@@ -15,9 +15,16 @@ The lifecycle every surface agrees on lives in
 starting → listening → stopping → (stopped) → idle`, plus `error →
 idle`. The backend stays the source of truth — `AppStatus` events carry
 only `listening` / `stopped` / `idle` / `error`, with the same labels
-they always had — and the UI derives its locked-panel state from one
-`sessionPhase` variable (the table in `ui/app.js` mirrors the Rust one).
-Nothing else in the app is allowed to hold a second copy of this machine.
+they always had — and the UI keeps one `sessionPhase` variable whose
+**guards** enforce the same rules the Rust table tests: a Start invoke
+holds an in-flight guard until it settles (order-aware, so backend
+events landing before the response cannot open or close the lifecycle
+for it), a Stop owns `stopping` until the `stopped` event or its own
+rejection lands, and a delayed `listening` cannot pull a Stop back to
+listening. The ordering is covered by conformance specs in
+`ui/tests/session.spec.js` that run these rules through the real
+listener and invoke paths, not through a mirrored table. Nothing else
+in the app is allowed to hold a second copy of this machine.
 
 Every other implicit state machine in the repo is already pure and
 table-tested where it matters, so new work should read them instead of
