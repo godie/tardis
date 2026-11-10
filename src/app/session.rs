@@ -160,15 +160,15 @@ pub fn transcript_entry_from_event(event: &AppTranscriptEvent) -> TranscriptSess
 ///    place. The translation fields set by the prior event are
 ///    retained — out-of-order events do not produce duplicate
 ///    entries.
-/// 3. **Matching entry already has a transcript_text** (the
-///    common case where a duplicate transcript event arrives
-///    after the canonical transcript + translation pair have
-///    been recorded): **no-op**. Producing a second entry would
-///    create a duplicate `chunk_index` row in the export, and
-///    overwriting the existing transcript_text would silently
-///    drop the canonical translation's source. Practically no
-///    pipeline emits twice, but the trade-off is locked here so
-///    a future audio resend cannot corrupt a recorded entry.
+/// 3. **Matching entry already has a `transcript_text`**:
+///    **the newest final rendering wins.** A final event
+///    (`is_final == true`) replaces the stored text and moves
+///    finality forward; a partial event only upgrades an entry
+///    that is not final yet. Either way no second entry is
+///    produced: a duplicate `chunk_index` row in the export is
+///    never created. (This also means an output event declaring
+///    the chunk final does not freeze the transcript text — the
+///    corrected final rendering that follows still lands.)
 ///
 /// Pure — `&mut Vec<...>` only.
 pub fn merge_transcript_into_entries(
@@ -185,10 +185,24 @@ pub fn merge_transcript_into_entries(
             existing.provider = Some(transcript.provider.clone());
             existing.is_final = transcript.is_final;
         }
-        // Case 3: full entry already exists — leave it untouched.
-        Some(_) => {
-            // Intentionally ignore the duplicate transcript
-            // event. See the case-discussion note above.
+        // Case 3: an entry for this chunk already exists.
+        //
+        // The rule that keeps `is_final` honest: the **newest final
+        // rendering of a chunk wins** (`transcript.is_final == true` is
+        // canonical — the recognizer promised not to refine further),
+        // and a partial can only ever upgrade an entry whose stored
+        // text is still partial. In particular, an output event that
+        // declared the chunk final does not freeze the transcript text:
+        // the corrected final rendering still replaces the clipped
+        // partial.
+        Some(existing) => {
+            if transcript.is_final || !existing.is_final {
+                existing.transcript_text = Some(transcript.text.clone());
+                existing.provider = Some(transcript.provider.clone());
+                existing.is_final = existing.is_final || transcript.is_final;
+            }
+            // Incoming partial on a final entry: ignored (finality
+            // cannot walk backwards).
         }
         // Case 1: no matching entry — append a fresh one.
         None => {
@@ -239,7 +253,10 @@ pub fn merge_output_into_entries(
         existing.translated_text = Some(output.text.clone());
         existing.source_language = Some(output.source_language.clone());
         existing.target_language = Some(output.target_language.clone());
-        existing.is_final = output.is_final;
+        // Monotonic finality: an output event can complete an entry
+        // but never backtrack it — the transcript's own final
+        // rendering is still due.
+        existing.is_final = existing.is_final || output.is_final;
     } else {
         entries.push(output_entry_from_event(output));
     }
@@ -683,12 +700,12 @@ mod tests {
     }
 
     #[test]
-    fn apply_app_event_to_session_repeat_transcript_does_not_overwrite_translation() {
-        // Lock-in: a duplicate transcript event for a chunk
-        // that already has both transcript and translation must
-        // be ignored — pushing a fresh entry would create a
-        // duplicate `chunk_index` row, overwriting would silently
-        // drop the canonical translation source. See
+    fn apply_app_event_to_session_repeat_transcript_keeps_the_translation_compact() {
+        // Lock-in: a second transcript event for a chunk that already
+        // carries transcript + translation must stay ONE entry with the
+        // translation intact — the newest final text wins per the
+        // case-3 rule, the translation survives untouched (its
+        // canonical pairing is not rewritten). See
         // [`merge_transcript_into_entries`]'s case-3 branch.
         let mut s = create_session(
             "s".to_string(),
@@ -721,14 +738,119 @@ mod tests {
         let entry = &s.entries[0];
         assert_eq!(
             entry.transcript_text.as_deref(),
-            Some("first-transcript"),
-            "first transcript text must survive a duplicate transcript event"
+            Some("duplicate-transcript"),
+            "the newest final rendering owns the chunk's transcript text"
         );
         assert_eq!(
             entry.translated_text.as_deref(),
             Some("[mock es] first"),
             "translation must survive a duplicate transcript event"
         );
+    }
+
+    // ---- partial → final upgrade (finding 5 of the
+    // tag-along review) -----------------------------------------------
+
+    fn transcript_event_with_finality(
+        chunk: usize,
+        text: &str,
+        is_final: bool,
+    ) -> AppTranscriptEvent {
+        AppTranscriptEvent {
+            chunk_index: chunk,
+            text: text.to_string(),
+            provider: "mock-local".to_string(),
+            is_final,
+            duration_ms: 1_200,
+        }
+    }
+
+    #[test]
+    fn a_final_transcript_upgrades_a_stored_partial() {
+        // Recognizer sent a clipped partial first (`is_final = false`),
+        // then the corrected final rendering for the same chunk. The
+        // export must carry the corrected text, not leave the partial
+        // frozen.
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "hola mund", false)),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Output(sample_output_event(1, "hola mund", "hello world")),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "hola mundo", true)),
+        );
+        assert_eq!(s.entries.len(), 1, "still one entry per chunk");
+        let entry = &s.entries[0];
+        assert_eq!(
+            entry.transcript_text.as_deref(),
+            Some("hola mundo"),
+            "the final text must replace the partial"
+        );
+        assert!(entry.is_final, "finality must move forward");
+        assert_eq!(
+            entry.translated_text.as_deref(),
+            Some("hello world"),
+            "the translation that was folded in must survive the upgrade"
+        );
+    }
+
+    #[test]
+    fn a_late_partial_cannot_downgrade_a_final_entry() {
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "final text", true)),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "stale partial", false)),
+        );
+        let entry = &s.entries[0];
+        assert_eq!(
+            entry.transcript_text.as_deref(),
+            Some("final text"),
+            "a terminal entry cannot be rewritten by a late partial"
+        );
+        assert!(entry.is_final);
+    }
+
+    #[test]
+    fn partial_followed_by_partial_upgrades_the_text() {
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "hola", false)),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(transcript_event_with_finality(1, "hola mundo", false)),
+        );
+        let entry = &s.entries[0];
+        assert_eq!(entry.transcript_text.as_deref(), Some("hola mundo"));
+        assert!(!entry.is_final, "both partials: still not final");
     }
 
     #[test]
