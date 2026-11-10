@@ -110,7 +110,7 @@ mirror one of these rows.
 | `transcription::live_local::run_live_local_transcription_with_config_and_events` (canonical live runner) | n/a (CPAL + provider driver) | `cargo run -- live-local-transcribe [--provider <name>]` |
 | CLI `devices [--output] [--source mic\|system]` (host + I/O device listing; `--output` for the player preflight; `--source system` for the loopback preflight) | n/a (pure print) | `cargo run -- devices`, `cargo run -- devices --output`, `cargo run -- devices --source system` |
 | CLI `say-text "<text>"` (one TTS request + one playback, no mic) | n/a (HTTP + CPAL glue) | `cargo run -- say-text "hola desde tardis"` |
-| `src-tauri::start_live_transcription` (`Option<AppRuntimeConfig>` arg + session lifecycle) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
+| `src-tauri::start_live_transcription` (`Option<AppRuntimeConfig>` arg + session lifecycle + `worker_exit_events`, the `error`+`stopped` pair a failed run pins so Start unlocks) | `worker_exit_events` tests in `src-tauri/src/lib.rs`; the Tauri runtime and threads have none | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `src-tauri::get_default_runtime_config` / `get_supported_transcription_providers` (UI populators) | n/a (pure, exercised via the running shell) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `app::events` (AppEvent / AppStatus / payload structs incl. `AppSpeechEvent` / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow`, `mock-voice-flow` |
