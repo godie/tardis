@@ -38,7 +38,7 @@ const INPUT_DEVICES = [
 // listener the frontend registered for `app-event`.
 function installFakeBridge(page, config) {
   return page.addInitScript((initialConfig) => {
-    const state = { calls: [], listeners: [] };
+    const state = { calls: [], listeners: [], holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [] };
     window.__tauriTest = state;
 
     async function invoke(command, args) {
@@ -59,8 +59,19 @@ function installFakeBridge(page, config) {
         case "get_supported_processor_providers":
           return ["mock", "llm"];
         case "start_live_transcription":
+          // Ordering tests hold the invoke open and deliver events first.
+          if (state.holdStart) {
+            return new Promise((resolve, reject) => {
+              state.startResolvers.push({ resolve, reject });
+            });
+          }
           return "Listening";
         case "stop_live_transcription":
+          if (state.holdStop) {
+            return new Promise((resolve, reject) => {
+              state.stopResolvers.push({ resolve, reject });
+            });
+          }
           return "Stopped";
         default:
           return null;
@@ -414,4 +425,72 @@ test("a rejected event subscription surfaces an error instead of hanging", async
   await expect(page.locator("#live-error")).toBeVisible();
   await expect(page.locator("#live-error")).toContainText("Could not subscribe to backend events");
   await expect(page.locator("#status-indicator")).toHaveText("Error");
+});
+
+// ---- ordering conformance with src/app/session_phase.rs ---------------
+// The Rust table is normative; these specs exercise the same governance
+// rules the Rust transition tests cover, through the UI's real event
+// listener and invoke guards.
+
+test("the phase rules hold when backend events land before the start response", async ({ page }) => {
+  await openShell(page);
+  await page.evaluate(() => {
+    window.__tauriTest.holdStart = true;
+  });
+
+  await page.locator("#start-button").click();
+  // Stale events from a previous session must not open or close the
+  // lifecycle for an invoke still settling.
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "listening" }));
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "stopped" }));
+  // A second click while in flight is a no-op even though events just
+  // moved the phase state around.
+  await page.locator("#start-button").dispatchEvent("click");
+  await page.waitForTimeout(30);
+  await page.evaluate(() => {
+    window.__tauriTest.startResolvers.forEach((resolver) => resolver.resolve("Listening"));
+    window.__tauriTest.holdStart = false;
+  });
+  await page.waitForTimeout(30);
+
+  const starts = await page.evaluate(
+    () => window.__tauriTest.calls.filter((call) => call.command === "start_live_transcription").length,
+  );
+  expect(starts).toBe(1);
+  // The settled invoke owns the move: the session is live afterwards.
+  await expect(page.locator("#start-button")).toBeDisabled();
+  await expect(page.locator("#stop-button")).toBeEnabled();
+});
+
+test("a delayed listening event cannot pull a Stop attempt back to listening", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+  await expect(page.locator("#stop-button")).toBeEnabled();
+
+  // Hold the stop invoke in flight, then deliver a stale listening
+  // event: the Stop that owns the phase must keep it.
+  await page.evaluate(() => {
+    window.__tauriTest.holdStop = true;
+  });
+  await page.locator("#stop-button").click();
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "listening" }));
+  await expect(page.locator("#stop-button")).toBeEnabled();
+  await expect(page.locator("#start-button")).toBeDisabled();
+
+  // The backend eventually reports stopped, because the worker really
+  // exited: the event wins over the still-pending invoke, and the
+  // stop's rejection afterwards cannot restore anything.
+  await page.evaluate(() => window.emitAppEvent({ kind: "status", status: "stopped" }));
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await page.evaluate(() => {
+    window.__tauriTest.stopResolvers.forEach((resolver) => resolver.reject("No live transcription session is running"));
+    window.__tauriTest.holdStop = false;
+  });
+  await page.waitForTimeout(30);
+  await expect(page.locator("#start-button")).toBeEnabled();
+
+  const stops = await page.evaluate(
+    () => window.__tauriTest.calls.filter((call) => call.command === "stop_live_transcription").length,
+  );
+  expect(stops).toBe(1);
 });

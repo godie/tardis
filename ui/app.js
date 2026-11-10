@@ -205,13 +205,11 @@ function clearSpokenAudio() {
 // ===== Live transcription via Tauri events ================================
 
 // Canonical session phase, one variable instead of three booleans.
-// The transition table mirrors `src/app/session_phase.rs` (pure, Rust),
-// so the shell's answer to "can this click do anything" is a lookup:
-// only listening-phase traffic reaches Stop, and a Start click while
-// anything is already in flight is a no-op, not a double spawn.
-const SESSION_PHASES = ["idle", "starting", "listening", "stopping"];
-
-
+// The rules below enforce the transitions `src/app/session_phase.rs`
+// documents (normative; see also the conformance spec in
+// `ui/tests/session.spec.js`): only a `listening` phase reaches Stop,
+// and out-of-order backend events never own a phase a click or an
+// invoke already holds.
 function isSessionLive(phase) {
   return phase === "listening" || phase === "stopping";
 }
@@ -319,11 +317,16 @@ function setSessionControls(running) {
   }
 }
 
+let startInFlight = false;
+
 async function startLiveTranscription() {
-  // A second click while the first invoke is still in flight would spawn
-  // two backend runners; the phase only leaves `starting` when the
-  // command resolves or fails.
-  if (sessionPhase !== "idle") return;
+  // A second click while the first invoke is still in flight would
+  // spawn two backend runners. The guard is request-aware, not
+  // phase-only: a backend event landing before the invoke resolves
+  // (a stale `stopped`, for example) must not re-open Start while the
+  // first request is unresolved.
+  if (sessionPhase !== "idle" || startInFlight) return;
+  startInFlight = true;
 
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
@@ -363,13 +366,19 @@ async function startLiveTranscription() {
   try {
     const msg = await invoke("start_live_transcription", { config });
     log("start_live_transcription:", msg, "config:", config);
+    // Only the settled invoke owns the transition out of `starting`:
+    // events that arrived while it was in flight were held off below.
     sessionPhase = "listening";
     setSessionControls(isSessionLive(sessionPhase));
   } catch (error) {
     setStatus("Error");
     setLiveError(`Failed to start: ${error}`);
-    sessionPhase = "idle";
-    setSessionControls(false);
+    if (startInFlight) {
+      sessionPhase = "idle";
+      setSessionControls(false);
+    }
+  } finally {
+    startInFlight = false;
   }
 }
 
@@ -424,9 +433,14 @@ async function stopLiveTranscription() {
     log("stop_live_transcription:", msg);
     stopButton.disabled = true;
   } catch (error) {
-    // Still listening: leave the controls as they are so Stop stays
-    // clickable and the user can retry.
-    sessionPhase = "listening";
+    // Still listening — but only if this Stop attempt still owns the
+    // phase: a `stopped` event that landed while the invoke was in
+    // flight already moved the session to `idle`, and restoring
+    // `listening` here would strand the UI on a session the backend
+    // no longer has.
+    if (sessionPhase === "stopping") {
+      sessionPhase = "listening";
+    }
     log("stop error:", error);
     setLiveError(`Failed to stop: ${error}`);
   }
@@ -448,10 +462,17 @@ function setupEventListener() {
         const status = payload.status;
         if (status) {
           setStatus(status.charAt(0).toUpperCase() + status.slice(1));
-          if (status === "listening") {
+          // Request-aware transitions: while a Start invoke is
+          // unresolved the events cannot open or close the lifecycle
+          // for it (the settle branch owns that move); a Stop that
+          // still owns `stopping` listens only for the `stopped`
+          // event, and a delayed `listening` cannot pull it back.
+          const startOwnsResolution = startInFlight;
+          const stopOwnsResolution = sessionPhase === "stopping";
+          if (!startOwnsResolution && status === "listening" && !stopOwnsResolution) {
             sessionPhase = "listening";
             setSessionControls(isSessionLive(sessionPhase));
-          } else if (status === "stopped") {
+          } else if (!startOwnsResolution && status === "stopped") {
             // Worker has fully exited; let the user adjust settings
             // before pressing Start again.
             sessionPhase = "idle";
