@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager};
+use tardis::app::session_phase::{IllegalTransition, SessionInput, SessionPhase};
 
 const SESSION_ALREADY_RUNNING_ERR: &str =
     "A live transcription session is already running. Stop it first.";
@@ -55,17 +56,17 @@ impl MockAppState {
 /// Shared state for the active live transcription session.
 ///
 /// Managed by Tauri as an [`Arc`] so the background worker thread
-/// can hold its own clone and reset both fields on exit (success,
-/// error, or panic) without needing to round-trip through the
-/// command handler.
+/// can hold its own clone and apply [`SessionInput::WorkerExited`] on
+/// exit (success, error, or panic) without needing to round-trip
+/// through the command handler.
 ///
-/// **Lock-order contract:** callers must never hold both
-/// `stop_signal` and `is_running` simultaneously. If both must be
-/// mutated from the same scope, lock `is_running` first, release,
-/// then lock `stop_signal`. The accompanying
-/// [`SessionCleanupGuard`]`::drop` impl follows the same order
-/// so the worker-thread cleanup path cannot deadlock with a
-/// concurrent `stop_live_transcription` call.
+/// **Lock order:** the two fields are never held at the same time.
+/// A transition holds `phase` only for the duration of
+/// [`SessionPhase::apply`], the stop-signal helpers hold
+/// `stop_signal` only to store, take or clear it, and
+/// [`LiveSessionState::reset_session`] releases `phase` before it
+/// locks `stop_signal`. A concurrent `stop_live_transcription` call
+/// therefore cannot deadlock with the worker-thread cleanup.
 ///
 /// Field-level rationale:
 /// - `stop_signal: Mutex<Option<Arc<AtomicBool>>>` — the worker
@@ -74,97 +75,95 @@ impl MockAppState {
 ///   `stop_live_transcription` while the worker reads it.
 ///   `Option` + clearing it on cleanup avoids stale-flag
 ///   confusion between sequential sessions.
-/// - `is_running: Mutex<bool>` — coarse-grained “is a session
-///   active”. Kept as a separate field (rather than derived from
-///   `stop_signal.is_some()`) so a future `Status` UI indicator
-///   can read it independently of the stop-signal lifecycle, and
-///   so the contract is explicit at the call site.
-#[derive(Debug, Default)]
+/// - `phase: Mutex<SessionPhase>` — the session lifecycle that a
+///   separate `is_running` bool used to encode.
+///   [`SessionInput::StartAccepted`] takes the session slot and
+///   [`SessionInput::WorkerExited`] releases it; every other pair is
+///   an illegal transition. One named value keeps the re-entry guard
+///   and the phase read by the UI on the same source.
+#[derive(Debug)]
 pub struct LiveSessionState {
-    pub stop_signal: Mutex<Option<Arc<AtomicBool>>>,
-    pub is_running: Mutex<bool>,
+    stop_signal: Mutex<Option<Arc<AtomicBool>>>,
+    phase: Mutex<SessionPhase>,
+}
+
+impl Default for LiveSessionState {
+    fn default() -> Self {
+        Self {
+            stop_signal: Mutex::new(None),
+            phase: Mutex::new(SessionPhase::starting_phase()),
+        }
+    }
 }
 
 impl LiveSessionState {
-    /// Returns `true` if a session is currently running.
-    /// Pure with respect to internal locking; tolerates a poisoned
-    /// mutex by recovering the inner value (which is itself a
-    /// bool, so no inconsistent partial state is reachable).
-    pub fn is_session_running(&self) -> bool {
-        match self.is_running.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
+    /// Lock the phase field, recovering a poisoned mutex.
+    ///
+    /// Recovery keeps the behaviour the bool had: the field only ever
+    /// holds a [`SessionPhase`], so a panic mid-transition cannot leave
+    /// a half-updated value behind.
+    fn lock_phase(&self) -> MutexGuard<'_, SessionPhase> {
+        self.phase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Try to mark a session as running. Returns `Err` with the
-    /// previous state if one is already in progress.
-    pub fn try_mark_running(&self) -> Result<(), bool> {
-        match self.is_running.lock() {
-            Ok(mut guard) => {
-                if *guard {
-                    Err(true)
-                } else {
-                    *guard = true;
-                    Ok(())
-                }
-            }
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                if *guard {
-                    Err(true)
-                } else {
-                    *guard = true;
-                    Ok(())
-                }
-            }
-        }
+    /// The phase the session is currently in.
+    pub fn phase(&self) -> SessionPhase {
+        *self.lock_phase()
+    }
+
+    /// Returns `true` while a session owns the microphone slot.
+    ///
+    /// [`SessionPhase::Starting`] counts: the worker exists from the
+    /// accepted start, before the runner reports listening.
+    pub fn is_session_running(&self) -> bool {
+        self.phase() != SessionPhase::Idle
+    }
+
+    /// Apply one lifecycle input to the stored phase.
+    ///
+    /// An illegal transition leaves the phase untouched and reports it,
+    /// so a second Start while one owns the slot is a no-op plus
+    /// [`SESSION_ALREADY_RUNNING_ERR`] at the call site. Tolerates a
+    /// poisoned mutex by recovering the inner value.
+    pub fn apply(&self, input: SessionInput) -> Result<(), IllegalTransition> {
+        let mut phase = self.lock_phase();
+        *phase = phase.apply(input)?;
+        Ok(())
     }
 
     /// Store the worker's `Arc<AtomicBool>` so the
     /// `stop_live_transcription` command can reach it.
     pub fn store_stop_signal(&self, signal: Arc<AtomicBool>) {
-        match self.stop_signal.lock() {
-            Ok(mut guard) => {
-                *guard = Some(signal);
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = Some(signal);
-            }
-        }
+        *self
+            .stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(signal);
     }
 
     /// Take the `Arc<AtomicBool>` (if any), leaving `None` in its
     /// place. Returned so the caller can flip it.
     pub fn take_stop_signal(&self) -> Option<Arc<AtomicBool>> {
-        match self.stop_signal.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
-        }
+        self.stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
-    /// Reset both fields. Invoked by [`SessionCleanupGuard`] when
-    /// the worker thread exits for any reason (return, error, or
-    /// panic). Tolerates poison by recovering the inner value.
+    /// Return the session to [`SessionPhase::Idle`] and drop the stop
+    /// signal. Invoked by [`SessionCleanupGuard`] when the worker thread
+    /// exits for any reason (return, error, or panic).
+    ///
+    /// `WorkerExited` is legal from every phase, so the transition cannot
+    /// fail; it happens before the signal is cleared, and the phase lock is
+    /// already released by then (see the lock order above).
     pub fn reset_session(&self) {
-        // Lock order: is_running first, then stop_signal. Matches
-        // the worker-side `Drop` path; never hold both at once.
-        match self.is_running.lock() {
-            Ok(mut guard) => {
-                *guard = false;
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = false;
-            }
-        }
-        match self.stop_signal.lock() {
-            Ok(mut guard) => {
-                *guard = None;
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = None;
-            }
-        }
+        let _ = self.apply(SessionInput::WorkerExited);
+        *self
+            .stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
@@ -177,20 +176,20 @@ fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuar
 
 // ===== New live transcription commands ====================================
 
-/// RAII guard that resets a [`LiveSessionState`] to “idle” when
+/// RAII guard that returns a [`LiveSessionState`] to “idle” when
 /// the worker thread exits, **including via panic**.
 ///
 /// The guard holds an [`Arc<LiveSessionState>`] (cloned from the
 /// Tauri managed state) and runs [`LiveSessionState::reset_session`]
-/// in its [`Drop`] impl. Because [`Drop`] always runs on scope exit
-/// (normal return, `Err`, or unwind), the session state cannot be
-/// left in a stuck “running” state even if the worker panics
-/// inside the capture loop or the provider closure.
+/// in its [`Drop`] impl: it applies [`SessionInput::WorkerExited`]
+/// and clears the stop signal. Because [`Drop`] always runs on scope
+/// exit (normal return, `Err`, or unwind), the session state cannot be
+/// left in a stuck “running” state even if the worker panics inside
+/// the capture loop or the provider closure.
 ///
-/// Lock order matches [`LiveSessionState::reset_session`]:
-/// `is_running` first, then `stop_signal`. As long as no other
-/// call site locks both fields simultaneously (the documented
-/// contract), the two paths cannot deadlock.
+/// `reset_session` never holds the phase and the stop signal at the
+/// same time, so this path cannot deadlock with a concurrent
+/// `stop_live_transcription` call.
 struct SessionCleanupGuard(Arc<LiveSessionState>);
 
 impl Drop for SessionCleanupGuard {
@@ -248,15 +247,14 @@ fn worker_exit_events(error: Option<String>) -> Vec<tardis::app::events::AppEven
 /// **Re-entry safety:** if a session is already running this command
 /// returns [`SESSION_ALREADY_RUNNING_ERR`]. The state is registered
 /// with Tauri as `Arc<LiveSessionState>` so the worker thread holds
-/// its own clone and resets `is_running`/`stop_signal` on exit
+/// its own clone and applies [`SessionInput::WorkerExited`] on exit
 /// (success, error, or panic) via [`SessionCleanupGuard`]. Once the
 /// guard fires, the user can call `start_live_transcription` again
 /// without first calling `stop_live_transcription`.
 ///
 /// **Validation order:** the provider name is validated **before**
-/// any state mutation, so an unknown provider does **not** flip
-/// `is_running` to `true` and strand the app in an unrecoverable
-/// state.
+/// any state mutation, so an unknown provider does **not** take the
+/// session slot and strand the app in an unrecoverable state.
 #[tauri::command]
 fn start_live_transcription(
     app: tauri::AppHandle,
@@ -267,7 +265,7 @@ fn start_live_transcription(
 
     // 1. Build + normalize + validate the config BEFORE touching
     //    any state. If validation fails, return early and leave
-    //    `is_running` untouched. The UI sends a config it built
+    //    the phase untouched. The UI sends a config it built
     //    from the settings panel; on `None` we fall back to
     //    `AppRuntimeConfig::default()` so old frontends (or CLI
     //    smoke tests calling the same command) keep working.
@@ -275,8 +273,10 @@ fn start_live_transcription(
         tardis::app::config::normalize_runtime_config(config.unwrap_or_default());
     tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
 
-    // 2. Try to mark the session as running.
-    if session.try_mark_running().is_err() {
+    // 2. Take the session slot. The transition is legal only from
+    //    `Idle`, which is what makes a double Start return the
+    //    documented error without a second boolean to keep in sync.
+    if session.apply(SessionInput::StartAccepted).is_err() {
         return Err(SESSION_ALREADY_RUNNING_ERR.to_string());
     }
 
@@ -294,12 +294,12 @@ fn start_live_transcription(
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
-    // which lets us roll back the `is_running` flag and
-    // `stop_signal` if the OS refuses to create the thread
-    // (resource limits, etc.). Plain `std::thread::spawn` would
-    // instead panic in the parent thread on the same condition,
-    // leaving `is_running = true` set forever and stranding every
-    // subsequent Start behind a stuck guard.
+    // which lets us free the session slot and `stop_signal` if the
+    // OS refuses to create the thread (resource limits, etc.). Plain
+    // `std::thread::spawn` would instead panic in the parent thread
+    // on the same condition, leaving the phase stuck in `Starting`
+    // forever and stranding every subsequent Start behind a guard
+    // that never runs.
     //
     // `.name(...)` lets crash dumps and `ps -L` listings show a
     // recognisable thread identity; cheap insurance.
@@ -332,8 +332,9 @@ fn start_live_transcription(
         })
         // Spawn-failure rollback: if thread creation fails the
         // cleanup-guard never gets to fire (the closure never
-        // started), so we must reset `is_running` / `stop_signal`
-        // ourselves before returning the error to the frontend.
+        // started), so we must free the session slot and clear
+        // `stop_signal` ourselves before returning the error to the
+        // frontend.
         .map_err(|e| {
             session.reset_session();
             format!("Failed to spawn live transcription worker thread: {e}")
@@ -351,15 +352,15 @@ fn start_live_transcription(
 /// Takes the `Arc<AtomicBool>` from [`LiveSessionState`], flips it
 /// to `true`, and returns `"stopping"`. The worker polls the flag
 /// each tick; on noticing it, the runner returns and the
-/// [`SessionCleanupGuard`] then clears `is_running` and
-/// `stop_signal` so a subsequent `start_live_transcription` can
-/// succeed.
+/// [`SessionCleanupGuard`] then applies [`SessionInput::WorkerExited`]
+/// (phase back to `Idle`) and clears `stop_signal` so a subsequent
+/// `start_live_transcription` can succeed.
 ///
-/// **Intentionally does not clear `is_running`.** The worker is
-/// still tearing down CPAL resources when `stop` returns. Forcing
-/// `is_running = false` here would race a fast Start→Stop→Start
-/// cycle, where the new worker could grab the microphone while
-/// the old one is still releasing it.
+/// **Intentionally does not touch the phase.** The worker is still
+/// tearing down CPAL resources when `stop` returns. Releasing the
+/// session slot here would race a fast Start→Stop→Start cycle, where
+/// the new worker could grab the microphone while the old one is
+/// still releasing it.
 #[tauri::command]
 fn stop_live_transcription(
     session: tauri::State<'_, Arc<LiveSessionState>>,
@@ -1289,35 +1290,75 @@ mod tests {
         );
     }
 
-    // ---- LiveSessionState: try_mark_running ----------------------------
+    // ---- LiveSessionState: the Start transition ------------------------
 
     #[test]
-    fn try_mark_running_returns_ok_on_fresh_state() {
+    fn start_accepted_returns_ok_on_fresh_state() {
         let s = LiveSessionState::default();
-        assert!(s.try_mark_running().is_ok());
+        assert!(s.apply(SessionInput::StartAccepted).is_ok());
         assert!(s.is_session_running());
+        assert_eq!(s.phase(), SessionPhase::Starting);
     }
 
     #[test]
-    fn try_mark_running_returns_err_when_already_running() {
+    fn start_accepted_returns_err_when_already_running() {
         let s = LiveSessionState::default();
-        s.try_mark_running().expect("first mark must succeed");
-        let result = s.try_mark_running();
-        assert!(
-            result.is_err(),
-            "second mark_running must fail with Err"
-        );
+        s.apply(SessionInput::StartAccepted)
+            .expect("first start must succeed");
+        let result = s.apply(SessionInput::StartAccepted);
+        assert!(result.is_err(), "second start must fail with Err");
+        // The rejected input must not move the phase.
+        assert_eq!(s.phase(), SessionPhase::Starting);
     }
 
     #[test]
-    fn try_mark_running_can_be_called_again_after_reset() {
+    fn start_accepted_works_again_after_worker_exit() {
         // Mirrors the Start → worker-exit → Start lifecycle:
-        // after `reset_session`, the next try_mark_running must
-        // succeed.
+        // after `reset_session`, the next start must succeed.
         let s = LiveSessionState::default();
-        s.try_mark_running().unwrap();
+        s.apply(SessionInput::StartAccepted).unwrap();
         s.reset_session();
-        assert!(s.try_mark_running().is_ok());
+        assert!(s.apply(SessionInput::StartAccepted).is_ok());
+    }
+
+    #[test]
+    fn a_stop_keeps_the_session_slot_until_the_worker_exits() {
+        // The documented quick Start → Stop → Start rule: Stop only flips
+        // the signal it takes. A second Start while the old worker drains
+        // must still see the slot taken, or the new worker could grab the
+        // microphone before the old one releases it.
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+        let signal = Arc::new(AtomicBool::new(false));
+        s.store_stop_signal(Arc::clone(&signal));
+
+        // What `stop_live_transcription` does: take the signal, flip it.
+        let taken = s.take_stop_signal().expect("a signal was stored");
+        taken.store(true, Ordering::Relaxed);
+
+        assert!(s.is_session_running());
+        assert!(s.apply(SessionInput::StartAccepted).is_err());
+
+        s.reset_session(); // the worker finally exits
+        assert!(!s.is_session_running());
+        assert!(s.apply(SessionInput::StartAccepted).is_ok());
+    }
+
+    #[test]
+    fn a_poisoned_phase_mutex_recovers_the_phase() {
+        // The worker can panic inside the loop; the next Start must not
+        // be locked out by a poisoned mutex.
+        let state = Arc::new(LiveSessionState::default());
+        let poisoner = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.phase.lock().expect("fresh lock");
+            panic!("poison the phase lock");
+        })
+        .join();
+
+        assert_eq!(state.phase(), SessionPhase::Idle);
+        assert!(state.apply(SessionInput::StartAccepted).is_ok());
+        assert!(state.is_session_running());
     }
 
     // ---- LiveSessionState: store / take stop_signal --------------------
@@ -1358,9 +1399,10 @@ mod tests {
     #[test]
     fn reset_session_clears_is_running() {
         let s = LiveSessionState::default();
-        s.try_mark_running().unwrap();
+        s.apply(SessionInput::StartAccepted).unwrap();
         s.reset_session();
         assert!(!s.is_session_running(), "reset must clear is_running");
+        assert_eq!(s.phase(), SessionPhase::Idle);
     }
 
     #[test]
@@ -1376,10 +1418,10 @@ mod tests {
     #[test]
     fn cleanup_guard_resets_state_on_drop() {
         // Mirrors the live worker-thread path: allocate state,
-        // mark running, store a stop signal, drop the guard,
-        // state must be back to defaults.
+        // take the session slot, store a stop signal, drop the
+        // guard, state must be back to defaults.
         let state = Arc::new(LiveSessionState::default());
-        state.try_mark_running().unwrap();
+        state.apply(SessionInput::StartAccepted).unwrap();
         state.store_stop_signal(Arc::new(AtomicBool::new(true)));
         assert!(state.is_session_running());
         assert!(state.take_stop_signal().is_some());
@@ -1392,6 +1434,7 @@ mod tests {
 
         // After drop, both fields are back to defaults.
         assert!(!state.is_session_running());
+        assert_eq!(state.phase(), SessionPhase::Idle);
         assert!(state.take_stop_signal().is_none());
     }
 
@@ -1402,7 +1445,7 @@ mod tests {
         // runs the closure, captures the panic payload, and lets
         // us inspect post-unwind state.
         let state = Arc::new(LiveSessionState::default());
-        state.try_mark_running().unwrap();
+        state.apply(SessionInput::StartAccepted).unwrap();
         state.store_stop_signal(Arc::new(AtomicBool::new(false)));
 
         let state_for_panic = Arc::clone(&state);
@@ -1414,7 +1457,7 @@ mod tests {
         assert!(result.is_err(), "panic must propagate as Err payload");
         assert!(
             !state.is_session_running(),
-            "guard's Drop must have reset is_running"
+            "guard's Drop must have released the session slot"
         );
         assert!(
             state.take_stop_signal().is_none(),
