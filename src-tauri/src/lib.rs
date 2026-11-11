@@ -80,7 +80,10 @@ impl MockAppState {
 ///   [`SessionInput::StartAccepted`] takes the session slot and
 ///   [`SessionInput::WorkerExited`] releases it; every other pair is
 ///   an illegal transition. One named value keeps the re-entry guard
-///   and the phase read by the UI on the same source.
+///   and the phase read by the UI on the same source. Status inputs
+///   are not applied here yet: they land with `get_session_phase`
+///   (`docs/session-state-machine-plan.md`, issue 4), so a live
+///   session reads `Starting` and the guard compares against `Idle`.
 #[derive(Debug)]
 pub struct LiveSessionState {
     stop_signal: Mutex<Option<Arc<AtomicBool>>>,
@@ -1297,18 +1300,18 @@ mod tests {
         let s = LiveSessionState::default();
         assert!(s.apply(SessionInput::StartAccepted).is_ok());
         assert!(s.is_session_running());
-        assert_eq!(s.phase(), SessionPhase::Starting);
     }
 
     #[test]
     fn start_accepted_returns_err_when_already_running() {
         let s = LiveSessionState::default();
         s.apply(SessionInput::StartAccepted)
-            .expect("first start must succeed");
+            .expect("first mark must succeed");
         let result = s.apply(SessionInput::StartAccepted);
-        assert!(result.is_err(), "second start must fail with Err");
-        // The rejected input must not move the phase.
-        assert_eq!(s.phase(), SessionPhase::Starting);
+        assert!(
+            result.is_err(),
+            "second mark_running must fail with Err"
+        );
     }
 
     #[test]
@@ -1319,6 +1322,23 @@ mod tests {
         s.apply(SessionInput::StartAccepted).unwrap();
         s.reset_session();
         assert!(s.apply(SessionInput::StartAccepted).is_ok());
+    }
+
+    /// The stored phase follows the two transitions the shell applies:
+    /// a rejected Start leaves it alone, and the worker's exit frees it.
+    #[test]
+    fn the_stored_phase_follows_the_start_and_the_worker_exit() {
+        let s = LiveSessionState::default();
+        assert_eq!(s.phase(), SessionPhase::Idle);
+
+        s.apply(SessionInput::StartAccepted).unwrap();
+        assert_eq!(s.phase(), SessionPhase::Starting);
+
+        assert!(s.apply(SessionInput::StartAccepted).is_err());
+        assert_eq!(s.phase(), SessionPhase::Starting);
+
+        s.reset_session();
+        assert_eq!(s.phase(), SessionPhase::Idle);
     }
 
     #[test]
@@ -1402,7 +1422,6 @@ mod tests {
         s.apply(SessionInput::StartAccepted).unwrap();
         s.reset_session();
         assert!(!s.is_session_running(), "reset must clear is_running");
-        assert_eq!(s.phase(), SessionPhase::Idle);
     }
 
     #[test]
@@ -1418,8 +1437,8 @@ mod tests {
     #[test]
     fn cleanup_guard_resets_state_on_drop() {
         // Mirrors the live worker-thread path: allocate state,
-        // take the session slot, store a stop signal, drop the
-        // guard, state must be back to defaults.
+        // mark running, store a stop signal, drop the guard,
+        // state must be back to defaults.
         let state = Arc::new(LiveSessionState::default());
         state.apply(SessionInput::StartAccepted).unwrap();
         state.store_stop_signal(Arc::new(AtomicBool::new(true)));
@@ -1434,8 +1453,19 @@ mod tests {
 
         // After drop, both fields are back to defaults.
         assert!(!state.is_session_running());
-        assert_eq!(state.phase(), SessionPhase::Idle);
         assert!(state.take_stop_signal().is_none());
+    }
+
+    /// The guard's only phase job: the worker-exit transition it applies.
+    #[test]
+    fn the_cleanup_guard_returns_the_phase_to_idle() {
+        let state = Arc::new(LiveSessionState::default());
+        state.apply(SessionInput::StartAccepted).unwrap();
+        assert_eq!(state.phase(), SessionPhase::Starting);
+
+        drop(SessionCleanupGuard(Arc::clone(&state)));
+
+        assert_eq!(state.phase(), SessionPhase::Idle);
     }
 
     #[test]
@@ -1457,7 +1487,7 @@ mod tests {
         assert!(result.is_err(), "panic must propagate as Err payload");
         assert!(
             !state.is_session_running(),
-            "guard's Drop must have released the session slot"
+            "guard's Drop must have reset is_running"
         );
         assert!(
             state.take_stop_signal().is_none(),
