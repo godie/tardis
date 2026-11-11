@@ -80,8 +80,9 @@ impl MockAppState {
 ///   [`SessionInput::StartAccepted`] takes the session slot and
 ///   [`SessionInput::WorkerExited`] releases it; every other pair is
 ///   an illegal transition. One named value keeps the re-entry guard
-///   and the phase read by the UI on the same source. Status inputs
-///   are not applied here yet: they land with `get_session_phase`
+///   and the later `get_session_phase` command on the same source,
+///   so the two cannot disagree. Status inputs are not applied here
+///   yet: they land with `get_session_phase`
 ///   (`docs/session-state-machine-plan.md`, issue 4), so a live
 ///   session reads `Starting` and the guard compares against `Idle`.
 #[derive(Debug)]
@@ -111,17 +112,12 @@ impl LiveSessionState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The phase the session is currently in.
-    pub fn phase(&self) -> SessionPhase {
-        *self.lock_phase()
-    }
-
     /// Returns `true` while a session owns the microphone slot.
     ///
     /// [`SessionPhase::Starting`] counts: the worker exists from the
     /// accepted start, before the runner reports listening.
     pub fn is_session_running(&self) -> bool {
-        self.phase() != SessionPhase::Idle
+        *self.lock_phase() != SessionPhase::Idle
     }
 
     /// Apply one lifecycle input to the stored phase.
@@ -1324,21 +1320,17 @@ mod tests {
         assert!(s.apply(SessionInput::StartAccepted).is_ok());
     }
 
-    /// The stored phase follows the two transitions the shell applies:
-    /// a rejected Start leaves it alone, and the worker's exit frees it.
+    /// A rejected Start leaves the session slot exactly as it was.
     #[test]
-    fn the_stored_phase_follows_the_start_and_the_worker_exit() {
+    fn a_rejected_start_leaves_the_session_slot_taken() {
         let s = LiveSessionState::default();
-        assert_eq!(s.phase(), SessionPhase::Idle);
+        assert!(!s.is_session_running());
 
         s.apply(SessionInput::StartAccepted).unwrap();
-        assert_eq!(s.phase(), SessionPhase::Starting);
+        assert!(s.is_session_running());
 
         assert!(s.apply(SessionInput::StartAccepted).is_err());
-        assert_eq!(s.phase(), SessionPhase::Starting);
-
-        s.reset_session();
-        assert_eq!(s.phase(), SessionPhase::Idle);
+        assert!(s.is_session_running());
     }
 
     #[test]
@@ -1376,7 +1368,7 @@ mod tests {
         })
         .join();
 
-        assert_eq!(state.phase(), SessionPhase::Idle);
+        assert!(!state.is_session_running());
         assert!(state.apply(SessionInput::StartAccepted).is_ok());
         assert!(state.is_session_running());
     }
@@ -1454,18 +1446,6 @@ mod tests {
         // After drop, both fields are back to defaults.
         assert!(!state.is_session_running());
         assert!(state.take_stop_signal().is_none());
-    }
-
-    /// The guard's only phase job: the worker-exit transition it applies.
-    #[test]
-    fn the_cleanup_guard_returns_the_phase_to_idle() {
-        let state = Arc::new(LiveSessionState::default());
-        state.apply(SessionInput::StartAccepted).unwrap();
-        assert_eq!(state.phase(), SessionPhase::Starting);
-
-        drop(SessionCleanupGuard(Arc::clone(&state)));
-
-        assert_eq!(state.phase(), SessionPhase::Idle);
     }
 
     #[test]
