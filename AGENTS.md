@@ -199,7 +199,9 @@ CLI / Tauri command
   what the UI already shows is a serialisation change on this struct. A new
   domain concept needs a new `AppEvent` variant and a matching `UiAppEvent`,
   which is a deliberate change to the event surface. `phase` appears on
-  `status` events only and mirrors `SessionPhase` lowercase labels.
+  `status` events only and mirrors `SessionPhase` lowercase labels. After a
+  terminal event, draw the event's phase; `get_session_phase` reports `idle`
+  only once worker cleanup finishes, because the slot stays taken until then.
 - **Provider selection is validated in the backend.**
   `start_live_transcription` takes an optional `AppRuntimeConfig`, normalizes
   and validates it (provider and processor names included) before touching

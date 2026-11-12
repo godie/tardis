@@ -219,17 +219,29 @@ fn emit_app_event(
     session: &LiveSessionState,
     event: &tardis::app::events::AppEvent,
 ) {
-    use tardis::app::events::{AppEvent, AppStatus};
+    use tardis::app::events::AppEvent;
 
     append_history(event, Path::new(tardis::config::HISTORY_PATH));
-    if let AppEvent::StatusChanged(AppStatus::Listening) = event {
+    if let AppEvent::StatusChanged(status) = event
+        && status_updates_phase(*status)
+    {
         // Listening is always legal (`apply_status` covers every phase).
-        let _ = session.apply(SessionInput::Status(AppStatus::Listening));
+        let _ = session.apply(SessionInput::Status(*status));
     }
     let _ = app.emit(
         "app-event",
         tardis::app::ui_events::app_event_to_ui_event(event),
     );
+}
+
+/// Whether a status event advances the phase slot while the worker lives.
+///
+/// Only the non-terminal `Listening` status does. A terminal status carries
+/// its final phase on the event, but the slot stays with the worker until
+/// [`SessionCleanupGuard`] runs, so a Start click on `stopped` cannot race
+/// the old worker's teardown.
+fn status_updates_phase(status: tardis::app::events::AppStatus) -> bool {
+    matches!(status, tardis::app::events::AppStatus::Listening)
 }
 
 /// Lowercase phase label the UI renders, read from the live session slot.
@@ -386,10 +398,12 @@ fn start_live_transcription(
 /// (phase back to `Idle`) and clears `stop_signal` so a subsequent
 /// `start_live_transcription` can succeed.
 ///
-/// **Intentionally does not touch the phase.** The worker is still
-/// tearing down CPAL resources when `stop` returns. Releasing the
-/// session slot here would race a fast Start→Stop→Start cycle, where
-/// the new worker could grab the microphone while the old one is
+/// **Keeps the session slot taken.** The worker is still tearing down
+/// CPAL resources when `stop` returns, so the phase moves to
+/// [`SessionPhase::Stopping`] and stays there until
+/// [`SessionCleanupGuard`] applies [`SessionInput::WorkerExited`].
+/// Releasing the slot here would race a fast Start->Stop->Start cycle,
+/// where the new worker could grab the microphone while the old one is
 /// still releasing it.
 #[tauri::command]
 fn stop_live_transcription(
@@ -399,6 +413,11 @@ fn stop_live_transcription(
     match session.take_stop_signal() {
         Some(signal) => {
             signal.store(true, Ordering::Relaxed);
+            // The stop is accepted, so the phase becomes `Stopping` and the
+            // UI keeps Start disabled while the worker drains. A stop that
+            // beats the `listening` event still lands here: `Starting` is a
+            // legal source for `StopAccepted`.
+            let _ = session.apply(SessionInput::StopAccepted);
             Ok("stopping".to_string())
         }
         None => Err(NO_SESSION_RUNNING_ERR.to_string()),
@@ -412,6 +431,13 @@ fn stop_live_transcription(
 /// outcomes, which lose the race when a terminal event lands before
 /// Start's invoke resolves. It reads the same [`LiveSessionState`] slot
 /// the worker and [`emit_app_event`] write.
+///
+/// **Terminal precedence:** the worker owns the slot until its thread
+/// exits, so during teardown this reports `"starting"` or `"listening"`
+/// (or `"stopping"` after a Stop) even though the trailing `stopped`
+/// event already carries `"idle"`. After a terminal event the UI draws
+/// the event's phase; this command reports `"idle"` once cleanup
+/// finishes.
 #[tauri::command]
 fn get_session_phase(session: tauri::State<'_, Arc<LiveSessionState>>) -> String {
     current_phase_label(session.inner())
@@ -1378,7 +1404,8 @@ mod tests {
     }
 
     /// The command body reads the same slot `apply` writes: the label
-    /// tracks the phase through start, listening, and the terminal stop.
+    /// tracks the phase through start, listening, an accepted stop, and
+    /// the worker-exit cleanup.
     #[test]
     fn current_phase_label_matches_the_stored_phase() {
         use tardis::app::events::AppStatus as LiveStatus;
@@ -1393,25 +1420,76 @@ mod tests {
             .unwrap();
         assert_eq!(current_phase_label(&s), "listening");
 
+        s.apply(SessionInput::StopAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
         // The terminal status is the worker exit's job, not the event's.
         s.reset_session();
         assert_eq!(current_phase_label(&s), "idle");
     }
 
     #[test]
+    fn a_stop_before_listening_enters_stopping_and_a_late_listening_keeps_it() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+
+        // The user can reach Stop before the runner emits `listening`.
+        s.apply(SessionInput::StopAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
+    }
+
+    /// The slot stays owned until the worker exits, so a query right after
+    /// the terminal event still sees the running phase. The event carries
+    /// the `idle` the UI draws.
+    #[test]
+    fn a_terminal_event_leaves_the_slot_to_the_cleanup_guard() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        assert!(!status_updates_phase(LiveStatus::Stopped));
+        assert!(!status_updates_phase(LiveStatus::Error));
+        assert!(!status_updates_phase(LiveStatus::Idle));
+        assert!(status_updates_phase(LiveStatus::Listening));
+
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "listening");
+
+        // What the shell does with the terminal `stopped` event: nothing.
+        assert!(!status_updates_phase(LiveStatus::Stopped));
+        assert_eq!(current_phase_label(&s), "listening");
+
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
+    }
+
+    #[test]
     fn a_stop_keeps_the_session_slot_until_the_worker_exits() {
-        // The documented quick Start → Stop → Start rule: Stop only flips
-        // the signal it takes. A second Start while the old worker drains
-        // must still see the slot taken, or the new worker could grab the
-        // microphone before the old one releases it.
+        // The documented quick Start -> Stop -> Start rule: Stop moves the
+        // phase to `Stopping` but keeps the slot. A second Start while the
+        // old worker drains must still be rejected, or the new worker could
+        // grab the microphone before the old one releases it.
         let s = LiveSessionState::default();
         s.apply(SessionInput::StartAccepted).unwrap();
         let signal = Arc::new(AtomicBool::new(false));
         s.store_stop_signal(Arc::clone(&signal));
 
-        // What `stop_live_transcription` does: take the signal, flip it.
+        // What `stop_live_transcription` does: take the signal, flip it,
+        // apply `StopAccepted`.
         let taken = s.take_stop_signal().expect("a signal was stored");
         taken.store(true, Ordering::Relaxed);
+        s.apply(SessionInput::StopAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
 
         assert!(s.is_session_running());
         assert!(s.apply(SessionInput::StartAccepted).is_err());

@@ -19,8 +19,10 @@
 //! `worker-exited` returns any phase to [`SessionPhase::Idle`], as do the
 //! `stopped` and `error` statuses. A late `listening` status leaves
 //! [`SessionPhase::Stopping`] alone; every other status input keeps the
-//! [`SessionPhase::apply_status`] rules the UI mirrors. Every other pair
-//! is an [`IllegalTransition`].
+//! [`SessionPhase::apply_status`] rules the UI mirrors. A stop accepted
+//! while [`SessionPhase::Starting`] goes straight to
+//! [`SessionPhase::Stopping`], so a stop that beats the `listening` event
+//! is not lost. Every other pair is an [`IllegalTransition`].
 //!
 //! Pure: no I/O, no Tauri, no CPAL; unit-tested as a transition table.
 
@@ -118,15 +120,15 @@ impl SessionPhase {
     ///
     /// The command and worker inputs are strict: a start is accepted only
     /// from [`SessionPhase::Idle`], a failed start only leaves
-    /// [`SessionPhase::Starting`], a stop is accepted only from
-    /// [`SessionPhase::Listening`], and `WorkerExited` always lands on
-    /// [`SessionPhase::Idle`]. Status inputs keep the
-    /// [`SessionPhase::apply_status`] table above.
+    /// [`SessionPhase::Starting`], a stop is accepted from
+    /// [`SessionPhase::Starting`] or [`SessionPhase::Listening`], and
+    /// `WorkerExited` always lands on [`SessionPhase::Idle`]. Status inputs
+    /// keep the [`SessionPhase::apply_status`] table above.
     pub fn apply(self, input: SessionInput) -> Result<Self, IllegalTransition> {
         match (self, input) {
             (Self::Idle, SessionInput::StartAccepted) => Ok(Self::Starting),
             (Self::Starting, SessionInput::StartFailed) => Ok(Self::Idle),
-            (Self::Listening, SessionInput::StopAccepted) => Ok(Self::Stopping),
+            (Self::Starting | Self::Listening, SessionInput::StopAccepted) => Ok(Self::Stopping),
             (_, SessionInput::WorkerExited) => Ok(Self::Idle),
             (phase, SessionInput::Status(status)) => Ok(phase.apply_status(status)),
             (phase, input) => Err(IllegalTransition { phase, input }),
@@ -232,7 +234,11 @@ mod tests {
                 StartFailed,
                 Some(SessionPhase::Idle),
             ),
-            (SessionPhase::Starting, StopAccepted, None),
+            (
+                SessionPhase::Starting,
+                StopAccepted,
+                Some(SessionPhase::Stopping),
+            ),
             (
                 SessionPhase::Starting,
                 Status(StatusIdle),
@@ -353,6 +359,20 @@ mod tests {
     fn a_late_listening_does_not_reopen_a_stopping_session() {
         assert_eq!(
             SessionPhase::Stopping.apply(SessionInput::Status(AppStatus::Listening)),
+            Ok(SessionPhase::Stopping)
+        );
+    }
+
+    /// A stop that beats the `listening` event still lands in stopping, and
+    /// the late event cannot pull it back to listening.
+    #[test]
+    fn stop_accepted_while_starting_lands_in_stopping() {
+        let stopping = SessionPhase::Starting
+            .apply(SessionInput::StopAccepted)
+            .expect("a stop during starting is accepted");
+        assert_eq!(stopping, SessionPhase::Stopping);
+        assert_eq!(
+            stopping.apply(SessionInput::Status(AppStatus::Listening)),
             Ok(SessionPhase::Stopping)
         );
     }
