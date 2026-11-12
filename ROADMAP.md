@@ -104,11 +104,11 @@ What exists:
   OS path through `tauri::Manager::path()`; the UI calls them on init
   and on every committed settings change respectively.
 - Session lifecycle is RAII-cleaned: `LiveSessionState` is registered as
-  `Arc<...>` with Tauri and a [`SessionCleanupGuard`] resets `is_running`
-  and `stop_signal` on worker exit (success, error, **or panic**), so a
-  fast Start→Stop→Start cycle is unblocked even if the worker crashed.
-  12 unit tests cover the pure `LiveSessionState` helpers and the
-  panic-safety path via `std::panic::catch_unwind`.
+  `Arc<...>` with Tauri and a [`SessionCleanupGuard`] applies `WorkerExited`
+  (phase back to `Idle`) and clears `stop_signal` on worker exit (success,
+  error, **or panic**), so a fast Start→Stop→Start cycle is unblocked even
+  if the worker crashed. The phase slot and the panic-safety path are
+  unit-tested.
 - `[`src/transcription/live_local::run_live_local_transcription_with_config_and_events`]`
   is the canonical live runner; translation uses
   `config.source_language` / `config.target_language` (no hardcoded en/es).

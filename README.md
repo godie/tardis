@@ -267,7 +267,7 @@ The desktop shell exposes the following `#[tauri::command]` entry points. All pa
 | Command | Purpose |
 | --- | --- |
 | `start_live_transcription(config: Option<AppRuntimeConfig>)` | Spawns a background worker thread that captures audio from the default mic, transcribes speech-like chunks via the selected provider, and emits an `app-event` Tauri event for every [`AppEvent`]. Returns `"started with provider <name>"`. |
-| `stop_live_transcription()` | Signals the active session to stop; the worker thread exits and the [`SessionCleanupGuard`] resets `is_running` + `stop_signal`. Idempotent: a stale Stop on a torn-down session returns `NO_SESSION_RUNNING_ERR`. |
+| `stop_live_transcription()` | Signals the active session to stop; the worker thread exits and the [`SessionCleanupGuard`] applies `WorkerExited` (phase back to `Idle`) and clears `stop_signal`. Idempotent: a stale Stop on a torn-down session returns `NO_SESSION_RUNNING_ERR`. |
 | `transcribe_wav_file_local(file_path: String)` | File-based local transcription through `local-whisper` (delegates to the same [`LocalWhisperClient`] the CLI uses; "Docker not running?" errors are normalised into a user-facing string). |
 | `get_supported_transcription_providers()` | Backend's `["mock-local", "local-whisper"]` list. The UI rebuilds the provider dropdown from this, so a future provider shows up without touching the HTML. |
 | `list_input_devices()` | `[{id, name}]` for every input device the host reports; the UI rebuilds the device selector from it and persists the `id`. |

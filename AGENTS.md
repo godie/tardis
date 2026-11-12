@@ -205,12 +205,13 @@ CLI / Tauri command
   shared state, and falls back to `AppRuntimeConfig::default()` when the UI
   sends none. Both dropdowns are rebuilt from the backend's lists.
 - **Session lifecycle is worker-owned.** The worker thread holds a clone of
-  the `Arc<LiveSessionState>` managed state and resets `is_running` and
-  `stop_signal` in a `SessionCleanupGuard`. `Drop` runs on normal return,
-  `Err` and panic, so the next start is unblocked even if the worker crashed.
-  A failed run pins `error` and then `stopped` (`worker_exit_events`), because
-  the UI unlocks Start only on the terminal status; the runner already emits
-  exactly one `stopped` on success, so the worker adds none there.
+  the `Arc<LiveSessionState>` managed state and applies `WorkerExited` (phase
+  back to `Idle`) and clears `stop_signal` in a `SessionCleanupGuard`. `Drop`
+  runs on normal return, `Err` and panic, so the next start is unblocked even
+  if the worker crashed. A failed run pins `error` and then `stopped`
+  (`worker_exit_events`), because the UI unlocks Start only on the terminal
+  status; the runner already emits exactly one `stopped` on success, so the
+  worker adds none there.
 - **The Tauri runtime and the real window are manual-tested.** No unit test
   exercises `AppHandle::emit` or the cross-thread ownership pattern. The pure
   parts are unit-tested; the wiring is verified with
