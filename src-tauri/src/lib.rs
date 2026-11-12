@@ -60,13 +60,15 @@ impl MockAppState {
 /// exit (success, error, or panic) without needing to round-trip
 /// through the command handler.
 ///
-/// **Lock order:** the two fields are never held at the same time.
-/// A transition holds `phase` only for the duration of
-/// [`SessionPhase::apply`], the stop-signal helpers hold
-/// `stop_signal` only to store, take or clear it, and
-/// [`LiveSessionState::reset_session`] releases `phase` before it
-/// locks `stop_signal`. A concurrent `stop_live_transcription` call
-/// therefore cannot deadlock with the worker-thread cleanup.
+/// **Lock order:** `phase` is always acquired before `stop_signal` when
+/// both are held. [`LiveSessionState::accept_stop`] holds `phase` while it
+/// reads and clears `stop_signal`, so the take and the phase transition
+/// cannot be split by a worker exit and a new Start.
+/// [`LiveSessionState::reset_session`] releases `phase` before it locks
+/// `stop_signal`, and the other stop-signal helpers hold `stop_signal`
+/// alone. No path takes `stop_signal` and then waits for `phase`, so a
+/// concurrent `stop_live_transcription` cannot deadlock with the
+/// worker-thread cleanup.
 ///
 /// Field-level rationale:
 /// - `stop_signal: Mutex<Option<Arc<AtomicBool>>>` — the worker
@@ -138,6 +140,34 @@ impl LiveSessionState {
         Ok(())
     }
 
+    /// Take the active stop signal and record an accepted stop as one
+    /// synchronized step.
+    ///
+    /// Holds the phase lock while it reads and clears `stop_signal`, so a
+    /// worker exit and a new Start cannot interleave between the two and
+    /// hand this Stop to the next session. Every path takes the two locks
+    /// in the same `phase` -> `stop_signal` order, so this cannot deadlock.
+    /// Returns `None`, and leaves the phase and signal untouched, when no
+    /// live session owns a signal.
+    pub fn accept_stop(&self) -> Option<Arc<AtomicBool>> {
+        let mut phase = self.lock_phase();
+        let signal = {
+            let guard = self
+                .stop_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(guard.as_ref()?)
+        };
+        let next = phase.apply(SessionInput::StopAccepted).ok()?;
+        *phase = next;
+        *self
+            .stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        signal.store(true, Ordering::Relaxed);
+        Some(signal)
+    }
+
     /// Store the worker's `Arc<AtomicBool>` so the
     /// `stop_live_transcription` command can reach it.
     pub fn store_stop_signal(&self, signal: Arc<AtomicBool>) {
@@ -165,10 +195,7 @@ impl LiveSessionState {
     /// already released by then (see the lock order above).
     pub fn reset_session(&self) {
         let _ = self.apply(SessionInput::WorkerExited);
-        *self
-            .stop_signal
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let _ = self.take_stop_signal();
     }
 }
 
@@ -192,9 +219,9 @@ fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuar
 /// left in a stuck “running” state even if the worker panics inside
 /// the capture loop or the provider closure.
 ///
-/// `reset_session` never holds the phase and the stop signal at the
-/// same time, so this path cannot deadlock with a concurrent
-/// `stop_live_transcription` call.
+/// `reset_session` takes the two locks one after the other, and no path
+/// takes `stop_signal` before `phase`, so this path cannot deadlock with
+/// a concurrent `stop_live_transcription` call.
 struct SessionCleanupGuard(Arc<LiveSessionState>);
 
 impl Drop for SessionCleanupGuard {
@@ -398,6 +425,10 @@ fn start_live_transcription(
 /// (phase back to `Idle`) and clears `stop_signal` so a subsequent
 /// `start_live_transcription` can succeed.
 ///
+/// The take and the [`SessionInput::StopAccepted`] transition are one
+/// [`LiveSessionState::accept_stop`] call, so a stop cannot be split by a
+/// worker exit and a new Start and land on the next session.
+///
 /// **Keeps the session slot taken.** The worker is still tearing down
 /// CPAL resources when `stop` returns, so the phase moves to
 /// [`SessionPhase::Stopping`] and stays there until
@@ -410,16 +441,8 @@ fn stop_live_transcription(
     session: tauri::State<'_, Arc<LiveSessionState>>,
 ) -> Result<String, String> {
     let session: Arc<LiveSessionState> = session.inner().clone();
-    match session.take_stop_signal() {
-        Some(signal) => {
-            signal.store(true, Ordering::Relaxed);
-            // The stop is accepted, so the phase becomes `Stopping` and the
-            // UI keeps Start disabled while the worker drains. A stop that
-            // beats the `listening` event still lands here: `Starting` is a
-            // legal source for `StopAccepted`.
-            let _ = session.apply(SessionInput::StopAccepted);
-            Ok("stopping".to_string())
-        }
+    match session.accept_stop() {
+        Some(_) => Ok("stopping".to_string()),
         None => Err(NO_SESSION_RUNNING_ERR.to_string()),
     }
 }
@@ -1484,11 +1507,11 @@ mod tests {
         let signal = Arc::new(AtomicBool::new(false));
         s.store_stop_signal(Arc::clone(&signal));
 
-        // What `stop_live_transcription` does: take the signal, flip it,
-        // apply `StopAccepted`.
-        let taken = s.take_stop_signal().expect("a signal was stored");
-        taken.store(true, Ordering::Relaxed);
-        s.apply(SessionInput::StopAccepted).unwrap();
+        // What `stop_live_transcription` does: accept the stop, which takes
+        // and flips the signal and moves the phase to `Stopping`.
+        let taken = s.accept_stop().expect("a signal was stored");
+        assert!(Arc::ptr_eq(&taken, &signal));
+        assert!(signal.load(Ordering::Relaxed));
         assert_eq!(current_phase_label(&s), "stopping");
 
         assert!(s.is_session_running());
@@ -1497,6 +1520,53 @@ mod tests {
         s.reset_session(); // the worker finally exits
         assert!(!s.is_session_running());
         assert!(s.apply(SessionInput::StartAccepted).is_ok());
+    }
+
+    /// The stop transition and the signal take are one step. A stop that
+    /// arrives after the old worker exited and a new session started has no
+    /// live signal, so it cannot relabel the new session as stopping.
+    #[test]
+    fn a_stop_without_a_live_signal_cannot_relabel_a_new_session() {
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+        let old_signal = Arc::new(AtomicBool::new(false));
+        s.store_stop_signal(Arc::clone(&old_signal));
+
+        // Old session: Stop accepted, then the worker exits.
+        assert!(s.accept_stop().is_some());
+        s.reset_session();
+
+        // New session: Start accepted, before its signal is stored.
+        s.apply(SessionInput::StartAccepted).unwrap();
+        assert!(s.accept_stop().is_none());
+        assert_eq!(current_phase_label(&s), "starting");
+    }
+
+    /// Same invariant under a real race: whichever side wins, the stop from
+    /// the old session never leaves the restarted session in `Stopping`.
+    #[test]
+    fn a_concurrent_stop_and_restart_never_leave_the_new_session_stopping() {
+        for _ in 0..50 {
+            let state = Arc::new(LiveSessionState::default());
+            state.apply(SessionInput::StartAccepted).unwrap();
+            state.store_stop_signal(Arc::new(AtomicBool::new(false)));
+
+            let stopper = {
+                let state = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    let _ = state.accept_stop();
+                })
+            };
+            state.reset_session();
+            state.apply(SessionInput::StartAccepted).unwrap();
+            stopper.join().expect("stop thread must not panic");
+
+            assert_ne!(
+                state.phase(),
+                SessionPhase::Stopping,
+                "a stop from the old session relabelled the new one"
+            );
+        }
     }
 
     #[test]
