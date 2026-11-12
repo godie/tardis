@@ -60,13 +60,15 @@ impl MockAppState {
 /// exit (success, error, or panic) without needing to round-trip
 /// through the command handler.
 ///
-/// **Lock order:** the two fields are never held at the same time.
-/// A transition holds `phase` only for the duration of
-/// [`SessionPhase::apply`], the stop-signal helpers hold
-/// `stop_signal` only to store, take or clear it, and
-/// [`LiveSessionState::reset_session`] releases `phase` before it
-/// locks `stop_signal`. A concurrent `stop_live_transcription` call
-/// therefore cannot deadlock with the worker-thread cleanup.
+/// **Lock order:** `phase` is always acquired before `stop_signal` when
+/// both are held. [`LiveSessionState::accept_stop`] holds `phase` while it
+/// reads and clears `stop_signal`, so the take and the phase transition
+/// cannot be split by a worker exit and a new Start.
+/// [`LiveSessionState::reset_session`] releases `phase` before it locks
+/// `stop_signal`, and the other stop-signal helpers hold `stop_signal`
+/// alone. No path takes `stop_signal` and then waits for `phase`, so a
+/// concurrent `stop_live_transcription` cannot deadlock with the
+/// worker-thread cleanup.
 ///
 /// Field-level rationale:
 /// - `stop_signal: Mutex<Option<Arc<AtomicBool>>>` — the worker
@@ -79,12 +81,10 @@ impl MockAppState {
 ///   separate `is_running` bool used to encode.
 ///   [`SessionInput::StartAccepted`] takes the session slot and
 ///   [`SessionInput::WorkerExited`] releases it; every other pair is
-///   an illegal transition. One named value keeps the re-entry guard
-///   and the later `get_session_phase` command on the same source,
-///   so the two cannot disagree. Status inputs are not applied here
-///   yet: they land with `get_session_phase`
-///   (`docs/session-state-machine-plan.md`, issue 4), so a live
-///   session reads `Starting` and the guard compares against `Idle`.
+///   an illegal transition. The non-terminal `Listening` status is
+///   applied by [`emit_app_event`], while the terminal statuses stay
+///   the worker exit's job, so a Start click on `stopped` cannot race
+///   the old worker's teardown.
 #[derive(Debug)]
 pub struct LiveSessionState {
     stop_signal: Mutex<Option<Arc<AtomicBool>>>,
@@ -112,12 +112,20 @@ impl LiveSessionState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The phase the session is in right now.
+    ///
+    /// Reads the same slot [`LiveSessionState::apply`] writes, so the
+    /// re-entry guard and [`current_phase_label`] cannot disagree.
+    fn phase(&self) -> SessionPhase {
+        *self.lock_phase()
+    }
+
     /// Returns `true` while a session owns the microphone slot.
     ///
     /// [`SessionPhase::Starting`] counts: the worker exists from the
     /// accepted start, before the runner reports listening.
     pub fn is_session_running(&self) -> bool {
-        *self.lock_phase() != SessionPhase::Idle
+        self.phase() != SessionPhase::Idle
     }
 
     /// Apply one lifecycle input to the stored phase.
@@ -130,6 +138,34 @@ impl LiveSessionState {
         let mut phase = self.lock_phase();
         *phase = phase.apply(input)?;
         Ok(())
+    }
+
+    /// Take the active stop signal and record an accepted stop as one
+    /// synchronized step.
+    ///
+    /// Holds the phase lock while it reads and clears `stop_signal`, so a
+    /// worker exit and a new Start cannot interleave between the two and
+    /// hand this Stop to the next session. Every path takes the two locks
+    /// in the same `phase` -> `stop_signal` order, so this cannot deadlock.
+    /// Returns `None`, and leaves the phase and signal untouched, when no
+    /// live session owns a signal.
+    pub fn accept_stop(&self) -> Option<Arc<AtomicBool>> {
+        let mut phase = self.lock_phase();
+        let signal = {
+            let guard = self
+                .stop_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(guard.as_ref()?)
+        };
+        let next = phase.apply(SessionInput::StopAccepted).ok()?;
+        *phase = next;
+        *self
+            .stop_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        signal.store(true, Ordering::Relaxed);
+        Some(signal)
     }
 
     /// Store the worker's `Arc<AtomicBool>` so the
@@ -159,10 +195,7 @@ impl LiveSessionState {
     /// already released by then (see the lock order above).
     pub fn reset_session(&self) {
         let _ = self.apply(SessionInput::WorkerExited);
-        *self
-            .stop_signal
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let _ = self.take_stop_signal();
     }
 }
 
@@ -186,9 +219,9 @@ fn lock_state<'a>(state: &'a tauri::State<'_, Mutex<MockAppState>>) -> MutexGuar
 /// left in a stuck “running” state even if the worker panics inside
 /// the capture loop or the provider closure.
 ///
-/// `reset_session` never holds the phase and the stop signal at the
-/// same time, so this path cannot deadlock with a concurrent
-/// `stop_live_transcription` call.
+/// `reset_session` takes the two locks one after the other, and no path
+/// takes `stop_signal` before `phase`, so this path cannot deadlock with
+/// a concurrent `stop_live_transcription` call.
 struct SessionCleanupGuard(Arc<LiveSessionState>);
 
 impl Drop for SessionCleanupGuard {
@@ -197,18 +230,53 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
-/// Persist one backend event, then emit it to the frontend.
+/// Persist one backend event, keep the session phase in step, then emit it
+/// to the frontend.
 ///
-/// Order matters: anything the user can already see is already on disk.
-/// Infallible on purpose: [`append_history`] reports its own failures and
-/// must not swallow the event, and an emit failure on the worker thread has
-/// no recovery path.
-fn emit_app_event(app: &tauri::AppHandle, event: &tardis::app::events::AppEvent) {
+/// Order matters: anything the user can already see is already on disk, and
+/// a non-terminal status updates the phase slot before the payload reaches
+/// the UI, so [`get_session_phase`] reports the running phase. Terminal
+/// statuses deliberately leave the slot alone: [`SessionCleanupGuard`] owns
+/// the return to `Idle`, which keeps a Start click on the `stopped` event
+/// from starting a new worker before the old one has exited. Infallible on
+/// purpose: [`append_history`] reports its own failures and must not swallow
+/// the event, and an emit failure on the worker thread has no recovery path.
+fn emit_app_event(
+    app: &tauri::AppHandle,
+    session: &LiveSessionState,
+    event: &tardis::app::events::AppEvent,
+) {
+    use tardis::app::events::AppEvent;
+
     append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    if let AppEvent::StatusChanged(status) = event
+        && status_updates_phase(*status)
+    {
+        // Listening is always legal (`apply_status` covers every phase).
+        let _ = session.apply(SessionInput::Status(*status));
+    }
     let _ = app.emit(
         "app-event",
         tardis::app::ui_events::app_event_to_ui_event(event),
     );
+}
+
+/// Whether a status event advances the phase slot while the worker lives.
+///
+/// Only the non-terminal `Listening` status does. A terminal status carries
+/// its final phase on the event, but the slot stays with the worker until
+/// [`SessionCleanupGuard`] runs, so a Start click on `stopped` cannot race
+/// the old worker's teardown.
+fn status_updates_phase(status: tardis::app::events::AppStatus) -> bool {
+    matches!(status, tardis::app::events::AppStatus::Listening)
+}
+
+/// Lowercase phase label the UI renders, read from the live session slot.
+///
+/// This is the body of [`get_session_phase`], split out so the Tauri
+/// wrapper stays a one-line adapter and the label mapping is unit-tested.
+fn current_phase_label(session: &LiveSessionState) -> String {
+    session.phase().as_label().to_lowercase()
 }
 
 /// The extra events the worker emits once the runner call has resolved.
@@ -290,6 +358,8 @@ fn start_live_transcription(
     let provider_label = config.transcription_provider.clone();
     let config_clone = config.clone();
     let session_for_cleanup = Arc::clone(&session);
+    let session_for_events = Arc::clone(&session);
+    let session_for_exit = Arc::clone(&session);
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
@@ -315,7 +385,7 @@ fn start_live_transcription(
                 config_clone,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| emit_app_event(&app_clone, &event),
+                move |event| emit_app_event(&app_clone, &session_for_events, &event),
             );
 
             // The runner emits `stopped` itself on its success path, so a
@@ -326,7 +396,7 @@ fn start_live_transcription(
                 .err()
                 .map(|e| format!("Live transcription failed: {e}"));
             for event in worker_exit_events(error) {
-                emit_app_event(&app, &event);
+                emit_app_event(&app, &session_for_exit, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -355,23 +425,45 @@ fn start_live_transcription(
 /// (phase back to `Idle`) and clears `stop_signal` so a subsequent
 /// `start_live_transcription` can succeed.
 ///
-/// **Intentionally does not touch the phase.** The worker is still
-/// tearing down CPAL resources when `stop` returns. Releasing the
-/// session slot here would race a fast Start→Stop→Start cycle, where
-/// the new worker could grab the microphone while the old one is
+/// The take and the [`SessionInput::StopAccepted`] transition are one
+/// [`LiveSessionState::accept_stop`] call, so a stop cannot be split by a
+/// worker exit and a new Start and land on the next session.
+///
+/// **Keeps the session slot taken.** The worker is still tearing down
+/// CPAL resources when `stop` returns, so the phase moves to
+/// [`SessionPhase::Stopping`] and stays there until
+/// [`SessionCleanupGuard`] applies [`SessionInput::WorkerExited`].
+/// Releasing the slot here would race a fast Start->Stop->Start cycle,
+/// where the new worker could grab the microphone while the old one is
 /// still releasing it.
 #[tauri::command]
 fn stop_live_transcription(
     session: tauri::State<'_, Arc<LiveSessionState>>,
 ) -> Result<String, String> {
     let session: Arc<LiveSessionState> = session.inner().clone();
-    match session.take_stop_signal() {
-        Some(signal) => {
-            signal.store(true, Ordering::Relaxed);
-            Ok("stopping".to_string())
-        }
+    match session.accept_stop() {
+        Some(_) => Ok("stopping".to_string()),
         None => Err(NO_SESSION_RUNNING_ERR.to_string()),
     }
+}
+
+/// Return the live session's current phase as the lowercase label the UI
+/// renders (`"idle"`, `"starting"`, `"listening"`, or `"stopping"`).
+///
+/// The UI can resync from this command instead of replaying command
+/// outcomes, which lose the race when a terminal event lands before
+/// Start's invoke resolves. It reads the same [`LiveSessionState`] slot
+/// the worker and [`emit_app_event`] write.
+///
+/// **Terminal precedence:** the worker owns the slot until its thread
+/// exits, so during teardown this reports `"starting"` or `"listening"`
+/// (or `"stopping"` after a Stop) even though the trailing `stopped`
+/// event already carries `"idle"`. After a terminal event the UI draws
+/// the event's phase; this command reports `"idle"` once cleanup
+/// finishes.
+#[tauri::command]
+fn get_session_phase(session: tauri::State<'_, Arc<LiveSessionState>>) -> String {
+    current_phase_label(session.inner())
 }
 
 /// List the input devices the host reports, for the settings selector.
@@ -859,6 +951,7 @@ pub fn run() {
             transcribe_wav_file_local,
             start_live_transcription,
             stop_live_transcription,
+            get_session_phase,
             get_supported_transcription_providers,
             list_input_devices,
             get_supported_processor_providers,
@@ -1333,20 +1426,93 @@ mod tests {
         assert!(s.is_session_running());
     }
 
+    /// The command body reads the same slot `apply` writes: the label
+    /// tracks the phase through start, listening, an accepted stop, and
+    /// the worker-exit cleanup.
+    #[test]
+    fn current_phase_label_matches_the_stored_phase() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        let s = LiveSessionState::default();
+        assert_eq!(current_phase_label(&s), "idle");
+
+        s.apply(SessionInput::StartAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "starting");
+
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "listening");
+
+        s.apply(SessionInput::StopAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
+        // The terminal status is the worker exit's job, not the event's.
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
+    }
+
+    #[test]
+    fn a_stop_before_listening_enters_stopping_and_a_late_listening_keeps_it() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+
+        // The user can reach Stop before the runner emits `listening`.
+        s.apply(SessionInput::StopAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "stopping");
+
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
+    }
+
+    /// The slot stays owned until the worker exits, so a query right after
+    /// the terminal event still sees the running phase. The event carries
+    /// the `idle` the UI draws.
+    #[test]
+    fn a_terminal_event_leaves_the_slot_to_the_cleanup_guard() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        assert!(!status_updates_phase(LiveStatus::Stopped));
+        assert!(!status_updates_phase(LiveStatus::Error));
+        assert!(!status_updates_phase(LiveStatus::Idle));
+        assert!(status_updates_phase(LiveStatus::Listening));
+
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "listening");
+
+        // What the shell does with the terminal `stopped` event: nothing.
+        assert!(!status_updates_phase(LiveStatus::Stopped));
+        assert_eq!(current_phase_label(&s), "listening");
+
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
+    }
+
     #[test]
     fn a_stop_keeps_the_session_slot_until_the_worker_exits() {
-        // The documented quick Start → Stop → Start rule: Stop only flips
-        // the signal it takes. A second Start while the old worker drains
-        // must still see the slot taken, or the new worker could grab the
-        // microphone before the old one releases it.
+        // The documented quick Start -> Stop -> Start rule: Stop moves the
+        // phase to `Stopping` but keeps the slot. A second Start while the
+        // old worker drains must still be rejected, or the new worker could
+        // grab the microphone before the old one releases it.
         let s = LiveSessionState::default();
         s.apply(SessionInput::StartAccepted).unwrap();
         let signal = Arc::new(AtomicBool::new(false));
         s.store_stop_signal(Arc::clone(&signal));
 
-        // What `stop_live_transcription` does: take the signal, flip it.
-        let taken = s.take_stop_signal().expect("a signal was stored");
-        taken.store(true, Ordering::Relaxed);
+        // What `stop_live_transcription` does: accept the stop, which takes
+        // and flips the signal and moves the phase to `Stopping`.
+        let taken = s.accept_stop().expect("a signal was stored");
+        assert!(Arc::ptr_eq(&taken, &signal));
+        assert!(signal.load(Ordering::Relaxed));
+        assert_eq!(current_phase_label(&s), "stopping");
 
         assert!(s.is_session_running());
         assert!(s.apply(SessionInput::StartAccepted).is_err());
@@ -1354,6 +1520,53 @@ mod tests {
         s.reset_session(); // the worker finally exits
         assert!(!s.is_session_running());
         assert!(s.apply(SessionInput::StartAccepted).is_ok());
+    }
+
+    /// The stop transition and the signal take are one step. A stop that
+    /// arrives after the old worker exited and a new session started has no
+    /// live signal, so it cannot relabel the new session as stopping.
+    #[test]
+    fn a_stop_without_a_live_signal_cannot_relabel_a_new_session() {
+        let s = LiveSessionState::default();
+        s.apply(SessionInput::StartAccepted).unwrap();
+        let old_signal = Arc::new(AtomicBool::new(false));
+        s.store_stop_signal(Arc::clone(&old_signal));
+
+        // Old session: Stop accepted, then the worker exits.
+        assert!(s.accept_stop().is_some());
+        s.reset_session();
+
+        // New session: Start accepted, before its signal is stored.
+        s.apply(SessionInput::StartAccepted).unwrap();
+        assert!(s.accept_stop().is_none());
+        assert_eq!(current_phase_label(&s), "starting");
+    }
+
+    /// Same invariant under a real race: whichever side wins, the stop from
+    /// the old session never leaves the restarted session in `Stopping`.
+    #[test]
+    fn a_concurrent_stop_and_restart_never_leave_the_new_session_stopping() {
+        for _ in 0..50 {
+            let state = Arc::new(LiveSessionState::default());
+            state.apply(SessionInput::StartAccepted).unwrap();
+            state.store_stop_signal(Arc::new(AtomicBool::new(false)));
+
+            let stopper = {
+                let state = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    let _ = state.accept_stop();
+                })
+            };
+            state.reset_session();
+            state.apply(SessionInput::StartAccepted).unwrap();
+            stopper.join().expect("stop thread must not panic");
+
+            assert_ne!(
+                state.phase(),
+                SessionPhase::Stopping,
+                "a stop from the old session relabelled the new one"
+            );
+        }
     }
 
     #[test]

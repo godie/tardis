@@ -8,7 +8,8 @@
 //! All helpers are pure (no I/O, no CPAL, no network) and
 //! unit-testable in isolation.
 
-use crate::app::events::AppEvent;
+use crate::app::events::{AppEvent, AppStatus};
+use crate::app::session_phase::SessionPhase;
 
 /// Flat, serializable event payload for the Tauri frontend.
 ///
@@ -24,6 +25,11 @@ pub struct UiAppEvent {
     /// `"idle"`, or `"error"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Present for `status` events: the [`SessionPhase`] the status
+    /// settles the session into, as a lowercase label (`"idle"` or
+    /// `"listening"`). Non-status events omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     /// Present for `transcript` and `translation` events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_index: Option<usize>,
@@ -60,6 +66,21 @@ pub struct UiAppEvent {
     pub duration_ms: Option<u64>,
 }
 
+/// The phase a status event settles the session into, as the lowercase
+/// label the frontend renders.
+///
+/// Reuses [`SessionPhase::apply_status`] so the status table has one
+/// source. The live runner emits only `Listening` and `Stopped`: the
+/// former carries `"listening"`, the latter `"idle"`, which is the phase
+/// the UI draws. The session slot itself stays owned until the worker
+/// thread exits, so a Start click on `stopped` cannot race the teardown.
+fn phase_label_for_status(status: AppStatus) -> String {
+    SessionPhase::Idle
+        .apply_status(status)
+        .as_label()
+        .to_lowercase()
+}
+
 /// Convert a backend [`AppEvent`] into a serializable
 /// [`UiAppEvent`] payload for the Tauri frontend.
 ///
@@ -69,6 +90,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
         AppEvent::StatusChanged(status) => UiAppEvent {
             kind: "status".to_string(),
             status: Some(status.as_label().to_lowercase()),
+            phase: Some(phase_label_for_status(*status)),
             chunk_index: None,
             provider: None,
             text: None,
@@ -83,6 +105,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
         AppEvent::Transcript(t) => UiAppEvent {
             kind: "transcript".to_string(),
             status: None,
+            phase: None,
             chunk_index: Some(t.chunk_index),
             provider: Some(t.provider.clone()),
             text: Some(t.text.clone()),
@@ -97,6 +120,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
         AppEvent::Output(o) => UiAppEvent {
             kind: "output".to_string(),
             status: None,
+            phase: None,
             chunk_index: Some(o.chunk_index),
             provider: None,
             text: Some(o.text.clone()),
@@ -111,6 +135,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
         AppEvent::Speech(s) => UiAppEvent {
             kind: "speech".to_string(),
             status: None,
+            phase: None,
             chunk_index: Some(s.chunk_index),
             provider: None,
             text: Some(s.text.clone()),
@@ -128,6 +153,7 @@ pub fn app_event_to_ui_event(event: &AppEvent) -> UiAppEvent {
         AppEvent::Error(e) => UiAppEvent {
             kind: "error".to_string(),
             status: None,
+            phase: None,
             chunk_index: None,
             provider: None,
             text: None,
@@ -160,10 +186,19 @@ mod tests {
         let ui = app_event_to_ui_event(&e);
         assert_eq!(ui.kind, "status");
         assert_eq!(ui.status.as_deref(), Some("listening"));
+        assert_eq!(ui.phase.as_deref(), Some("listening"));
         // Non-applicable fields are None.
         assert!(ui.text.is_none());
         assert!(ui.provider.is_none());
         assert!(ui.message.is_none());
+    }
+
+    #[test]
+    fn stopped_status_maps_to_the_idle_phase() {
+        let e = AppEvent::StatusChanged(AppStatus::Stopped);
+        let ui = app_event_to_ui_event(&e);
+        assert_eq!(ui.status.as_deref(), Some("stopped"));
+        assert_eq!(ui.phase.as_deref(), Some("idle"));
     }
 
     #[test]
@@ -183,6 +218,7 @@ mod tests {
         assert_eq!(ui.is_final, Some(true));
         // Non-applicable fields are None.
         assert!(ui.status.is_none());
+        assert!(ui.phase.is_none());
         assert!(ui.output_kind.is_none());
         assert!(ui.message.is_none());
     }
@@ -219,6 +255,7 @@ mod tests {
         assert_eq!(ui.message.as_deref(), Some("connection refused"));
         // Non-applicable fields are None.
         assert!(ui.status.is_none());
+        assert!(ui.phase.is_none());
         assert!(ui.text.is_none());
         assert!(ui.chunk_index.is_none());
     }
@@ -279,6 +316,74 @@ mod tests {
         assert!(json.contains(r#""text":"hi""#));
         // Non-applicable fields are absent from JSON.
         assert!(!json.contains("status"));
+        assert!(!json.contains("phase"));
         assert!(!json.contains("message"));
+    }
+
+    /// The serialization contract: non-status events keep exactly the JSON
+    /// they had before `phase` existed, and only `status` carries it.
+    #[test]
+    fn only_status_events_carry_the_phase_field() {
+        let cases = [
+            (
+                "transcript",
+                AppEvent::Transcript(AppTranscriptEvent {
+                    chunk_index: 3,
+                    text: "hello".to_string(),
+                    provider: "mock-local".to_string(),
+                    is_final: true,
+                    duration_ms: 4_320,
+                }),
+                r#"{"kind":"transcript","chunk_index":3,"provider":"mock-local","text":"hello","is_final":true,"duration_ms":4320}"#,
+            ),
+            (
+                "output",
+                AppEvent::Output(AppOutputEvent {
+                    chunk_index: 2,
+                    kind: OutputKind::Translate,
+                    source_text: "hello".to_string(),
+                    text: "hola".to_string(),
+                    source_language: "en".to_string(),
+                    target_language: "es".to_string(),
+                    is_final: true,
+                    blocked: None,
+                }),
+                r#"{"kind":"output","chunk_index":2,"text":"hola","source_language":"en","target_language":"es","output_kind":"translate","is_final":true}"#,
+            ),
+            (
+                "speech",
+                AppEvent::Speech(AppSpeechEvent {
+                    chunk_index: 2,
+                    text: "hola".to_string(),
+                    language: "es".to_string(),
+                    duration_ms: 1_240,
+                    is_final: true,
+                }),
+                r#"{"kind":"speech","chunk_index":2,"text":"hola","target_language":"es","is_final":true,"duration_ms":1240}"#,
+            ),
+            (
+                "error",
+                AppEvent::Error(AppErrorEvent {
+                    message: "connection refused".to_string(),
+                }),
+                r#"{"kind":"error","message":"connection refused"}"#,
+            ),
+        ];
+
+        for (kind, event, expected) in cases {
+            let json =
+                serde_json::to_string(&app_event_to_ui_event(&event)).expect("must serialize");
+            assert_eq!(json, expected, "{kind} payload changed");
+            assert!(!json.contains("phase"), "{kind} must not carry phase");
+        }
+
+        let status = serde_json::to_string(&app_event_to_ui_event(&AppEvent::StatusChanged(
+            AppStatus::Listening,
+        )))
+        .expect("must serialize");
+        assert_eq!(
+            status,
+            r#"{"kind":"status","status":"listening","phase":"listening"}"#
+        );
     }
 }
