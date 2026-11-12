@@ -111,7 +111,7 @@ mirror one of these rows.
 | CLI `devices [--output] [--source mic\|system]` (host + I/O device listing; `--output` for the player preflight; `--source system` for the loopback preflight) | n/a (pure print) | `cargo run -- devices`, `cargo run -- devices --output`, `cargo run -- devices --source system` |
 | CLI `say-text "<text>"` (one TTS request + one playback, no mic) | n/a (HTTP + CPAL glue) | `cargo run -- say-text "hola desde tardis"` |
 | `src-tauri::start_live_transcription` (`Option<AppRuntimeConfig>` arg + session lifecycle + `worker_exit_events`, the `error`+`stopped` pair a failed run pins so Start unlocks) | `worker_exit_events` tests in `src-tauri/src/lib.rs`; the Tauri runtime and threads have none | `cargo run --manifest-path src-tauri/Cargo.toml` |
-| `src-tauri::LiveSessionState` (phase slot: `StartAccepted` / `WorkerExited` transitions, stop-signal handoff, poisoned-mutex recovery) | `tests` in `src-tauri/src/lib.rs` | `cargo run --manifest-path src-tauri/Cargo.toml` (start, double-start, stop mid-session) |
+| `src-tauri::LiveSessionState` (phase slot: `StartAccepted` / `Status` / `WorkerExited` transitions, the `current_phase_label` reader, stop-signal handoff, poisoned-mutex recovery) | `tests` in `src-tauri/src/lib.rs` | `cargo run --manifest-path src-tauri/Cargo.toml` (start, double-start, stop mid-session) |
 | `src-tauri::get_default_runtime_config` / `get_supported_transcription_providers` (UI populators) | n/a (pure, exercised via the running shell) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `src-tauri::load_runtime_settings` / `save_runtime_settings` (resolve OS config dir → call `app::settings_store`) | n/a (Tauri runtime + FS) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 | `app::events` (AppEvent / AppStatus / payload structs incl. `AppSpeechEvent` / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow`, `mock-voice-flow` |
@@ -120,8 +120,8 @@ mirror one of these rows.
 | `app::session_phase` (`SessionPhase` + `SessionInput` transition table + `as_label` / `session_running`) | `tests` in `src/app/session_phase.rs` | n/a (pure; not wired yet) |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_speech_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe`, `mock-voice-flow` |
-| `app::ui_events` (UiAppEvent + app_event_to_ui_event, incl. `speech` / `duration_ms`) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
-| `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_supported_transcription_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
+| `app::ui_events` (UiAppEvent + app_event_to_ui_event, incl. `speech` / `duration_ms` / status-only `phase`) | `tests` in `src/app/ui_events.rs` | consumed by Tauri `start_live_transcription` |
+| `src-tauri` (`start_live_transcription`, `stop_live_transcription`, `get_session_phase`, `get_supported_transcription_providers`) | n/a (Tauri runtime + threads) | `cargo run --manifest-path src-tauri/Cargo.toml` |
 
 ## How to add a new feature
 

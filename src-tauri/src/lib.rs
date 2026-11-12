@@ -79,12 +79,10 @@ impl MockAppState {
 ///   separate `is_running` bool used to encode.
 ///   [`SessionInput::StartAccepted`] takes the session slot and
 ///   [`SessionInput::WorkerExited`] releases it; every other pair is
-///   an illegal transition. One named value keeps the re-entry guard
-///   and the later `get_session_phase` command on the same source,
-///   so the two cannot disagree. Status inputs are not applied here
-///   yet: they land with `get_session_phase`
-///   (`docs/session-state-machine-plan.md`, issue 4), so a live
-///   session reads `Starting` and the guard compares against `Idle`.
+///   an illegal transition. The non-terminal `Listening` status is
+///   applied by [`emit_app_event`], while the terminal statuses stay
+///   the worker exit's job, so a Start click on `stopped` cannot race
+///   the old worker's teardown.
 #[derive(Debug)]
 pub struct LiveSessionState {
     stop_signal: Mutex<Option<Arc<AtomicBool>>>,
@@ -112,12 +110,20 @@ impl LiveSessionState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The phase the session is in right now.
+    ///
+    /// Reads the same slot [`LiveSessionState::apply`] writes, so the
+    /// re-entry guard and [`current_phase_label`] cannot disagree.
+    fn phase(&self) -> SessionPhase {
+        *self.lock_phase()
+    }
+
     /// Returns `true` while a session owns the microphone slot.
     ///
     /// [`SessionPhase::Starting`] counts: the worker exists from the
     /// accepted start, before the runner reports listening.
     pub fn is_session_running(&self) -> bool {
-        *self.lock_phase() != SessionPhase::Idle
+        self.phase() != SessionPhase::Idle
     }
 
     /// Apply one lifecycle input to the stored phase.
@@ -197,18 +203,41 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
-/// Persist one backend event, then emit it to the frontend.
+/// Persist one backend event, keep the session phase in step, then emit it
+/// to the frontend.
 ///
-/// Order matters: anything the user can already see is already on disk.
-/// Infallible on purpose: [`append_history`] reports its own failures and
-/// must not swallow the event, and an emit failure on the worker thread has
-/// no recovery path.
-fn emit_app_event(app: &tauri::AppHandle, event: &tardis::app::events::AppEvent) {
+/// Order matters: anything the user can already see is already on disk, and
+/// a non-terminal status updates the phase slot before the payload reaches
+/// the UI, so [`get_session_phase`] reports the running phase. Terminal
+/// statuses deliberately leave the slot alone: [`SessionCleanupGuard`] owns
+/// the return to `Idle`, which keeps a Start click on the `stopped` event
+/// from starting a new worker before the old one has exited. Infallible on
+/// purpose: [`append_history`] reports its own failures and must not swallow
+/// the event, and an emit failure on the worker thread has no recovery path.
+fn emit_app_event(
+    app: &tauri::AppHandle,
+    session: &LiveSessionState,
+    event: &tardis::app::events::AppEvent,
+) {
+    use tardis::app::events::{AppEvent, AppStatus};
+
     append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    if let AppEvent::StatusChanged(AppStatus::Listening) = event {
+        // Listening is always legal (`apply_status` covers every phase).
+        let _ = session.apply(SessionInput::Status(AppStatus::Listening));
+    }
     let _ = app.emit(
         "app-event",
         tardis::app::ui_events::app_event_to_ui_event(event),
     );
+}
+
+/// Lowercase phase label the UI renders, read from the live session slot.
+///
+/// This is the body of [`get_session_phase`], split out so the Tauri
+/// wrapper stays a one-line adapter and the label mapping is unit-tested.
+fn current_phase_label(session: &LiveSessionState) -> String {
+    session.phase().as_label().to_lowercase()
 }
 
 /// The extra events the worker emits once the runner call has resolved.
@@ -290,6 +319,8 @@ fn start_live_transcription(
     let provider_label = config.transcription_provider.clone();
     let config_clone = config.clone();
     let session_for_cleanup = Arc::clone(&session);
+    let session_for_events = Arc::clone(&session);
+    let session_for_exit = Arc::clone(&session);
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
@@ -315,7 +346,7 @@ fn start_live_transcription(
                 config_clone,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| emit_app_event(&app_clone, &event),
+                move |event| emit_app_event(&app_clone, &session_for_events, &event),
             );
 
             // The runner emits `stopped` itself on its success path, so a
@@ -326,7 +357,7 @@ fn start_live_transcription(
                 .err()
                 .map(|e| format!("Live transcription failed: {e}"));
             for event in worker_exit_events(error) {
-                emit_app_event(&app, &event);
+                emit_app_event(&app, &session_for_exit, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -372,6 +403,18 @@ fn stop_live_transcription(
         }
         None => Err(NO_SESSION_RUNNING_ERR.to_string()),
     }
+}
+
+/// Return the live session's current phase as the lowercase label the UI
+/// renders (`"idle"`, `"starting"`, `"listening"`, or `"stopping"`).
+///
+/// The UI can resync from this command instead of replaying command
+/// outcomes, which lose the race when a terminal event lands before
+/// Start's invoke resolves. It reads the same [`LiveSessionState`] slot
+/// the worker and [`emit_app_event`] write.
+#[tauri::command]
+fn get_session_phase(session: tauri::State<'_, Arc<LiveSessionState>>) -> String {
+    current_phase_label(session.inner())
 }
 
 /// List the input devices the host reports, for the settings selector.
@@ -859,6 +902,7 @@ pub fn run() {
             transcribe_wav_file_local,
             start_live_transcription,
             stop_live_transcription,
+            get_session_phase,
             get_supported_transcription_providers,
             list_input_devices,
             get_supported_processor_providers,
@@ -1331,6 +1375,27 @@ mod tests {
 
         assert!(s.apply(SessionInput::StartAccepted).is_err());
         assert!(s.is_session_running());
+    }
+
+    /// The command body reads the same slot `apply` writes: the label
+    /// tracks the phase through start, listening, and the terminal stop.
+    #[test]
+    fn current_phase_label_matches_the_stored_phase() {
+        use tardis::app::events::AppStatus as LiveStatus;
+
+        let s = LiveSessionState::default();
+        assert_eq!(current_phase_label(&s), "idle");
+
+        s.apply(SessionInput::StartAccepted).unwrap();
+        assert_eq!(current_phase_label(&s), "starting");
+
+        s.apply(SessionInput::Status(LiveStatus::Listening))
+            .unwrap();
+        assert_eq!(current_phase_label(&s), "listening");
+
+        // The terminal status is the worker exit's job, not the event's.
+        s.reset_session();
+        assert_eq!(current_phase_label(&s), "idle");
     }
 
     #[test]
