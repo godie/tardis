@@ -45,8 +45,9 @@ function installFakeBridge(page, config) {
   return page.addInitScript((initialConfig) => {
     // `phase` mirrors the backend's session slot: `get_session_phase`
     // answers it, and the specs set it when a command's outcome depends on
-    // the slot rather than on the last event.
-    const state = { calls: [], listeners: [], phase: "idle", holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [] };
+    // the slot rather than on the last event. `holdPhase` keeps the answer
+    // in flight so a test can land an event first.
+    const state = { calls: [], listeners: [], phase: "idle", holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [], holdPhase: false, phaseResolvers: [] };
     window.__tauriTest = state;
 
     async function invoke(command, args) {
@@ -55,6 +56,11 @@ function installFakeBridge(page, config) {
         case "get_app_status":
           return "Idle";
         case "get_session_phase":
+          if (state.holdPhase) {
+            return new Promise((resolve, reject) => {
+              state.phaseResolvers.push({ resolve, reject });
+            });
+          }
           return state.phase;
         case "load_runtime_settings":
         case "get_default_runtime_config":
@@ -618,6 +624,32 @@ test("a stopped event during the stop flight is not overwritten by its response"
   await expect(page.locator("#hangover-ms")).toBeEnabled();
 });
 
+test("a late listening event does not re-enable Stop after an accepted one", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+  await expect(page.locator("#stop-button")).toBeEnabled();
+  await page.locator("#stop-button").click();
+  // The Stop was accepted: the worker is draining, and the backend has
+  // already taken its stop signal.
+  await expect(page.locator("#stop-button")).toBeDisabled();
+
+  // This session's own `listening` status was queued behind the Stop
+  // command. Drawing it would offer a second Stop the backend refuses.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "listening", phase: "listening" }),
+  );
+  await page.waitForTimeout(30);
+  await expect(page.locator("#stop-button")).toBeDisabled();
+  await expect(page.locator("#start-button")).toBeDisabled();
+  await expect(page.locator("#hangover-ms")).toBeDisabled();
+
+  // The worker exits and releases the panel as usual.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "stopped", phase: "idle" }),
+  );
+  await expect(page.locator("#start-button")).toBeEnabled();
+});
+
 // ---- phase resync ------------------------------------------------------
 // The UI draws the phase the backend reports. When a command's outcome is
 // the only place that phase could come from, it asks `get_session_phase`
@@ -658,6 +690,35 @@ test("a refused Stop resyncs the UI to the backend's idle phase", async ({ page 
     () => window.__tauriTest.calls.filter((call) => call.command === "get_session_phase").length,
   );
   expect(resyncs).toBeGreaterThan(1);
+});
+
+test("a stale phase response does not overwrite a newer status event", async ({ page }) => {
+  await installFakeBridge(page, DEFAULT_CONFIG);
+  await page.addInitScript(() => {
+    window.__tauriTest.holdPhase = true;
+  });
+  await page.goto("/");
+  await page.waitForFunction(() =>
+    window.__tauriTest.calls.some((call) => call.command === "get_session_phase"),
+  );
+
+  // The worker reports listening while the boot query is still pending:
+  // the event is newer than the slot that command read.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "listening", phase: "listening" }),
+  );
+  await expect(page.locator("#stop-button")).toBeEnabled();
+
+  // The late answer must not move the panel back to `starting`, where Stop
+  // is disabled and no further status is guaranteed.
+  await page.evaluate(() => {
+    window.__tauriTest.phaseResolvers.forEach((resolver) => resolver.resolve("starting"));
+    window.__tauriTest.holdPhase = false;
+  });
+  await page.waitForTimeout(30);
+  await expect(page.locator("#stop-button")).toBeEnabled();
+  await expect(page.locator("#start-button")).toBeDisabled();
+  await expect(page.locator("#hangover-ms")).toBeDisabled();
 });
 
 test("a worker failure during the start flight accepts an immediate restart", async ({ page }) => {

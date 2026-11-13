@@ -218,11 +218,18 @@ function clearSpokenAudio() {
 // second copy of the rules.
 let sessionPhase = "idle";
 
+// Bumped by every phase write. A resync is a snapshot of the backend slot
+// taken when its command was sent; if a status event drew a newer phase
+// while the answer was in flight, that answer is older than what is on
+// screen and applying it would move the panel backwards.
+let phaseGeneration = 0;
+
 // Draw the Start/Stop/settings layout for one phase. Idle is the only
 // phase with an enabled Start and an unlocked panel. Stop is live only
 // while capture runs: during `stopping` a retry would race the worker's
 // teardown, and during `starting` there is nothing to stop yet.
 function renderSessionPhase(phase) {
+  phaseGeneration += 1;
   sessionPhase = phase;
   const idle = phase === "idle";
   startButton.disabled = !idle;
@@ -242,9 +249,10 @@ function renderSessionPhase(phase) {
 // the worker already exited. Only the backend can say where that left the
 // session.
 async function resyncSessionPhase() {
+  const generation = phaseGeneration;
   try {
     const phase = await invoke("get_session_phase");
-    if (typeof phase === "string") {
+    if (typeof phase === "string" && generation === phaseGeneration) {
       renderSessionPhase(phase);
     }
   } catch (error) {
@@ -485,6 +493,16 @@ async function stopLiveTranscription() {
   }
 }
 
+// Draw the phase a `status` event carries. The label says where its status
+// settles an idle session, not where the slot is now, so the one pair the
+// Rust table guards needs the same guard here: a late `listening` for a
+// session whose Stop the backend already accepted stays `stopping`.
+// Drawing `listening` would offer a Stop the worker refuses.
+function applyStatusPhase(phase) {
+  if (phase === "listening" && sessionPhase === "stopping") return;
+  renderSessionPhase(phase);
+}
+
 // Listen for Tauri events emitted by the backend.
 function setupEventListener() {
   if (!window.__TAURI__?.event?.listen) {
@@ -508,7 +526,7 @@ function setupEventListener() {
         // predates #67; a terminal status still ends the session there,
         // which is the one outcome the panel cannot survive missing.
         if (typeof payload.phase === "string") {
-          renderSessionPhase(payload.phase);
+          applyStatusPhase(payload.phase);
         } else if (status === "stopped" || status === "error") {
           renderSessionPhase("idle");
         }
