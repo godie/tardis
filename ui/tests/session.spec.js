@@ -6,6 +6,10 @@
 // payloads (including `speech`, the utterance the backend just spoke) land in
 // the right panels.
 //
+// The controls are drawn from the `phase` the backend reports (`status`
+// events, and `get_session_phase` when a command's outcome leaves it
+// unknown), so each spec feeds the phase the real shell would send.
+//
 // What this does not cover: the Rust commands and the real microphone. Those
 // are exercised by `cargo test --manifest-path src-tauri/Cargo.toml` and by the
 // manual run in `docs/tauri-ui-shell.md`. The window itself is not automated
@@ -39,7 +43,10 @@ const INPUT_DEVICES = [
 // listener the frontend registered for `app-event`.
 function installFakeBridge(page, config) {
   return page.addInitScript((initialConfig) => {
-    const state = { calls: [], listeners: [], holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [] };
+    // `phase` mirrors the backend's session slot: `get_session_phase`
+    // answers it, and the specs set it when a command's outcome depends on
+    // the slot rather than on the last event.
+    const state = { calls: [], listeners: [], phase: "idle", holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [] };
     window.__tauriTest = state;
 
     async function invoke(command, args) {
@@ -47,6 +54,8 @@ function installFakeBridge(page, config) {
       switch (command) {
         case "get_app_status":
           return "Idle";
+        case "get_session_phase":
+          return state.phase;
         case "load_runtime_settings":
         case "get_default_runtime_config":
           return initialConfig;
@@ -580,3 +589,117 @@ test("a delayed listening event cannot pull a Stop attempt back to listening", a
   );
   expect(stops).toBe(1);
 });
+
+test("a stopped event during the stop flight is not overwritten by its response", async ({
+  page,
+}) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+  await expect(page.locator("#stop-button")).toBeEnabled();
+
+  await page.evaluate(() => {
+    window.__tauriTest.holdStop = true;
+  });
+  await page.locator("#stop-button").click();
+  // The worker exits before the stop command answers. A `stopping` drawn
+  // over this would leave Start disabled with no event left to unlock it.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "stopped", phase: "idle" }),
+  );
+  await expect(page.locator("#start-button")).toBeEnabled();
+
+  await page.evaluate(() => {
+    window.__tauriTest.stopResolvers.forEach((resolver) => resolver.resolve("stopping"));
+    window.__tauriTest.holdStop = false;
+  });
+  await page.waitForTimeout(30);
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await expect(page.locator("#stop-button")).toBeDisabled();
+  await expect(page.locator("#hangover-ms")).toBeEnabled();
+});
+
+// ---- phase resync ------------------------------------------------------
+// The UI draws the phase the backend reports. When a command's outcome is
+// the only place that phase could come from, it asks `get_session_phase`
+// instead of guessing one: guessing `listening` after a refused Stop is
+// what left the panel locked on a session the backend had already dropped.
+
+test("a refused Stop resyncs the UI to the backend's idle phase", async ({ page }) => {
+  await openShell(page);
+  await page.locator("#start-button").click();
+  await expect(page.locator("#start-button")).toBeDisabled();
+
+  // The worker died without the UI seeing a terminal event, so the phase
+  // copied here is still `listening` and the backend's slot is `idle`.
+  await page.evaluate(() => {
+    window.__tauriTest.holdStop = true;
+    window.__tauriTest.phase = "idle";
+  });
+  await page.locator("#stop-button").click();
+  // Stop is the one command that can tell the UI its phase is stale.
+  await page.evaluate(() => {
+    window.__tauriTest.stopResolvers.forEach((resolver) =>
+      resolver.reject("No live transcription session is running"),
+    );
+    window.__tauriTest.holdStop = false;
+  });
+
+  await expect(page.locator("#live-error")).toContainText(
+    "No live transcription session is running",
+  );
+  // The resync, not a local guess, is what unlocks the panel: boot asked
+  // once, and the refused Stop asks again.
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await expect(page.locator("#stop-button")).toBeDisabled();
+  for (const selector of ["#chunk-duration-ms", "#hangover-ms", "#min-speech-ms", "#max-utterance-ms", "#mode-select"]) {
+    await expect(page.locator(selector)).toBeEnabled();
+  }
+  const resyncs = await page.evaluate(
+    () => window.__tauriTest.calls.filter((call) => call.command === "get_session_phase").length,
+  );
+  expect(resyncs).toBeGreaterThan(1);
+});
+
+test("a worker failure during the start flight accepts an immediate restart", async ({ page }) => {
+  await openShell(page);
+  await page.evaluate(() => {
+    window.__tauriTest.holdStart = true;
+  });
+  await page.locator("#start-button").click();
+
+  // The worker dies before Start's invoke resolves: the terminal pair is
+  // the only thing that can unlock the panel, and it lands mid-flight.
+  await page.evaluate(() => {
+    window.emitAppEvent({
+      kind: "error",
+      message: "Live transcription failed: microphone access denied",
+    });
+    window.emitAppEvent({ kind: "status", status: "stopped", phase: "idle" });
+  });
+  await expect(page.locator("#start-button")).toBeEnabled();
+
+  // The doomed invoke settles and must not revive the session it learned
+  // was over.
+  await page.evaluate(() => {
+    window.__tauriTest.startResolvers.forEach((resolver) =>
+      resolver.resolve("started with provider mock-local"),
+    );
+    window.__tauriTest.holdStart = false;
+  });
+  await page.waitForTimeout(30);
+  await expect(page.locator("#start-button")).toBeEnabled();
+  await expect(page.locator("#stop-button")).toBeDisabled();
+
+  // A restart is accepted, and it is one worker per click: the retry is
+  // not swallowed, and a second click on the live session spawns nothing.
+  await page.locator("#start-button").click();
+  await expect(page.locator("#stop-button")).toBeEnabled();
+  await page.locator("#start-button").dispatchEvent("click");
+  await page.waitForTimeout(30);
+  const starts = await page.evaluate(
+    () => window.__tauriTest.calls.filter((call) => call.command === "start_live_transcription").length,
+  );
+  expect(starts).toBe(2);
+  await expect(page.locator("#start-button")).toBeDisabled();
+});
+

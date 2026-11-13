@@ -210,16 +210,47 @@ function clearSpokenAudio() {
 
 // ===== Live transcription via Tauri events ================================
 
-// Canonical session phase, one variable instead of three booleans.
-// The rules below enforce the transitions `src/app/session_phase.rs`
-// documents (normative; see also the conformance spec in
-// `ui/tests/session.spec.js`): only a `listening` phase reaches Stop,
-// and out-of-order backend events never own a phase a click or an
-// invoke already holds.
-function isSessionLive(phase) {
-  return phase === "listening" || phase === "stopping";
-}
+// The last session phase the backend reported: `status` events carry it
+// (`UiAppEvent::phase`, computed by `SessionPhase::apply_status`) and
+// `get_session_phase` answers it on boot and after a command whose outcome
+// the UI cannot infer. `src/app/session_phase.rs` owns the transition
+// table; this file draws the phase it was handed instead of keeping a
+// second copy of the rules.
 let sessionPhase = "idle";
+
+// Draw the Start/Stop/settings layout for one phase. Idle is the only
+// phase with an enabled Start and an unlocked panel. Stop is live only
+// while capture runs: during `stopping` a retry would race the worker's
+// teardown, and during `starting` there is nothing to stop yet.
+function renderSessionPhase(phase) {
+  sessionPhase = phase;
+  const idle = phase === "idle";
+  startButton.disabled = !idle;
+  startButton.dataset.state = idle ? "idle" : "busy";
+  stopButton.disabled = phase !== "listening";
+  if (idle) {
+    enableSessionSettings();
+  } else {
+    disableSessionSettings();
+  }
+}
+
+// Ask the backend which phase its session slot holds, and draw it.
+//
+// The local copy goes stale when an event outruns an invoke: a terminal
+// status during the start flight, or a Stop the backend refuses because
+// the worker already exited. Only the backend can say where that left the
+// session.
+async function resyncSessionPhase() {
+  try {
+    const phase = await invoke("get_session_phase");
+    if (typeof phase === "string") {
+      renderSessionPhase(phase);
+    }
+  } catch (error) {
+    log("could not read the session phase:", error);
+  }
+}
 
 const languageHint = document.querySelector("#language-hint");
 
@@ -278,10 +309,6 @@ function readNumberInput(input, label, { integer = false } = {}) {
   return { ok: true, value };
 }
 
-// One place owns the Start/Stop/settings invariants: Stop is only
-// actionable while a session runs, Start only while it does not, and the
-// settings panel is locked exactly for the duration. A failed or aborted
-// start must not leave the panel locked with Stop live.
 // The endpointing pair has one cross-field rule the Backend also enforces:
 // a cap below the minimum would flush every burst before it could qualify,
 // so the session would transcribe nothing. Check it before starting instead
@@ -311,18 +338,6 @@ function readEndpointInputs() {
   };
 }
 
-function setSessionControls(running) {
-  startButton.disabled = running;
-  startButton.dataset.state = running ? "busy" : "idle";
-  stopButton.disabled = !running;
-  if (running) {
-    // An in-flight live runner is never silently reconfig'd.
-    disableSessionSettings();
-  } else {
-    enableSessionSettings();
-  }
-}
-
 let startInFlight = false;
 
 async function startLiveTranscription() {
@@ -332,7 +347,6 @@ async function startLiveTranscription() {
   // (a stale `stopped`, for example) must not re-open Start while the
   // first request is unresolved.
   if (sessionPhase !== "idle" || startInFlight) return;
-  startInFlight = true;
 
   const chunk = readNumberInput(chunkDurationMsInput, "Chunk duration", { integer: true });
   const threshold = readNumberInput(volumeThresholdInput, "Volume threshold");
@@ -345,7 +359,11 @@ async function startLiveTranscription() {
     return;
   }
 
-  sessionPhase = "starting";
+  startInFlight = true;
+  // The click is `StartAccepted`: the backend takes the session slot
+  // before it answers, so the panel locks now and not when the invoke
+  // settles.
+  renderSessionPhase("starting");
   setStatus("Starting\u2026");
   setLiveError("");
   // A new session starts with no spoken line: the previous run's
@@ -374,20 +392,19 @@ async function startLiveTranscription() {
     const msg = await invoke("start_live_transcription", { config });
     log("start_live_transcription:", msg, "config:", config);
     // Only the settled invoke owns the transition out of `starting`, and
-    // only while the phase is still there: a `stopped` that landed during
-    // the flight already ended the session (failed start, or an immediate
-    // Stop) and must not be revived here.
+    // only while the phase is still there: a terminal event that landed
+    // during the flight already ended the session (a failed worker, or an
+    // immediate Stop) and must not be revived here.
     if (sessionPhase === "starting") {
-      sessionPhase = "listening";
-      setSessionControls(isSessionLive(sessionPhase));
+      renderSessionPhase("listening");
     }
   } catch (error) {
     setStatus("Error");
     setLiveError(`Failed to start: ${error}`);
-    if (startInFlight) {
-      sessionPhase = "idle";
-      setSessionControls(false);
-    }
+    // `StartFailed` out of `starting` lands in `idle` (the table in
+    // `src/app/session_phase.rs`): the backend refused, so this page has
+    // no session and the panel must not stay locked on one.
+    renderSessionPhase("idle");
   } finally {
     startInFlight = false;
   }
@@ -429,31 +446,42 @@ function enableSessionSettings() {
   }
 }
 
+// One Stop at a time. The phase does not move until the backend accepts
+// the stop, so the button stays live for the whole round trip (a click
+// that lands mid-flight must not send a second request).
+let stopInFlight = false;
+
 async function stopLiveTranscription() {
-  if (sessionPhase !== "listening") return;
+  if (sessionPhase !== "listening" || stopInFlight) return;
+  stopInFlight = true;
 
   // The command returns once the worker has the stop flag, not once it has
   // exited, so the session is still running at this point. Keep the panel
-  // locked and the phase stays `stopping`; the "stopped" status event is what
-  // unlocks the settings and Start.
-  sessionPhase = "stopping";
+  // locked and the phase on `listening`; the accepted Stop moves it to
+  // `stopping`, and only the backend's `stopped` status unlocks it.
   setStatus("Stopping\u2026");
 
   try {
     const msg = await invoke("stop_live_transcription");
     log("stop_live_transcription:", msg);
-    stopButton.disabled = true;
-  } catch (error) {
-    // Still listening — but only if this Stop attempt still owns the
-    // phase: a `stopped` event that landed while the invoke was in
-    // flight already moved the session to `idle`, and restoring
-    // `listening` here would strand the UI on a session the backend
-    // no longer has.
-    if (sessionPhase === "stopping") {
-      sessionPhase = "listening";
+    // `StopAccepted`: the worker is draining. Only while the phase is
+    // still `listening` — a `stopped` that landed during the flight
+    // already ended the session, and reviving `stopping` over it would
+    // strand the panel on a worker that is gone.
+    if (sessionPhase === "listening") {
+      renderSessionPhase("stopping");
     }
+  } catch (error) {
+    // The backend refused the Stop, so the phase this UI holds is the
+    // stale one. "No live transcription session is running" means the
+    // worker already exited; only `get_session_phase` can say where that
+    // left the session, and guessing `listening` here is what stranded the
+    // panel on a session the backend no longer had.
     log("stop error:", error);
     setLiveError(`Failed to stop: ${error}`);
+    await resyncSessionPhase();
+  } finally {
+    stopInFlight = false;
   }
 }
 
@@ -473,24 +501,16 @@ function setupEventListener() {
         const status = payload.status;
         if (status) {
           setStatus(status.charAt(0).toUpperCase() + status.slice(1));
-          // `stopped` is terminal and outranks a settling Start: the
-          // worker runs inside the invoke, so a failed start or an
-          // immediate Stop ends the session before the command returns
-          // `started`. Honoring it keeps the UI off a session the
-          // backend no longer has.
-          const startOwnsResolution = startInFlight;
-          const stopOwnsResolution = sessionPhase === "stopping";
-          if (status === "stopped") {
-            // Worker has fully exited; let the user adjust settings
-            // before pressing Start again.
-            sessionPhase = "idle";
-            setSessionControls(false);
-          } else if (!startOwnsResolution && status === "listening" && !stopOwnsResolution) {
-            // The settle branch owns a start still in flight, and a
-            // delayed `listening` cannot pull a Stop attempt back.
-            sessionPhase = "listening";
-            setSessionControls(isSessionLive(sessionPhase));
-          }
+        }
+        // The phase travels with the status (`UiAppEvent::phase`, from
+        // `SessionPhase::apply_status`), so this draws the backend's answer
+        // instead of replaying the table here. A payload without the field
+        // predates #67; a terminal status still ends the session there,
+        // which is the one outcome the panel cannot survive missing.
+        if (typeof payload.phase === "string") {
+          renderSessionPhase(payload.phase);
+        } else if (status === "stopped" || status === "error") {
+          renderSessionPhase("idle");
         }
         break;
       }
@@ -555,6 +575,9 @@ async function syncInitialState() {
   const status = await invoke("get_app_status");
   setStatus(status);
   setupEventListener();
+  // A reloaded window must not start on the `idle` markup when the shell
+  // still holds a session: the backend's slot outranks the page's default.
+  await resyncSessionPhase();
   await loadFromBackendSettings();
   updateLanguageHint();
 }
@@ -891,6 +914,6 @@ window.addEventListener("DOMContentLoaded", () => {
     // copy that tells the user what to do next.
     setStatus("Error");
     setLiveError(`Could not read the backend state: ${error}`);
-    setSessionControls(false);
+    renderSessionPhase("idle");
   });
 });
