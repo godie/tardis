@@ -190,6 +190,20 @@ function appendTranslation(text, sourceLang, targetLang, blocked) {
   appendHistoryItem(translationPanel, item);
 }
 
+// The speech line has one state, carried by its `data-state`: `hidden`
+// before the backend reports a spoken chunk, `spoken` once it does. The
+// `hidden` attribute and the placeholder copy of the hidden line derive
+// from it, so the three cannot disagree.
+const SPEECH_PLACEHOLDER = "Spoken audio appears here once a chunk is synthesized.";
+
+function setSpeechState(state) {
+  speechStatus.dataset.state = state;
+  speechStatus.hidden = state === "hidden";
+  if (state === "hidden") {
+    speechStatus.textContent = SPEECH_PLACEHOLDER;
+  }
+}
+
 // The speech line reports what the backend rendered and asked the
 // player to speak. `duration_ms` comes from the same pure helper the
 // CLI prints, so both surfaces agree to the millisecond.
@@ -197,15 +211,12 @@ function showSpokenAudio(text, language, durationMs) {
   if (!speechStatus || !text) return;
   const seconds = (Number(durationMs) / 1000).toFixed(1);
   speechStatus.textContent = `Spoken · ${seconds} s · ${language} — ${text}`;
-  speechStatus.dataset.state = "spoken";
-  speechStatus.hidden = false;
+  setSpeechState("spoken");
 }
 
 function clearSpokenAudio() {
   if (!speechStatus) return;
-  speechStatus.hidden = true;
-  speechStatus.textContent = "Spoken audio appears here once a chunk is synthesized.";
-  delete speechStatus.dataset.state;
+  setSpeechState("hidden");
 }
 
 // ===== Live transcription via Tauri events ================================
@@ -809,9 +820,22 @@ targetLanguage.addEventListener("change", () => {
 // already shaped by `normalize_local_transcription_error` on the
 // Rust side; here we only need to surface them.
 
-function setFileTranscribeStatus(message, state) {
+// The widget's one state: `idle | busy | done | error`. The status line's
+// `data-state` and message, the button's `disabled` flag and the button's
+// own `data-state` all derive from it, so they cannot disagree. `busy` is
+// also the in-flight guard: a click is blocked by the disabled attribute,
+// but Enter in the path field and a rapid double-click can both reach the
+// handler before the first run has awaited anything.
+let fileTranscribeState = "idle";
+
+function setFileTranscribeState(state, message) {
+  fileTranscribeState = state;
   fileTranscribeStatus.textContent = message;
   fileTranscribeStatus.dataset.state = state;
+
+  const busy = state === "busy";
+  transcribeFileButton.disabled = busy;
+  transcribeFileButton.dataset.state = busy ? "busy" : "idle";
 }
 
 function setFileTranscribeError(message) {
@@ -829,17 +853,13 @@ function setFileTranscribeOutput(message, isMuted) {
   fileTranscribeOutput.classList.toggle("muted", Boolean(isMuted));
 }
 
-let isTranscribing = false;
-
 async function runFileTranscribe() {
-  // The click path is covered by the disabled attribute, but Enter inside
-  // the path field and a rapid double-click can both land here.
-  if (isTranscribing) return;
+  if (fileTranscribeState === "busy") return;
 
   const filePath = wavFilePathInput.value.trim();
   if (!filePath) {
     wavFilePathInput.setAttribute("aria-invalid", "true");
-    setFileTranscribeStatus("No file \u2014 enter a WAV path first.", "error");
+    setFileTranscribeState("error", "No file \u2014 enter a WAV path first.");
     setFileTranscribeError(
       "Enter the path to a WAV file, for example output/chunks/chunk_001.wav.",
     );
@@ -847,27 +867,19 @@ async function runFileTranscribe() {
     return;
   }
 
-  isTranscribing = true;
   wavFilePathInput.removeAttribute("aria-invalid");
   setFileTranscribeError("");
-  setFileTranscribeStatus("Transcribing\u2026", "busy");
+  setFileTranscribeState("busy", "Transcribing\u2026");
   setFileTranscribeOutput("Transcribing\u2026", true);
-  transcribeFileButton.disabled = true;
-  transcribeFileButton.dataset.state = "busy";
 
   try {
     const transcript = await invoke("transcribe_wav_file_local", { filePath });
-    setFileTranscribeStatus(`Done \u2014 transcribed ${filePath}`, "done");
+    setFileTranscribeState("done", `Done \u2014 transcribed ${filePath}`);
     setFileTranscribeOutput(transcript || "(empty transcript)", false);
   } catch (error) {
-    const message = String(error);
-    setFileTranscribeStatus(`Failed \u2014 could not transcribe ${filePath}`, "error");
+    setFileTranscribeState("error", `Failed \u2014 could not transcribe ${filePath}`);
     setFileTranscribeOutput("(no transcript)", true);
-    setFileTranscribeError(message);
-  } finally {
-    isTranscribing = false;
-    transcribeFileButton.disabled = false;
-    transcribeFileButton.dataset.state = "idle";
+    setFileTranscribeError(String(error));
   }
 }
 
@@ -879,7 +891,6 @@ wavFilePathInput.addEventListener("keydown", (event) => {
   // retry after fixing a typo.
   if (event.key === "Enter") {
     event.preventDefault();
-    if (transcribeFileButton.disabled) return;
     runFileTranscribe();
   }
 });

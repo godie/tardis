@@ -40,6 +40,11 @@ const INPUT_DEVICES = [
 function installFakeBridge(page, config) {
   return page.addInitScript((initialConfig) => {
     const state = { calls: [], listeners: [], holdStart: false, startResolvers: [], holdStop: false, stopResolvers: [] };
+    // The file widget's re-entry guard is only observable while the first
+    // transcription is still in flight, so its answer can be held open the
+    // same way Start and Stop are.
+    state.holdTranscribe = false;
+    state.transcribeResolvers = [];
     window.__tauriTest = state;
 
     async function invoke(command, args) {
@@ -74,6 +79,15 @@ function installFakeBridge(page, config) {
             });
           }
           return "Stopped";
+        case "transcribe_wav_file_local":
+          // The file widget's re-entry guard is only observable while the
+          // first transcription is still in flight.
+          if (state.holdTranscribe) {
+            return new Promise((resolve) => {
+              state.transcribeResolvers.push(resolve);
+            });
+          }
+          return "transcribed text";
         default:
           return null;
       }
@@ -285,6 +299,39 @@ test("utterance events fill the transcript, output and speech lines", async ({ p
   await expect(page.locator("#speech-status")).toBeVisible();
   await expect(page.locator("#speech-status")).toHaveText(`Spoken · 4.3 s · es — ${spoken}`);
   await expect(page.locator("#live-error")).toBeHidden();
+});
+
+test("a double click and Enter during a transcription start one run", async ({ page }) => {
+  await openShell(page);
+  await page.evaluate(() => {
+    window.__tauriTest.holdTranscribe = true;
+  });
+
+  // Two clicks and Enter, all before the first command settles. The disabled
+  // attribute covers a user's second click, so the events are dispatched
+  // directly to exercise the widget's own re-entry guard as well.
+  await page.evaluate(() => {
+    const button = document.querySelector("#transcribe-file-button");
+    const input = document.querySelector("#wav-file-path");
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+
+  const calls = await page.evaluate(() =>
+    window.__tauriTest.calls.filter((call) => call.command === "transcribe_wav_file_local"),
+  );
+  expect(calls).toHaveLength(1);
+  await expect(page.locator("#transcribe-file-button")).toBeDisabled();
+
+  // The held run settles into `done` and unlocks the button again.
+  await page.evaluate(() => {
+    window.__tauriTest.transcribeResolvers.shift()("hola mundo");
+  });
+  await expect(page.locator("#file-transcribe-status")).toHaveText(
+    "Done \u2014 transcribed output/chunks/chunk_001.wav",
+  );
+  await expect(page.locator("#transcribe-file-button")).toBeEnabled();
 });
 
 test("each utterance appends to the transcript and translation histories instead of replacing them", async ({ page }) => {
