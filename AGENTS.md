@@ -202,6 +202,13 @@ CLI / Tauri command
   `status` events only and mirrors `SessionPhase` lowercase labels. After a
   terminal event, draw the event's phase; `get_session_phase` reports `idle`
   only once worker cleanup finishes, because the slot stays taken until then.
+  The frontend keeps exactly one `sessionPhase` and draws the controls from
+  it: a local table of status-to-phase rules is a second copy of
+  `SessionPhase::apply_status`, and it is what left the panel locked on a
+  session the backend had already ended. Command outcomes come from the
+  transition table (`StartAccepted`, `StopAccepted`, `StartFailed`); resync
+  through `get_session_phase` on boot and after a refused Stop, where the
+  copied phase cannot be trusted.
 - **Provider selection is validated in the backend.**
   `start_live_transcription` takes an optional `AppRuntimeConfig`, normalizes
   and validates it (provider and processor names included) before touching
