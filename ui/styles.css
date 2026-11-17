@@ -220,25 +220,33 @@ h1 {
   background: var(--ink-soft);
 }
 
-/* Starting… is armed but not yet live: ochre, unlit. */
-.status-pill[data-status^="Starting"] {
+/* The pill's look is the session phase (`data-phase`, from the backend's
+   `SessionPhase`), not the status text: "Starting…" from the UI and
+   "Starting" from the backend are one phase, and a text prefix only
+   matched the first. */
+
+/* Starting is armed but not yet live: ochre, unlit. */
+.status-pill[data-phase="starting"] {
   background: var(--signal-surface);
 }
 
-.status-pill[data-status^="Starting"]::before {
+.status-pill[data-phase="starting"]::before {
   background: var(--signal-deep);
 }
 
 /* Listening is live: full signal plus a halo the eye catches peripherally. */
-.status-pill[data-status="Listening"] {
+.status-pill[data-phase="listening"] {
   background: color-mix(in oklch, var(--signal) 38%, var(--lift));
 }
 
-.status-pill[data-status="Listening"]::before {
+.status-pill[data-phase="listening"]::before {
   background: var(--signal-deep);
   box-shadow: 0 0 0 8px color-mix(in oklch, var(--signal) 18%, transparent);
 }
 
+/* Stopped and Error are outcomes rather than phases: both settle on
+   `idle`, so their look keeps the exact status label. Neither has the
+   ellipsis twin the prefix selectors had. */
 .status-pill[data-status="Stopped"] {
   background: color-mix(in oklch, var(--ink) 9%, var(--lift));
 }

@@ -650,6 +650,48 @@ test("a late listening event does not re-enable Stop after an accepted one", asy
   await expect(page.locator("#start-button")).toBeEnabled();
 });
 
+// ---- pill phase --------------------------------------------------------
+// The pill's colour is `data-phase`, the backend's `SessionPhase`; the
+// visible text and the `aria-label` stay the status label. The selectors
+// moved off text prefixes because "Starting…" from the UI and "Starting"
+// from the backend are one phase.
+
+test("the status pill carries the session phase next to the status text", async ({ page }) => {
+  await openShell(page);
+  const pill = page.locator("#status-indicator");
+  await expect(pill).toHaveAttribute("data-phase", "idle");
+
+  // The click is `StartAccepted`, so the pill is `starting` before any
+  // status event arrives, and the text keeps its ellipsis.
+  await page.evaluate(() => {
+    window.__tauriTest.holdStart = true;
+  });
+  await page.locator("#start-button").click();
+  await expect(pill).toHaveAttribute("data-phase", "starting");
+  await expect(pill).toHaveText("Starting…");
+
+  // The backend's listening status moves the phase and the label together.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "listening", phase: "listening" }),
+  );
+  await expect(pill).toHaveAttribute("data-phase", "listening");
+  await expect(pill).toHaveText("Listening");
+  await expect(page.locator("#status-announcer")).toHaveText("Status: Listening");
+
+  // Once the backend accepts the Stop the phase is `stopping`, and the
+  // label keeps the ellipsis that the old prefix selector tripped on.
+  await page.locator("#stop-button").click();
+  await expect(pill).toHaveAttribute("data-phase", "stopping");
+  await expect(pill).toHaveText("Stopping…");
+
+  // The terminal `stopped` lands on idle; the label still says stopped.
+  await page.evaluate(() =>
+    window.emitAppEvent({ kind: "status", status: "stopped", phase: "idle" }),
+  );
+  await expect(pill).toHaveAttribute("data-phase", "idle");
+  await expect(pill).toHaveText("Stopped");
+});
+
 // ---- phase resync ------------------------------------------------------
 // The UI draws the phase the backend reports. When a command's outcome is
 // the only place that phase could come from, it asks `get_session_phase`
