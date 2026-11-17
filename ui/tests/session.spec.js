@@ -678,9 +678,22 @@ test("the status pill carries the session phase next to the status text", async 
   await expect(pill).toHaveText("Listening");
   await expect(page.locator("#status-announcer")).toHaveText("Status: Listening");
 
-  // Once the backend accepts the Stop the phase is `stopping`, and the
-  // label keeps the ellipsis that the old prefix selector tripped on.
+  // A Stop click labels the pill `Stopping…` while the backend has not
+  // accepted it yet, so the phase is still `listening`: the pill follows
+  // the phase, not the label.
+  await page.evaluate(() => {
+    window.__tauriTest.holdStop = true;
+  });
   await page.locator("#stop-button").click();
+  await expect(pill).toHaveText("Stopping…");
+  await expect(pill).toHaveAttribute("data-phase", "listening");
+
+  // The accepted Stop moves the phase, and the label keeps the ellipsis
+  // that the old prefix selector tripped on.
+  await page.evaluate(() => {
+    window.__tauriTest.stopResolvers.forEach((resolver) => resolver.resolve("stopping"));
+    window.__tauriTest.holdStop = false;
+  });
   await expect(pill).toHaveAttribute("data-phase", "stopping");
   await expect(pill).toHaveText("Stopping…");
 
