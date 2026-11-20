@@ -37,7 +37,7 @@ cargo run -- live-local-transcribe  /  Tauri start_live_transcription
      -> MicInput (CPAL)              capture
      -> calculate_average_volume     silence gate
      -> audio::endpoint             utterance boundaries (hangover / min-speech / cap)
-     -> write_chunk_wav              one temp WAV per utterance (output/live_chunks/)
+     -> write_chunk_wav              one temp WAV per utterance (caller-supplied output dir)
      -> provider.transcribe(path)    transcribe  (LocalTranscriptionProvider)
      -> MockTranslator               process     (constructed inline, line ~173)
      -> app::live_events::*          AppEvent

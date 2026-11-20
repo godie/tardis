@@ -60,7 +60,6 @@ use crate::audio::endpoint::{self, EndpointConfig, EndpointDecision, EndpointSta
 use crate::audio::gate::{HalfDuplexGate, playback_backlog};
 use crate::audio::player::{CountingPlayer, CpalPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
-use crate::config;
 use crate::processor::build_processor;
 use crate::processor::processor::{ProcessMode, Processor};
 use crate::synthesis::{AudioChunk, Speech, Synthesizer, build_synthesizer, chunk_duration_ms};
@@ -189,8 +188,15 @@ pub fn stop_flush(
 ///   so it can be called from the capture thread when invoked
 ///   from a Tauri context where the closure's captured
 ///   `AppHandle` is also `Send + Sync`.
+/// * `output_dir` — directory the per-utterance WAVs are written to. The
+///   caller owns the choice: the CLI passes its relative
+///   [`crate::config::LIVE_CHUNKS_DIR`], while the Tauri shell passes a
+///   directory under the per-user app-data path so a packaged app never
+///   depends on the working directory. Created if missing, and removed
+///   again when the session leaves it empty.
 pub fn run_live_local_transcription_with_config_and_events<F>(
     config: AppRuntimeConfig,
+    output_dir: &Path,
     seconds: Option<u64>,
     should_stop: Option<Arc<AtomicBool>>,
     on_event: F,
@@ -208,8 +214,8 @@ where
 
     let provider_name = config.transcription_provider.clone();
 
-    let output_dir = config::LIVE_CHUNKS_DIR;
-    fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create output dir {}", output_dir.display()))?;
 
     let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());
@@ -321,7 +327,7 @@ where
         config.max_utterance_ms,
         endpoint::frames_for_ms(config.max_utterance_ms, config.chunk_duration_ms),
     );
-    println!("output:  {output_dir}/");
+    println!("output:  {}/", output_dir.display());
     match seconds {
         Some(s) => println!("duration: {s} s\n"),
         None => println!("duration: until stopped\n"),
@@ -585,7 +591,7 @@ struct UtteranceStages<'a, F> {
     process_mode: &'a ProcessMode,
     synthesizer: &'a dyn Synthesizer,
     on_event: &'a F,
-    output_dir: &'a str,
+    output_dir: &'a Path,
     sample_rate: u32,
     channels: u16,
     chunk_duration_ms: u64,
@@ -608,7 +614,7 @@ where
         speaker: &mut Speaker<'_>,
     ) -> Result<bool> {
         let filename = format_live_utterance_filename(utterance_index);
-        let wav_path = Path::new(self.output_dir).join(&filename);
+        let wav_path = self.output_dir.join(&filename);
 
         write_chunk_wav(&wav_path, samples, self.channels, self.sample_rate)
             .with_context(|| format!("write live utterance WAV {}", wav_path.display()))?;
