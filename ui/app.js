@@ -93,6 +93,10 @@ async function invoke(command, args) {
   return window.__TAURI__.core.invoke(command, args);
 }
 
+// The status text, its aria-label and the live-region announcement move
+// together. The pill's colour is the phase, not this text: `data-status`
+// stays for the two outcomes that are not phases (`Stopped`, `Error`), and
+// `renderSessionPhase` owns `data-phase`.
 function setStatus(status) {
   statusIndicator.textContent = status;
   statusIndicator.dataset.status = status;
@@ -239,9 +243,14 @@ let phaseGeneration = 0;
 // phase with an enabled Start and an unlocked panel. Stop is live only
 // while capture runs: during `stopping` a retry would race the worker's
 // teardown, and during `starting` there is nothing to stop yet.
+//
+// The pill's colour comes from this phase too. `Starting…` and a backend
+// `Starting` are one phase, and the old text-prefix selector only matched
+// the first, so the attribute is drawn here instead of from the label.
 function renderSessionPhase(phase) {
   phaseGeneration += 1;
   sessionPhase = phase;
+  statusIndicator.dataset.phase = phase;
   const idle = phase === "idle";
   startButton.disabled = !idle;
   startButton.dataset.state = idle ? "idle" : "busy";
