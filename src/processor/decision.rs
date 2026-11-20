@@ -22,8 +22,9 @@ use crate::processor::processor::RespondPolicy;
 /// What layer a decided to do with an utterance.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
-    /// Answer the host: generate a reply, pass it through layer b, and
-    /// speak it if the guard allows.
+    /// Answer the host: generate a reply and pass it through layer b.
+    /// The reply stays on screen in v1, because synthesis needs an
+    /// explicit host approval step the app does not have yet.
     Answer,
     /// Surface a suggestion in the UI, never synthesized: a commitment
     /// request and the host's own words determine what is suggested. It

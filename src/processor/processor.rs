@@ -93,6 +93,10 @@ pub enum BlockReason {
     /// The request asked for a commitment; the reply is at most a
     /// suggestion, never spoken.
     Commitment,
+    /// Nothing in this build can approve a respond-mode reply for
+    /// synthesis, so an otherwise clean answer stays on screen. This is
+    /// the fail-closed default until a host-approval step exists.
+    ApprovalRequired,
     /// The reply commits to a date or a booking window.
     Date,
     /// The reply names an amount or a currency.
@@ -108,6 +112,7 @@ impl BlockReason {
     pub fn as_label(self) -> &'static str {
         match self {
             Self::Commitment => "commitment",
+            Self::ApprovalRequired => "approval-required",
             Self::Date => "date",
             Self::Money => "money",
             Self::Acceptance => "acceptance",
@@ -138,11 +143,12 @@ pub struct Output {
     /// additionally yield `is_final = false` partials while the utterance
     /// is still being rendered; the mock always emits `is_final = true`.
     pub is_final: bool,
-    /// Why the reply must not be spoken, from the safety guard
-    /// ([`crate::processor::guard`]) — `None` for an allowed reply.
-    /// A blocked reply still reaches the event layer (silent in the
-    /// room, visible on screen); `is_final` keeps exactly the meaning
-    /// above and is never reused as a safety flag.
+    /// Why the reply must not be spoken, from the safety layers
+    /// ([`crate::processor::guard`]) — `None` for a translated line.
+    /// Every respond-mode reply carries a reason in v1, because no surface
+    /// can grant the host approval it needs. A blocked reply still reaches
+    /// the event layer (silent in the room, visible on screen); `is_final`
+    /// keeps exactly the meaning above and is never reused as a safety flag.
     pub blocked: Option<BlockReason>,
 }
 
@@ -248,6 +254,7 @@ mod tests {
     fn block_reason_labels_are_stable() {
         for (reason, label) in [
             (BlockReason::Commitment, "commitment"),
+            (BlockReason::ApprovalRequired, "approval-required"),
             (BlockReason::Date, "date"),
             (BlockReason::Money, "money"),
             (BlockReason::Acceptance, "acceptance"),

@@ -11,7 +11,7 @@
 //! may change what the user sees.
 
 use crate::processor::decision::{Decision, decide_should_respond};
-use crate::processor::guard::validate_reply;
+use crate::processor::guard::gate_respond_reply;
 use crate::processor::processor::{BlockReason, Output, OutputKind, ProcessMode, Processor};
 
 /// Mock implementation of [`Processor`] that emits a placeholder
@@ -28,8 +28,8 @@ impl MockProcessor {
 
     /// Deterministic respond-mode output, so the offline loop exercises
     /// the same safety path the real provider runs: decide (layer a),
-    /// generate, validate (layer b). The suggestion text is a fixed
-    /// string so tests can assert on it.
+    /// generate, validate (layer b), then fail closed on synthesis. The
+    /// suggestion text is a fixed string so tests can assert on it.
     fn build_respond_output(
         &self,
         text: &str,
@@ -37,7 +37,7 @@ impl MockProcessor {
         target_language: &str,
         decision: Decision,
     ) -> Output {
-        let (reply, blocked) = match decision {
+        let (reply, layer_a_block) = match decision {
             Decision::Ignore => unreachable!("the caller skips Ignore before generating"),
             Decision::Suggest { reason } => (
                 format!("[respond suggestion] {reason}"),
@@ -48,10 +48,10 @@ impl MockProcessor {
                 None,
             ),
         };
-        let guarded = validate_reply(&reply);
-        // Layer a already filtered the input; on the Answer path the
-        // guard owns the final word, so its first reason wins.
-        let blocked = blocked.or_else(|| guarded.reasons.first().copied());
+        // Layer b is the final word. No surface can approve a reply in
+        // v1, so every answer it would allow is still blocked for
+        // synthesis and stays on screen.
+        let blocked = layer_a_block.unwrap_or_else(|| gate_respond_reply(&reply));
         Output {
             kind: OutputKind::Respond,
             source_text: text.to_string(),
@@ -59,7 +59,7 @@ impl MockProcessor {
             source_language: source_language.to_string(),
             target_language: target_language.to_string(),
             is_final: true,
-            blocked,
+            blocked: Some(blocked),
         }
     }
 }
@@ -147,11 +147,15 @@ mod tests {
     // ---- respond mode (layer a + layer b, offline) --------------------
 
     #[test]
-    fn respond_mode_answers_a_named_question_through_the_guard() {
+    fn respond_mode_keeps_a_named_question_on_screen_unapproved() {
         let output = process_respond("Ana, how long is the line?", "en", "es")
             .expect("a named question gets an answer");
         assert_eq!(output.kind, OutputKind::Respond);
-        assert_eq!(output.blocked, None, "a plain answer must not be blocked");
+        assert_eq!(
+            output.blocked,
+            Some(BlockReason::ApprovalRequired),
+            "a plain answer still needs host approval before synthesis"
+        );
         assert!(output.text.contains("Ana"));
     }
 

@@ -62,7 +62,7 @@ use crate::audio::player::{CountingPlayer, CpalPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::processor::build_processor;
-use crate::processor::processor::{ProcessMode, Processor};
+use crate::processor::processor::{Output, ProcessMode, Processor};
 use crate::synthesis::{AudioChunk, Speech, Synthesizer, build_synthesizer, chunk_duration_ms};
 use crate::transcription;
 use crate::transcription::LocalTranscriptionProvider;
@@ -89,6 +89,17 @@ pub fn format_live_utterance_filename(utterance_index: usize) -> String {
 /// Equal-to-threshold returns `false`.
 pub fn should_transcribe_chunk(volume: f32, threshold: f32) -> bool {
     activity::is_speech_like(volume, threshold)
+}
+
+/// May this processed output reach synthesis?
+///
+/// Respond mode fails closed. v1 has no host-approval step, so the
+/// configured mode decides, not the output's own label: a processor that
+/// mislabels or fails to block a respond reply still cannot speak it.
+/// Translate output follows the guard's verdict, where `blocked == None`
+/// means allowed.
+fn output_may_be_synthesized(mode: &ProcessMode, output: &Output) -> bool {
+    !matches!(mode, ProcessMode::Respond { .. }) && output.blocked.is_none()
 }
 
 /// Format a readable status line containing the utterance index and a
@@ -673,11 +684,12 @@ where
                         // visible on screen.
                         (self.on_event)(build_output_event(utterance_index, &output));
 
-                        // A blocked reply (layer a suggestion or layer b
-                        // refusal) is shown and never synthesized. Return
-                        // false: no speaker time was consumed, so the
-                        // caller must keep listening.
-                        if output.blocked.is_some() {
+                        // A blocked reply (layer a suggestion, layer b
+                        // refusal, or an unapproved respond answer) is
+                        // shown and never synthesized. Return false: no
+                        // speaker time was consumed, so the caller must
+                        // keep listening.
+                        if !output_may_be_synthesized(self.process_mode, &output) {
                             return false;
                         }
 
@@ -775,6 +787,7 @@ fn discard_blocked_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::OutputKind;
 
     // ---- format_live_utterance_filename --------------------------------
 
@@ -811,6 +824,75 @@ mod tests {
     #[test]
     fn should_transcribe_above_threshold_returns_true() {
         assert!(should_transcribe_chunk(0.02_f32, 0.01_f32));
+    }
+
+    // ---- output_may_be_synthesized -------------------------------------
+
+    fn translate_mode() -> ProcessMode {
+        ProcessMode::Translate {
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+        }
+    }
+
+    fn respond_mode() -> ProcessMode {
+        ProcessMode::Respond {
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+            policy: crate::processor::RespondPolicy::default(),
+        }
+    }
+
+    fn output(kind: OutputKind, blocked: Option<crate::processor::BlockReason>) -> Output {
+        Output {
+            kind,
+            source_text: "hola".to_string(),
+            text: "hola".to_string(),
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+            is_final: true,
+            blocked,
+        }
+    }
+
+    #[test]
+    fn unblocked_translate_output_may_be_synthesized() {
+        assert!(output_may_be_synthesized(
+            &translate_mode(),
+            &output(OutputKind::Translate, None)
+        ));
+    }
+
+    #[test]
+    fn blocked_translate_output_may_not_be_synthesized() {
+        assert!(!output_may_be_synthesized(
+            &translate_mode(),
+            &output(
+                OutputKind::Translate,
+                Some(crate::processor::BlockReason::Money)
+            )
+        ));
+    }
+
+    /// A processor that forgets its own block, or labels a respond reply as
+    /// a translation, must not get it onto the speakers either.
+    #[test]
+    fn respond_mode_may_never_reach_synthesis() {
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(OutputKind::Respond, None)
+        ));
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(
+                OutputKind::Respond,
+                Some(crate::processor::BlockReason::ApprovalRequired)
+            )
+        ));
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(OutputKind::Translate, None)
+        ));
     }
 
     // ---- live_utterance_status_message ----------------------------------
