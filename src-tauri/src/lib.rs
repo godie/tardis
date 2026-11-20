@@ -429,6 +429,12 @@ fn start_live_transcription(
 /// [`LiveSessionState::accept_stop`] call, so a stop cannot be split by a
 /// worker exit and a new Start and land on the next session.
 ///
+/// **Cancellation semantics:** the flag is polled between utterances.
+/// It does not abort a transcription request already in flight, so a
+/// Stop during one waits for that response, bounded by the provider
+/// timeout derived from the session's `max_utterance_ms`. No new
+/// utterance starts after the flag flips.
+///
 /// **Keeps the session slot taken.** The worker is still tearing down
 /// CPAL resources when `stop` returns, so the phase moves to
 /// [`SessionPhase::Stopping`] and stays there until
@@ -702,8 +708,11 @@ pub fn normalize_local_transcription_error(error: &str) -> String {
 #[tauri::command]
 fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
     let valid_path = validate_wav_path_input(&file_path)?;
-    let provider = tardis::transcription::build_provider("local-whisper")
-        .map_err(|e| normalize_local_transcription_error(&e.to_string()))?;
+    let provider = tardis::transcription::build_provider(
+        "local-whisper",
+        tardis::config::DEFAULT_MAX_UTTERANCE_MS,
+    )
+    .map_err(|e| normalize_local_transcription_error(&e.to_string()))?;
     provider
         .transcribe(&valid_path)
         .map_err(|e| normalize_local_transcription_error(&e.to_string()))

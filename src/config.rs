@@ -93,6 +93,18 @@ pub const LOCAL_WHISPER_MODEL: &str = "base";
 /// to the local faster-whisper container.
 pub const LOCAL_WHISPER_LANGUAGE: &str = "en";
 
+/// Worst-case CPU transcription speed for the documented faster-whisper
+/// model: 2-5x realtime, so one second of audio can take up to five
+/// seconds to transcribe (see `docker/faster-whisper/README.md`, section
+/// 7). The timeout uses the slow end so a valid utterance does not fail
+/// on a busy laptop.
+pub const LOCAL_WHISPER_CPU_SPEED_FACTOR: u32 = 5;
+
+/// Extra time on top of audio length × [`LOCAL_WHISPER_CPU_SPEED_FACTOR`]:
+/// covers the WAV upload, first-request model warm-up, and response
+/// formatting.
+pub const LOCAL_WHISPER_TIMEOUT_MARGIN_SECS: u64 = 30;
+
 /// Base URL of the OpenAI-compatible LLM endpoint the real
 /// `processor` talks to. Defaults to a local Ollama; a cloud endpoint
 /// is the same code with a different base URL plus

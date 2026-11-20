@@ -118,6 +118,12 @@ pub enum StopCause {
     /// The user pressed Stop (or the shell shut the session down): drop it.
     /// One more transcription + model request after cancellation would make
     /// shutdown take another full timeout for audio the user just stopped.
+    ///
+    /// The flag is polled between utterances and cannot cancel an HTTP
+    /// request already in flight. A Stop during transcription therefore
+    /// waits for that request to finish, bounded by the provider timeout
+    /// derived from `max_utterance_ms`; no new utterance starts
+    /// afterwards.
     StopSignal,
 }
 
@@ -211,7 +217,7 @@ where
     let output_dir = config::LIVE_CHUNKS_DIR;
     fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
 
-    let provider = transcription::build_provider(&provider_name)?;
+    let provider = transcription::build_provider(&provider_name, config.max_utterance_ms)?;
     println!("provider: {}", provider.name());
     println!("processor: {}", config.processor_provider);
     // Build every stage that can fail *before* the session announces

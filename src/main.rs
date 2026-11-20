@@ -732,7 +732,9 @@ fn run_local_transcribe_file() -> Result<()> {
         anyhow!("Usage: cargo run -- local-transcribe-file [--provider <name>] <path-to-wav>")
     })?;
 
-    let provider = transcription::build_provider(&provider_name)?;
+    // One file is not bounded by the live utterance cap, so assume the
+    // default bound: the derived timeout still beats reqwest's 30 s.
+    let provider = transcription::build_provider(&provider_name, config::DEFAULT_MAX_UTTERANCE_MS)?;
 
     println!("file:     {}", path);
     println!("provider: {}", provider.name());
