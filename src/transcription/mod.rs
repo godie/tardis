@@ -102,15 +102,14 @@ impl ProviderKind {
     }
 
     /// Construct a boxed provider. Reads [`crate::config::LOCAL_WHISPER_*`]
-    /// for the faster-whisper variant and derives its request timeout from
-    /// `max_utterance_ms`; the mock variant needs no configuration.
-    pub fn build(&self, max_utterance_ms: u64) -> Box<dyn LocalTranscriptionProvider> {
+    /// for the faster-whisper variant; the mock variant needs no
+    /// configuration.
+    pub fn build(&self) -> Box<dyn LocalTranscriptionProvider> {
         match self {
             Self::LocalWhisper => Box::new(local_whisper::LocalWhisperClient::new(
                 crate::config::LOCAL_WHISPER_BASE_URL,
                 crate::config::LOCAL_WHISPER_MODEL,
                 Some(crate::config::LOCAL_WHISPER_LANGUAGE.to_string()),
-                max_utterance_ms,
             )),
             Self::MockLocal => Box::new(mock_local::MockLocalProvider::new()),
         }
@@ -124,13 +123,8 @@ impl ProviderKind {
 ///
 /// The CLI defaults to `provider = "local-whisper"` if no flag is
 /// passed; this function does NOT layer a default on top. Whatever
-/// string the caller passes is what gets parsed. `max_utterance_ms` is
-/// the longest audio the caller can send; the provider derives its
-/// request timeout from it.
-pub fn build_provider(
-    name: &str,
-    max_utterance_ms: u64,
-) -> Result<Box<dyn LocalTranscriptionProvider>> {
+/// string the caller passes is what gets parsed.
+pub fn build_provider(name: &str) -> Result<Box<dyn LocalTranscriptionProvider>> {
     let kind = ProviderKind::from_name(name).ok_or_else(|| {
         // Keep the valid-options list in sync with `ProviderKind::name()`.
         let valid = [
@@ -143,7 +137,7 @@ pub fn build_provider(
             valid.join(", ")
         )
     })?;
-    Ok(kind.build(max_utterance_ms))
+    Ok(kind.build())
 }
 
 // ===== Unit tests ========================================================
@@ -198,8 +192,7 @@ mod tests {
         // we can confirm dispatch landed on the real implementation
         // by checking the trait's `name()` (LocalWhisperClient says
         // "local-whisper (faster-whisper Docker HTTP, OpenAI-compatible)").
-        let provider =
-            build_provider("local-whisper", crate::config::DEFAULT_MAX_UTTERANCE_MS).unwrap();
+        let provider = build_provider("local-whisper").unwrap();
         let name = provider.name();
         assert!(
             name.contains("local-whisper"),
@@ -220,8 +213,7 @@ mod tests {
     fn build_provider_mock_local_echoes_basename_through_dyn_trait() {
         // End-to-end proof that the trait-object dispatch works:
         // build_provider -> Box<dyn Trait> -> .transcribe() -> "...".
-        let provider =
-            build_provider("mock-local", crate::config::DEFAULT_MAX_UTTERANCE_MS).unwrap();
+        let provider = build_provider("mock-local").unwrap();
         assert_eq!(provider.name(), "mock-local");
         assert_eq!(
             provider.transcribe("a/b/c.wav").unwrap(),
@@ -238,7 +230,7 @@ mod tests {
         // alternate path (`Result::err`) returns `Option<E>` whose
         // Debug is just on `anyhow::Error`, which std already
         // provides.
-        let err = build_provider("nope", crate::config::DEFAULT_MAX_UTTERANCE_MS)
+        let err = build_provider("nope")
             .err()
             .expect("build_provider(\"nope\") should have returned Err, got Ok");
         let msg = err.to_string();

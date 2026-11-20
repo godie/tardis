@@ -122,7 +122,7 @@ pub enum StopCause {
     /// The flag is polled between utterances and cannot cancel an HTTP
     /// request already in flight. A Stop during transcription therefore
     /// waits for that request to finish, bounded by the provider timeout
-    /// derived from `max_utterance_ms`; no new utterance starts
+    /// for that utterance's audio length; no new utterance starts
     /// afterwards.
     StopSignal,
 }
@@ -217,7 +217,7 @@ where
     let output_dir = config::LIVE_CHUNKS_DIR;
     fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
 
-    let provider = transcription::build_provider(&provider_name, config.max_utterance_ms)?;
+    let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());
     println!("processor: {}", config.processor_provider);
     // Build every stage that can fail *before* the session announces

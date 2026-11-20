@@ -64,11 +64,9 @@ It does **not** call a real translation provider yet, and it does
     Returns `["mock-local", "local-whisper"]`.
 - File-based local transcription:
   - `transcribe_wav_file_local(file_path: String) -> Result<String, String>`
-    Delegates to `tardis::transcription::build_provider("local-whisper",
-    <utterance bound>)` so the same client served by
-    `cargo run -- local-transcribe-file` is reachable from the UI
-    without duplicating the HTTP layer. This command uses the default
-    utterance bound because it transcribes one file, not a live session.
+    Delegates to `tardis::transcription::build_provider("local-whisper")`
+    so the same client served by `cargo run -- local-transcribe-file`
+    is reachable from the UI without duplicating the HTTP layer.
 - UI event payloads (serializable):
   - `tardis::app::ui_events::UiAppEvent`: flat struct emitted as
     `app-event` to the frontend.
