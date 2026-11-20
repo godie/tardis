@@ -230,6 +230,36 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
+/// Private session history file under the OS per-user app-data directory.
+///
+/// The Tauri bundle identifier owns the directory, and
+/// [`tardis::private_fs::create_private_dir`] makes it `0700` before the
+/// first record is written.
+pub(crate) fn history_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("history.jsonl")
+}
+
+/// Restrict a history file written by a release that stored it at
+/// `output/history.jsonl` relative to the working directory.
+///
+/// The old location was never recorded, so this can only find the file when
+/// the shell starts from the same directory as the old release did. The
+/// content is never moved or deleted; only its mode changes. A symlink or a
+/// non-regular file is left alone, because the target may not be ours.
+fn restrict_legacy_history(working_dir: &Path) -> std::io::Result<Option<PathBuf>> {
+    let path = working_dir.join("output").join("history.jsonl");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(None);
+    }
+    tardis::private_fs::restrict_private_file(&path)?;
+    Ok(Some(path))
+}
+
 /// Persist one backend event, keep the session phase in step, then emit it
 /// to the frontend.
 ///
@@ -241,14 +271,18 @@ impl Drop for SessionCleanupGuard {
 /// from starting a new worker before the old one has exited. Infallible on
 /// purpose: [`append_history`] reports its own failures and must not swallow
 /// the event, and an emit failure on the worker thread has no recovery path.
+///
+/// `history_path` comes from [`history_path`] and never points inside the
+/// working directory: a packaged app can start anywhere.
 fn emit_app_event(
     app: &tauri::AppHandle,
     session: &LiveSessionState,
+    history_path: &Path,
     event: &tardis::app::events::AppEvent,
 ) {
     use tardis::app::events::AppEvent;
 
-    append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    append_history(event, history_path);
     if let AppEvent::StatusChanged(status) = event
         && status_updates_phase(*status)
     {
@@ -322,6 +356,10 @@ fn worker_exit_events(error: Option<String>) -> Vec<tardis::app::events::AppEven
 /// **Validation order:** the provider name is validated **before**
 /// any state mutation, so an unknown provider does **not** take the
 /// session slot and strand the app in an unrecoverable state.
+///
+/// **History location:** the history file lives under the OS per-user
+/// app-data directory and is created owner-only (see [`history_path`]), so
+/// transcripts never depend on the working directory or the umask.
 #[tauri::command]
 fn start_live_transcription(
     app: tauri::AppHandle,
@@ -339,6 +377,37 @@ fn start_live_transcription(
     let config =
         tardis::app::config::normalize_runtime_config(config.unwrap_or_default());
     tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
+
+    // 1b. Resolve and lock down the history directory before taking the
+    //     slot: a session that cannot keep its transcripts private must
+    //     not start listening.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+    tardis::private_fs::create_private_dir(&app_data_dir).map_err(|e| {
+        format!(
+            "Could not prepare private app data dir {}: {e}",
+            app_data_dir.display()
+        )
+    })?;
+    let history_path = history_path(&app_data_dir);
+
+    // 1c. A history file written by an older release sits at
+    //     `output/history.jsonl` under the directory that run used. The old
+    //     path was never recorded, so this only finds it when the shell
+    //     starts from that same directory. It is tightened in place and
+    //     never moved: losing old records would be worse than leaving them.
+    if let Ok(working_dir) = std::env::current_dir() {
+        match restrict_legacy_history(&working_dir) {
+            Ok(Some(path)) => eprintln!(
+                "history: restricted legacy history file {} to the owner",
+                path.display()
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("history: could not restrict legacy history file: {e}"),
+        }
+    }
 
     // 2. Take the session slot. The transition is legal only from
     //    `Idle`, which is what makes a double Start return the
@@ -360,6 +429,8 @@ fn start_live_transcription(
     let session_for_cleanup = Arc::clone(&session);
     let session_for_events = Arc::clone(&session);
     let session_for_exit = Arc::clone(&session);
+    let history_for_events = history_path.clone();
+    let history_for_exit = history_path;
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
@@ -385,7 +456,14 @@ fn start_live_transcription(
                 config_clone,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| emit_app_event(&app_clone, &session_for_events, &event),
+                move |event| {
+                    emit_app_event(
+                        &app_clone,
+                        &session_for_events,
+                        &history_for_events,
+                        &event,
+                    )
+                },
             );
 
             // The runner emits `stopped` itself on its success path, so a
@@ -396,7 +474,7 @@ fn start_live_transcription(
                 .err()
                 .map(|e| format!("Live transcription failed: {e}"));
             for event in worker_exit_events(error) {
-                emit_app_event(&app, &session_for_exit, &event);
+                emit_app_event(&app, &session_for_exit, &history_for_exit, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -724,6 +802,11 @@ fn now_ms() -> u64 {
 /// Append one record to `path`, creating the file (and its directory) on
 /// first use.
 ///
+/// The history holds transcripts and rendered replies, so both the parent
+/// directory and the file are created owner-only (see
+/// [`tardis::private_fs`]). A directory or file left world-readable by an
+/// older release is tightened on the next append.
+///
 /// Two failure modes matter here, because this is the only write that
 /// happens during a live session:
 ///
@@ -737,13 +820,9 @@ fn append_record_to(path: &std::path::Path, line: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
+        tardis::private_fs::create_private_dir(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(path)?;
+    let mut file = tardis::private_fs::open_private_append(path)?;
     repair_partial_tail(&mut file)?;
     let start = file.metadata()?.len();
     if let Err(e) = file.write_all(line.as_bytes()) {
@@ -795,6 +874,9 @@ fn repair_partial_tail(file: &mut std::fs::File) -> std::io::Result<()> {
 /// a running session down, so the problem is reported on stderr and the
 /// session continues. Empty text is skipped rather than padded into the
 /// file, and every other event kind is ignored.
+///
+/// `path` is the private per-user history file resolved by [`history_path`],
+/// never a working-directory relative path.
 fn append_history(event: &tardis::app::events::AppEvent, path: &std::path::Path) {
     use tardis::app::events::AppEvent;
     use tardis::app::history::{format_record, is_recordable, HistoryRecord};
@@ -1144,6 +1226,125 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn history_path_lives_under_the_app_data_dir() {
+        let base = Path::new("/tmp/tardis-app-data");
+        assert_eq!(history_path(base), base.join("history.jsonl"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_record_to_creates_owner_only_history() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-history-mode-{}",
+            std::process::id()
+        ));
+        let path = history_path(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        append_record_to(&path, "{\"text\":\"one\"}\n").expect("append");
+
+        let dir_mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "history directory must be owner-only");
+        assert_eq!(file_mode, 0o600, "history file must be owner-only");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_history_is_tightened_in_place() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-{}",
+            std::process::id()
+        ));
+        let path = dir.join("output").join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create output");
+        std::fs::write(&path, "{\"text\":\"old\"}\n").expect("seed file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+
+        let restricted = restrict_legacy_history(&dir).expect("restrict");
+
+        assert_eq!(restricted.as_deref(), Some(path.as_path()));
+        let mode = std::fs::metadata(&path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "legacy history must be owner-only");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "{\"text\":\"old\"}\n",
+            "the file is tightened, not moved or truncated"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_legacy_history_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        assert_eq!(
+            restrict_legacy_history(&dir).expect("a missing file is fine"),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_history_symlink_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-link-{}",
+            std::process::id()
+        ));
+        let output = dir.join("output");
+        let target = dir.join("elsewhere.jsonl");
+        let link = output.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&output).expect("create output");
+        std::fs::write(&target, "not ours\n").expect("seed target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        assert_eq!(
+            restrict_legacy_history(&dir).expect("a symlink is skipped"),
+            None
+        );
+        let mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644, "the link target is not ours to change");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn history_records_transcripts_and_outputs_in_order_and_ignores_the_rest() {
         use tardis::app::events::{AppEvent, AppStatus, AppTranscriptEvent};

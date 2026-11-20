@@ -57,14 +57,14 @@ pub const DEFAULT_CHUNKS_DIR: &str = "output/chunks";
 
 /// Default directory used by `live-local-transcribe` to write one WAV
 /// per speech-like chunk before sending it to a
-/// [`crate::transcription::LocalTranscriptionProvider`].
+/// [`crate::transcription::LocalTranscriptionProvider`]. Created
+/// owner-only (`0700`) like every file in it.
+///
+/// The CLI keeps this path relative on purpose (issue #78): a developer
+/// checkout is writable, and the directory mode is what keeps the WAVs
+/// private. Resolving a per-user directory in the CLI would hide the files
+/// a developer is debugging and duplicate the choice the desktop shell owns.
 pub const LIVE_CHUNKS_DIR: &str = "output/live_chunks";
-
-/// Append-only session history written by the Tauri shell: one JSON object
-/// per stage output (transcript, rendered output) in the order they
-/// happened, one per line. Relative to the working directory, like
-/// [`LIVE_CHUNKS_DIR`].
-pub const HISTORY_PATH: &str = "output/history.jsonl";
 
 /// Default source language code passed to translation pipelines
 /// (BCP-47-ish, lowercase).

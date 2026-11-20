@@ -61,6 +61,7 @@ use crate::audio::gate::{HalfDuplexGate, playback_backlog};
 use crate::audio::player::{CountingPlayer, CpalPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
+use crate::private_fs;
 use crate::processor::build_processor;
 use crate::processor::processor::{ProcessMode, Processor};
 use crate::synthesis::{AudioChunk, Speech, Synthesizer, build_synthesizer, chunk_duration_ms};
@@ -209,7 +210,8 @@ where
     let provider_name = config.transcription_provider.clone();
 
     let output_dir = config::LIVE_CHUNKS_DIR;
-    fs::create_dir_all(output_dir).with_context(|| format!("create output dir {output_dir}"))?;
+    private_fs::create_private_dir(Path::new(output_dir))
+        .with_context(|| format!("prepare private output dir {output_dir}"))?;
 
     let provider = transcription::build_provider(&provider_name)?;
     println!("provider: {}", provider.name());

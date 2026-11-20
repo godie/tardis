@@ -1,7 +1,8 @@
 //! Public library surface for the `tardis` core.
 //!
 //! Exposes the audio capture / volume / activity helpers, the
-//! centralised configuration constants, and the transcription +
+//! centralised configuration constants, the owner-only file helpers
+//! session artefacts are written through, and the transcription +
 //! processor + synthesis abstractions that the CLI binary
 //! ([`tardis::main`])
 //! and the desktop Tauri shell
@@ -16,6 +17,7 @@
 pub mod app;
 pub mod audio;
 pub mod config;
+pub mod private_fs;
 pub mod processor;
 pub mod synthesis;
 pub mod transcription;
