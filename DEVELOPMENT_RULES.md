@@ -83,7 +83,7 @@ mirror one of these rows.
 | `config` constants | n/a (value-only constants) | consumed by `mic-5s`, `record-5s`, `chunk-test`, `mock-transcribe`, `save-chunks-test`, `mock-transcribe-file`, `mock-translate` |
 | `transcription` (`ProviderKind` parse + `build_provider` dispatch) | `tests` in `src/transcription/mod.rs` | consumed by `local-transcribe-file`, `live-local-transcribe` |
 | `transcription::mock_local` (`MockLocalProvider`) | `tests` in `src/transcription/mock_local.rs` | `cargo run -- live-local-transcribe` (default provider) |
-| `transcription::local_whisper` (`LocalWhisperClient`, HTTP client for the faster-whisper server) | `tests` in `src/transcription/local_whisper.rs` | `cargo run -- local-transcribe-file <path>`, `cargo run -- live-local-transcribe --provider local-whisper` |
+| `transcription::local_whisper` (`LocalWhisperClient`, HTTP client for the faster-whisper server + `transcription_timeout_for_utterance` derived from the uploaded WAV's audio length) | `tests` in `src/transcription/local_whisper.rs`, including stalled loopback servers for the response head and body (no external network) | `cargo run -- local-transcribe-file <path>`, `cargo run -- live-local-transcribe --provider local-whisper` |
 | `transcription::mock` (`MockTranscriber`) | `tests` in `src/transcription/mock.rs` | `cargo run -- mock-transcribe`, `mock-transcribe-file output/chunks/chunk_001.wav`, `mock-translate` |
 | `transcription::file_pipeline` (i16->f32 conversion + WAV-driven mock run) | `tests` in `src/transcription/file_pipeline.rs` | `cargo run -- mock-transcribe-file output/chunks/chunk_001.wav` |
 | `transcription::pipeline::run_mock_transcription_test` | n/a (CPAL driver) | `cargo run -- mock-transcribe` |

@@ -132,6 +132,13 @@ CPU is the right starting point for a developer laptop; GPU is for
 production throughput. Both use the **same API contract**: switching
 tags is the only change needed; no client code changes.
 
+The Rust client sizes each request's timeout for that worst case: the
+WAV's audio length × 5, plus a 30-second margin for upload and model
+warm-up. A 15 s utterance therefore allows 105 s, and a 60 s file allows
+330 s. Stop is not a cancellation: a transcription already in flight
+finishes before the worker exits, and the request timeout bounds that
+wait.
+
 ## 8. Privacy
 
 * Audio is uploaded to `http://localhost:8000`, bound to the loopback

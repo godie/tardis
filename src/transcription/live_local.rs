@@ -118,6 +118,12 @@ pub enum StopCause {
     /// The user pressed Stop (or the shell shut the session down): drop it.
     /// One more transcription + model request after cancellation would make
     /// shutdown take another full timeout for audio the user just stopped.
+    ///
+    /// The flag is polled between utterances and cannot cancel an HTTP
+    /// request already in flight. A Stop during transcription therefore
+    /// waits for that request to finish, bounded by the provider timeout
+    /// for that utterance's audio length; no new utterance starts
+    /// afterwards.
     StopSignal,
 }
 

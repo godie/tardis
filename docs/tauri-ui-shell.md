@@ -56,14 +56,19 @@ It does **not** call a real translation provider yet, and it does
     `transcript`, `translation`, `error`) to the frontend.
   - `stop_live_transcription() -> Result<String, String>`
     Signals the active session to stop; the backend emits a
-    final `status: stopped` event and the thread exits.
+    final `status: stopped` event and the thread exits. The flag is
+    polled between utterances and does not cancel a transcription
+    request already in flight, so Stop during one waits for that
+    response, bounded by the provider timeout.
   - `get_supported_transcription_providers() -> Vec<String>`
     Returns `["mock-local", "local-whisper"]`.
 - File-based local transcription:
   - `transcribe_wav_file_local(file_path: String) -> Result<String, String>`
     Delegates to `tardis::transcription::build_provider("local-whisper")`
     so the same client served by `cargo run -- local-transcribe-file`
-    is reachable from the UI without duplicating the HTTP layer.
+    is reachable from the UI without duplicating the HTTP layer. The
+    command is async and runs the blocking client on Tauri's blocking
+    pool, so a long transcription does not freeze the window.
 - UI event payloads (serializable):
   - `tardis::app::ui_events::UiAppEvent`: flat struct emitted as
     `app-event` to the frontend.
