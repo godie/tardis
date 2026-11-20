@@ -17,23 +17,54 @@ use std::path::Path;
 
 /// Create `path` and any missing parents, restricted to the owner on Unix.
 ///
-/// The creation mode is applied by the builder, so the directory is never
-/// briefly world-traversable while it is empty. Calling this on an existing
-/// directory is a repair, not an error: a `0755` directory from an older
-/// release becomes `0700`.
+/// Missing parents keep their ordinary mode: only the requested leaf holds
+/// private artefacts. The leaf is created by a builder that applies its mode
+/// at creation, so it is never briefly world-traversable while empty.
+/// Calling this on an existing directory is a repair, not an error: a
+/// `0755` directory from an older release becomes `0700`.
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt as _;
-        const OWNER_ONLY_DIR: u32 = 0o700;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(OWNER_ONLY_DIR)
-            .create(path)?;
+        const PRIVATE_DIR_MODE: u32 = 0o700;
+        let owner_only = fs::DirBuilder::new().mode(PRIVATE_DIR_MODE).create(path);
+        match owner_only {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if !fs::metadata(path)?.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("{} exists and is not a directory", path.display()),
+                    ));
+                }
+            }
+            Err(e) => return Err(e),
+        }
     }
     #[cfg(not(unix))]
     fs::create_dir_all(path)?;
     restrict_dir(path)
+}
+
+/// Restrict an existing file to the owner on Unix.
+///
+/// The caller owns the symlink decision: this follows the path it is given,
+/// so a caller that must not touch a link target has to reject links first.
+pub fn restrict_private_file(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        const PRIVATE_FILE_MODE: u32 = 0o600;
+        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// Create (or truncate) `path` owner-only and return it for writing.
@@ -158,6 +189,53 @@ mod tests {
         create_private_dir(&target).expect("repair");
 
         assert_eq!(mode(&target), 0o700);
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_private_dir_leaves_missing_parents_at_their_default_mode() {
+        let root = fresh_temp_dir("dir_parents");
+        // Both directories are created under the same process umask, so
+        // this pins "parents keep the ordinary mode" without hardcoding
+        // 0755 and assuming a specific umask.
+        let reference = root.join("reference");
+        fs::create_dir_all(&reference).expect("reference dir");
+        let leaf = root.join("output").join("live_chunks");
+
+        create_private_dir(&leaf).expect("leaf created");
+
+        assert_eq!(mode(&root.join("output")), mode(&reference));
+        assert_eq!(mode(&leaf), 0o700);
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrict_private_file_tightens_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = fresh_temp_dir("restrict_file");
+        let path = root.join("history.jsonl");
+        fs::write(&path, "one\n").expect("seed file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen");
+
+        restrict_private_file(&path).expect("restrict");
+
+        assert_eq!(mode(&path), 0o600);
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_private_dir_rejects_a_file_at_the_target_path() {
+        let root = fresh_temp_dir("dir_is_file");
+        let path = root.join("live_chunks");
+        fs::write(&path, b"not a directory").expect("seed file");
+
+        let err = create_private_dir(&path).expect_err("a file cannot stand in for a directory");
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains("not a directory"), "{err}");
         cleanup(&root);
     }
 
