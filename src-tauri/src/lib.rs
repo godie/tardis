@@ -230,6 +230,26 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
+/// Where the desktop shell writes the artefacts a live session produces.
+///
+/// Both paths sit under the OS per-user app-data directory Tauri resolves
+/// from the bundle identifier, so a packaged app never depends on its
+/// working directory. The CLI keeps its relative `output/...` paths: a
+/// developer checkout is writable by definition.
+#[derive(Debug)]
+pub(crate) struct SessionPaths {
+    pub(crate) live_chunks_dir: PathBuf,
+    pub(crate) history_path: PathBuf,
+}
+
+/// Resolve one live session's writable paths from the app-data directory.
+pub(crate) fn session_paths(app_data_dir: &Path) -> SessionPaths {
+    SessionPaths {
+        live_chunks_dir: app_data_dir.join("live_chunks"),
+        history_path: app_data_dir.join("history.jsonl"),
+    }
+}
+
 /// Persist one backend event, keep the session phase in step, then emit it
 /// to the frontend.
 ///
@@ -244,11 +264,12 @@ impl Drop for SessionCleanupGuard {
 fn emit_app_event(
     app: &tauri::AppHandle,
     session: &LiveSessionState,
+    history_path: &Path,
     event: &tardis::app::events::AppEvent,
 ) {
     use tardis::app::events::AppEvent;
 
-    append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    append_history(event, history_path);
     if let AppEvent::StatusChanged(status) = event
         && status_updates_phase(*status)
     {
@@ -322,6 +343,11 @@ fn worker_exit_events(error: Option<String>) -> Vec<tardis::app::events::AppEven
 /// **Validation order:** the provider name is validated **before**
 /// any state mutation, so an unknown provider does **not** take the
 /// session slot and strand the app in an unrecoverable state.
+///
+/// **File paths:** per-utterance WAVs and the session history are written
+/// under the OS per-user app-data directory, resolved before the slot is
+/// taken (see [`session_paths`]). A packaged app launched from a read-only
+/// or unrelated working directory therefore never fails creating them.
 #[tauri::command]
 fn start_live_transcription(
     app: tauri::AppHandle,
@@ -339,6 +365,15 @@ fn start_live_transcription(
     let config =
         tardis::app::config::normalize_runtime_config(config.unwrap_or_default());
     tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
+
+    // 1b. Resolve the per-user app-data directory before taking the slot.
+    //     A packaged app can run from a read-only or unrelated working
+    //     directory, so nothing the session writes may be relative to it.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+    let paths = session_paths(&app_data_dir);
 
     // 2. Take the session slot. The transition is legal only from
     //    `Idle`, which is what makes a double Start return the
@@ -360,6 +395,9 @@ fn start_live_transcription(
     let session_for_cleanup = Arc::clone(&session);
     let session_for_events = Arc::clone(&session);
     let session_for_exit = Arc::clone(&session);
+    let live_chunks_dir = paths.live_chunks_dir;
+    let history_path = paths.history_path.clone();
+    let history_for_exit = paths.history_path;
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
@@ -383,9 +421,12 @@ fn start_live_transcription(
 
             let result = tardis::transcription::live_local::run_live_local_transcription_with_config_and_events(
                 config_clone,
+                &live_chunks_dir,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| emit_app_event(&app_clone, &session_for_events, &event),
+                move |event| {
+                    emit_app_event(&app_clone, &session_for_events, &history_path, &event)
+                },
             );
 
             // The runner emits `stopped` itself on its success path, so a
@@ -396,7 +437,7 @@ fn start_live_transcription(
                 .err()
                 .map(|e| format!("Live transcription failed: {e}"));
             for event in worker_exit_events(error) {
-                emit_app_event(&app, &session_for_exit, &event);
+                emit_app_event(&app, &session_for_exit, &history_for_exit, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -966,6 +1007,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_paths_live_under_the_app_data_dir() {
+        let base = Path::new("/tmp/tardis-app-data");
+        let paths = session_paths(base);
+        assert_eq!(paths.live_chunks_dir, base.join("live_chunks"));
+        assert_eq!(paths.history_path, base.join("history.jsonl"));
+    }
 
     #[test]
     fn panic_log_sits_next_to_runtime_json() {

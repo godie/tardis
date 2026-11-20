@@ -618,6 +618,7 @@ fn run_live_local_transcribe() -> Result<()> {
     validate_runtime_config(&config).map_err(|e| anyhow!("invalid session config: {e}"))?;
     transcription::live_local::run_live_local_transcription_with_config_and_events(
         config,
+        std::path::Path::new(config::LIVE_CHUNKS_DIR),
         Some(config::DEFAULT_PIPELINE_TEST_SECONDS),
         None,
         |event| {
