@@ -112,6 +112,30 @@ fn playback_can_occur(mode: &AppMode, dry_run: bool) -> bool {
     !dry_run && !matches!(mode, AppMode::Respond { .. })
 }
 
+/// Synthesize an output only after the fail-closed gate allows it.
+///
+/// The runner calls this, and so do the tests: the gate and the
+/// synthesizer call it guards are then one unit, so reverting the gate
+/// fails a test instead of silently speaking a reply.
+fn synthesize_output(
+    mode: &ProcessMode,
+    output: &Output,
+    synthesizer: &dyn Synthesizer,
+    target_language: &str,
+) -> Result<Option<(Speech, AudioChunk)>> {
+    if !output_may_be_synthesized(mode, output) {
+        return Ok(None);
+    }
+    let speech = Speech {
+        text: output.text.clone(),
+        language: target_language.to_string(),
+    };
+    match synthesizer.synthesize(&speech)? {
+        Some(chunk) => Ok(Some((speech, chunk))),
+        None => Ok(None),
+    }
+}
+
 /// Format a readable status line containing the utterance index and a
 /// human-readable status string. Callers append the result to their
 /// log / console output.
@@ -701,21 +725,17 @@ where
                         // refusal, or an unapproved respond answer) is
                         // shown and never synthesized. Return false: no
                         // speaker time was consumed, so the caller must
-                        // keep listening.
-                        if !output_may_be_synthesized(self.process_mode, &output) {
-                            return false;
-                        }
-
-                        // The three-way contract, same split the
-                        // processor has: `Ok(None)` is deliberate
+                        // keep listening. The three-way contract, same
+                        // split the processor has: `Ok(None)` is deliberate
                         // silence (nothing to speak), `Err` is a real
                         // failure the user must see, never silence.
-                        let speech = Speech {
-                            text: output.text,
-                            language: self.target_language.to_string(),
-                        };
-                        match self.synthesizer.synthesize(&speech) {
-                            Ok(Some(chunk)) => {
+                        match synthesize_output(
+                            self.process_mode,
+                            &output,
+                            self.synthesizer,
+                            self.target_language,
+                        ) {
+                            Ok(Some((speech, chunk))) => {
                                 let duration_ms = chunk_duration_ms(&chunk);
                                 (self.on_event)(build_speech_event(
                                     utterance_index,
@@ -801,6 +821,7 @@ fn discard_blocked_capture(
 mod tests {
     use super::*;
     use crate::processor::OutputKind;
+    use crate::synthesis::MockSynthesizer;
 
     // ---- format_live_utterance_filename --------------------------------
 
@@ -906,6 +927,50 @@ mod tests {
             &respond_mode(),
             &output(OutputKind::Translate, None)
         ));
+    }
+
+    // ---- synthesize_output ---------------------------------------------
+
+    #[test]
+    fn an_allowed_translate_output_is_synthesized() {
+        let rendered = synthesize_output(
+            &translate_mode(),
+            &output(OutputKind::Translate, None),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_some());
+    }
+
+    #[test]
+    fn a_blocked_translate_output_is_not_synthesized() {
+        let rendered = synthesize_output(
+            &translate_mode(),
+            &output(
+                OutputKind::Translate,
+                Some(crate::processor::BlockReason::Money),
+            ),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_none());
+    }
+
+    /// The regression Qodo named: this drives the runner's own synthesis
+    /// call with an unblocked respond output, so reverting the gate to
+    /// `output.blocked.is_some()` makes this fail.
+    #[test]
+    fn an_unblocked_respond_output_is_not_synthesized() {
+        let rendered = synthesize_output(
+            &respond_mode(),
+            &output(OutputKind::Respond, None),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_none());
     }
 
     // ---- playback_can_occur --------------------------------------------
