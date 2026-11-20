@@ -49,9 +49,9 @@ const SESSION_SETTINGS_INPUTS = [
 const DEV = true; // Set to false before release to suppress console logs
 
 // Rows kept per history panel. The whole session is still on disk in
-// output/history.jsonl; the panels only need the recent tail, and an
-// unbounded list keeps every utterance in the webview's DOM for the rest of
-// the session.
+// history.jsonl under the shell's per-user app-data directory; the panels
+// only need the recent tail, and an unbounded list keeps every utterance in
+// the webview's DOM for the rest of the session.
 const MAX_HISTORY_ROWS = 200;
 
 // The persisted capture source. The panel has no source control yet (the

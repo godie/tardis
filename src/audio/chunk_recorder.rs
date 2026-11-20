@@ -9,10 +9,11 @@
 //! Pure helpers (`format_chunk_filename`, `f32_sample_to_i16`,
 //! `f32_samples_to_i16`) live next to the CPAL driver so the formatting
 //! and conversion math can be unit-tested without touching real
-//! hardware.
+//! hardware. Each WAV is created owner-only through
+//! [`crate::private_fs`], because it holds recorded speech.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -123,6 +124,10 @@ pub fn run_save_chunks_test(seconds: u64, chunk_duration_ms: u64, output_dir: &s
 
 /// Write a slice of f32 samples to a 16-bit Int PCM WAV file at `path`.
 /// Reused by chunk recorders and live-transcription pipelines.
+///
+/// The file is created owner-only: every WAV this helper writes holds
+/// recorded speech, and one may outlive the utterance that produced it if
+/// the process is killed mid-turn.
 pub fn write_chunk_wav(
     path: &Path,
     samples_f32: &[f32],
@@ -135,7 +140,9 @@ pub fn write_chunk_wav(
         bits_per_sample: WAV_BITS_PER_SAMPLE,
         sample_format: HoundSampleFormat::Int,
     };
-    let mut writer = WavWriter::create(path, spec)
+    let file = crate::private_fs::create_private_file(path)
+        .with_context(|| format!("could not create WAV file {}", path.display()))?;
+    let mut writer = WavWriter::new(BufWriter::new(file), spec)
         .with_context(|| format!("could not create WAV file {}", path.display()))?;
 
     let i16_samples = f32_samples_to_i16(samples_f32);
@@ -280,7 +287,7 @@ mod tests {
     #[test]
     fn write_chunk_wav_error_names_the_file() {
         let root = fresh_temp_dir("write_chunk_wav_fail");
-        // Missing parent: `WavWriter::create` cannot open the file.
+        // Missing parent: the file cannot be created there.
         let path = root.join("missing").join("chunk_001.wav");
 
         let err = write_chunk_wav(&path, &[0.0], 1, 16_000)
@@ -288,6 +295,21 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("could not create WAV file"), "{message}");
         assert!(message.contains("chunk_001.wav"), "{message}");
+        cleanup(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_chunk_wav_creates_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = fresh_temp_dir("write_chunk_wav_mode");
+        let path = root.join("chunk_001.wav");
+
+        write_chunk_wav(&path, &[0.0, 0.5], 1, 16_000).expect("write");
+
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "recorded speech must stay owner-only");
         cleanup(&root);
     }
 }

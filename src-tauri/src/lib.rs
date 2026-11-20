@@ -230,6 +230,15 @@ impl Drop for SessionCleanupGuard {
     }
 }
 
+/// Private session history file under the OS per-user app-data directory.
+///
+/// The Tauri bundle identifier owns the directory, and
+/// [`tardis::private_fs::create_private_dir`] makes it `0700` before the
+/// first record is written.
+pub(crate) fn history_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("history.jsonl")
+}
+
 /// Persist one backend event, keep the session phase in step, then emit it
 /// to the frontend.
 ///
@@ -241,14 +250,18 @@ impl Drop for SessionCleanupGuard {
 /// from starting a new worker before the old one has exited. Infallible on
 /// purpose: [`append_history`] reports its own failures and must not swallow
 /// the event, and an emit failure on the worker thread has no recovery path.
+///
+/// `history_path` comes from [`history_path`] and never points inside the
+/// working directory: a packaged app can start anywhere.
 fn emit_app_event(
     app: &tauri::AppHandle,
     session: &LiveSessionState,
+    history_path: &Path,
     event: &tardis::app::events::AppEvent,
 ) {
     use tardis::app::events::AppEvent;
 
-    append_history(event, Path::new(tardis::config::HISTORY_PATH));
+    append_history(event, history_path);
     if let AppEvent::StatusChanged(status) = event
         && status_updates_phase(*status)
     {
@@ -322,6 +335,10 @@ fn worker_exit_events(error: Option<String>) -> Vec<tardis::app::events::AppEven
 /// **Validation order:** the provider name is validated **before**
 /// any state mutation, so an unknown provider does **not** take the
 /// session slot and strand the app in an unrecoverable state.
+///
+/// **History location:** the history file lives under the OS per-user
+/// app-data directory and is created owner-only (see [`history_path`]), so
+/// transcripts never depend on the working directory or the umask.
 #[tauri::command]
 fn start_live_transcription(
     app: tauri::AppHandle,
@@ -339,6 +356,21 @@ fn start_live_transcription(
     let config =
         tardis::app::config::normalize_runtime_config(config.unwrap_or_default());
     tardis::app::config::validate_runtime_config(&config).map_err(|e| e.to_string())?;
+
+    // 1b. Resolve and lock down the history directory before taking the
+    //     slot: a session that cannot keep its transcripts private must
+    //     not start listening.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {e}"))?;
+    tardis::private_fs::create_private_dir(&app_data_dir).map_err(|e| {
+        format!(
+            "Could not prepare private app data dir {}: {e}",
+            app_data_dir.display()
+        )
+    })?;
+    let history_path = history_path(&app_data_dir);
 
     // 2. Take the session slot. The transition is legal only from
     //    `Idle`, which is what makes a double Start return the
@@ -360,6 +392,8 @@ fn start_live_transcription(
     let session_for_cleanup = Arc::clone(&session);
     let session_for_events = Arc::clone(&session);
     let session_for_exit = Arc::clone(&session);
+    let history_for_events = history_path.clone();
+    let history_for_exit = history_path;
 
     // We use `Builder::spawn` (rather than `std::thread::spawn`)
     // because `Builder::spawn` returns `io::Result<JoinHandle<T>>`,
@@ -385,7 +419,14 @@ fn start_live_transcription(
                 config_clone,
                 None, // None => run until stop signal is set
                 Some(stop_clone),
-                move |event| emit_app_event(&app_clone, &session_for_events, &event),
+                move |event| {
+                    emit_app_event(
+                        &app_clone,
+                        &session_for_events,
+                        &history_for_events,
+                        &event,
+                    )
+                },
             );
 
             // The runner emits `stopped` itself on its success path, so a
@@ -396,7 +437,7 @@ fn start_live_transcription(
                 .err()
                 .map(|e| format!("Live transcription failed: {e}"));
             for event in worker_exit_events(error) {
-                emit_app_event(&app, &session_for_exit, &event);
+                emit_app_event(&app, &session_for_exit, &history_for_exit, &event);
             }
         })
         // Spawn-failure rollback: if thread creation fails the
@@ -724,6 +765,11 @@ fn now_ms() -> u64 {
 /// Append one record to `path`, creating the file (and its directory) on
 /// first use.
 ///
+/// The history holds transcripts and rendered replies, so both the parent
+/// directory and the file are created owner-only (see
+/// [`tardis::private_fs`]). A directory or file left world-readable by an
+/// older release is tightened on the next append.
+///
 /// Two failure modes matter here, because this is the only write that
 /// happens during a live session:
 ///
@@ -737,13 +783,9 @@ fn append_record_to(path: &std::path::Path, line: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
+        tardis::private_fs::create_private_dir(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(path)?;
+    let mut file = tardis::private_fs::open_private_append(path)?;
     repair_partial_tail(&mut file)?;
     let start = file.metadata()?.len();
     if let Err(e) = file.write_all(line.as_bytes()) {
@@ -795,6 +837,9 @@ fn repair_partial_tail(file: &mut std::fs::File) -> std::io::Result<()> {
 /// a running session down, so the problem is reported on stderr and the
 /// session continues. Empty text is skipped rather than padded into the
 /// file, and every other event kind is ignored.
+///
+/// `path` is the private per-user history file resolved by [`history_path`],
+/// never a working-directory relative path.
 fn append_history(event: &tardis::app::events::AppEvent, path: &std::path::Path) {
     use tardis::app::events::AppEvent;
     use tardis::app::history::{format_record, is_recordable, HistoryRecord};
@@ -1144,6 +1189,43 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn history_path_lives_under_the_app_data_dir() {
+        let base = Path::new("/tmp/tardis-app-data");
+        assert_eq!(history_path(base), base.join("history.jsonl"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_record_to_creates_owner_only_history() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-history-mode-{}",
+            std::process::id()
+        ));
+        let path = history_path(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        append_record_to(&path, "{\"text\":\"one\"}\n").expect("append");
+
+        let dir_mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "history directory must be owner-only");
+        assert_eq!(file_mode, 0o600, "history file must be owner-only");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn history_records_transcripts_and_outputs_in_order_and_ignores_the_rest() {
         use tardis::app::events::{AppEvent, AppStatus, AppTranscriptEvent};
