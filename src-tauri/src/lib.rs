@@ -239,6 +239,27 @@ pub(crate) fn history_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("history.jsonl")
 }
 
+/// Restrict a history file written by a release that stored it at
+/// `output/history.jsonl` relative to the working directory.
+///
+/// The old location was never recorded, so this can only find the file when
+/// the shell starts from the same directory as the old release did. The
+/// content is never moved or deleted; only its mode changes. A symlink or a
+/// non-regular file is left alone, because the target may not be ours.
+fn restrict_legacy_history(working_dir: &Path) -> std::io::Result<Option<PathBuf>> {
+    let path = working_dir.join("output").join("history.jsonl");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(None);
+    }
+    tardis::private_fs::restrict_private_file(&path)?;
+    Ok(Some(path))
+}
+
 /// Persist one backend event, keep the session phase in step, then emit it
 /// to the frontend.
 ///
@@ -371,6 +392,22 @@ fn start_live_transcription(
         )
     })?;
     let history_path = history_path(&app_data_dir);
+
+    // 1c. A history file written by an older release sits at
+    //     `output/history.jsonl` under the directory that run used. The old
+    //     path was never recorded, so this only finds it when the shell
+    //     starts from that same directory. It is tightened in place and
+    //     never moved: losing old records would be worse than leaving them.
+    if let Ok(working_dir) = std::env::current_dir() {
+        match restrict_legacy_history(&working_dir) {
+            Ok(Some(path)) => eprintln!(
+                "history: restricted legacy history file {} to the owner",
+                path.display()
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("history: could not restrict legacy history file: {e}"),
+        }
+    }
 
     // 2. Take the session slot. The transition is legal only from
     //    `Idle`, which is what makes a double Start return the
@@ -1222,6 +1259,88 @@ mod tests {
             & 0o777;
         assert_eq!(dir_mode, 0o700, "history directory must be owner-only");
         assert_eq!(file_mode, 0o600, "history file must be owner-only");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_history_is_tightened_in_place() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-{}",
+            std::process::id()
+        ));
+        let path = dir.join("output").join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create output");
+        std::fs::write(&path, "{\"text\":\"old\"}\n").expect("seed file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+
+        let restricted = restrict_legacy_history(&dir).expect("restrict");
+
+        assert_eq!(restricted.as_deref(), Some(path.as_path()));
+        let mode = std::fs::metadata(&path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "legacy history must be owner-only");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "{\"text\":\"old\"}\n",
+            "the file is tightened, not moved or truncated"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_legacy_history_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        assert_eq!(
+            restrict_legacy_history(&dir).expect("a missing file is fine"),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_history_symlink_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tardis-legacy-history-link-{}",
+            std::process::id()
+        ));
+        let output = dir.join("output");
+        let target = dir.join("elsewhere.jsonl");
+        let link = output.join("history.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&output).expect("create output");
+        std::fs::write(&target, "not ours\n").expect("seed target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        assert_eq!(
+            restrict_legacy_history(&dir).expect("a symlink is skipped"),
+            None
+        );
+        let mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644, "the link target is not ours to change");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
