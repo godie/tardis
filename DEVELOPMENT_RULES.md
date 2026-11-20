@@ -81,6 +81,7 @@ mirror one of these rows.
 | `audio::gate` (`HalfDuplexGate`: speaking blocks draining, reverb tail, tail advance) | `tests` in `src/audio/gate.rs` | `cargo run -- live-local-transcribe` (speak, then confirm the next utterance is not clipped) |
 | `audio::endpoint` (`EndpointState` + `advance` / `finish`: onset, hangover close, min-speech discard, burst cap, frames↔ms) | `tests` in `src/audio/endpoint.rs` | `cargo run -- utterance-test`, then `cargo run -- live-local-transcribe` (speak a sentence with a pause inside it; expect one transcript line) |
 | `config` constants | n/a (value-only constants) | consumed by `mic-5s`, `record-5s`, `chunk-test`, `mock-transcribe`, `save-chunks-test`, `mock-transcribe-file`, `mock-translate` |
+| `http_body` (`read_capped_body` bounded response read: below, at, and over the limit, plus an endless stream) | `tests` in `src/http_body.rs` | consumed by the `local-whisper` transcription and `piper` synthesis HTTP calls |
 | `transcription` (`ProviderKind` parse + `build_provider` dispatch) | `tests` in `src/transcription/mod.rs` | consumed by `local-transcribe-file`, `live-local-transcribe` |
 | `transcription::mock_local` (`MockLocalProvider`) | `tests` in `src/transcription/mock_local.rs` | `cargo run -- live-local-transcribe` (default provider) |
 | `transcription::local_whisper` (`LocalWhisperClient`, HTTP client for the faster-whisper server) | `tests` in `src/transcription/local_whisper.rs` | `cargo run -- local-transcribe-file <path>`, `cargo run -- live-local-transcribe --provider local-whisper` |
