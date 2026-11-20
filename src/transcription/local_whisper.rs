@@ -16,9 +16,19 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 
+use crate::http_body::read_capped_body;
+
 /// OpenAI-compatible transcription endpoint suffix. Server base URL
 /// + this string is what [`build_transcription_url`] joins.
 const TRANSCRIPTION_PATH: &str = "/v1/audio/transcriptions";
+
+/// Largest response body accepted, in bytes.
+///
+/// One utterance's transcript is a few KB. The cap stops a broken
+/// server or a proxy error page from buffering megabytes in the capture
+/// thread; the response is refused, not parsed. Matches the LLM client's
+/// [`crate::processor::llm::MAX_RESPONSE_BYTES`].
+pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Pure helper: build the canonical transcription URL from a server
 /// base. Trims any number of trailing `/` so the result never
@@ -155,21 +165,18 @@ impl LocalWhisperClient {
         })?;
 
         let status = response.status();
+        let body = read_capped_body(response, MAX_RESPONSE_BYTES)
+            .with_context(|| format!("reading response body from {}", url))?;
         if !status.is_success() {
-            let body = response
-                .text()
-                .unwrap_or_else(|_| "<unreadable response body>".to_string());
             return Err(anyhow!(
                 "local faster-whisper server at {} returned status {}: {}",
                 url,
                 status,
-                body
+                String::from_utf8_lossy(&body)
             ));
         }
 
-        response
-            .json::<serde_json::Value>()
-            .with_context(|| format!("parsing JSON response from {}", url))
+        serde_json::from_slice(&body).with_context(|| format!("parsing JSON response from {}", url))
     }
 }
 

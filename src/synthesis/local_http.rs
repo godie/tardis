@@ -17,7 +17,16 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::config;
+use crate::http_body::read_capped_body;
 use crate::synthesis::{AudioChunk, Speech, Synthesizer};
+
+/// Largest WAV response body accepted, in bytes.
+///
+/// The `medium` Piper voices render 16-bit mono at 22050 Hz, or 44.1 KB
+/// per second; 8 MiB leaves room for roughly three minutes of speech,
+/// far past a single reply, while still bounding what a broken server
+/// can make the app hold before parsing starts.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// HTTP client for the local Piper TTS server.
 ///
@@ -53,7 +62,7 @@ impl Synthesizer for LocalHttpSynthesizer {
 
         let url = format!("{}/synthesize", self.base_url);
         let body = json!({ "text": text, "voice": self.voice });
-        let bytes = reqwest::blocking::Client::builder()
+        let response = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
             .build()
             .context("build the TTS HTTP client")?
@@ -67,8 +76,9 @@ impl Synthesizer for LocalHttpSynthesizer {
                      docker compose -f docker/piper/docker-compose.yml up -d",
                     self.base_url
                 )
-            })?
-            .bytes()
+            })?;
+
+        let bytes = read_capped_body(response, MAX_RESPONSE_BYTES)
             .context("read the TTS server response body")?;
 
         let mut chunk = parse_wav_body(&bytes).context("parse the TTS server WAV response")?;
