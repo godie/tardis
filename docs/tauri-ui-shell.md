@@ -66,7 +66,9 @@ It does **not** call a real translation provider yet, and it does
   - `transcribe_wav_file_local(file_path: String) -> Result<String, String>`
     Delegates to `tardis::transcription::build_provider("local-whisper")`
     so the same client served by `cargo run -- local-transcribe-file`
-    is reachable from the UI without duplicating the HTTP layer.
+    is reachable from the UI without duplicating the HTTP layer. The
+    command is async and runs the blocking client on Tauri's blocking
+    pool, so a long transcription does not freeze the window.
 - UI event payloads (serializable):
   - `tardis::app::ui_events::UiAppEvent`: flat struct emitted as
     `app-event` to the frontend.

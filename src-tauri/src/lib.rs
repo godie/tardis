@@ -696,6 +696,11 @@ pub fn normalize_local_transcription_error(error: &str) -> String {
 /// [`tardis::config::LOCAL_WHISPER_*`] constants inside
 /// [`ProviderKind::build`] for `local-whisper`.
 ///
+/// The provider request can run for minutes on a CPU model, so the
+/// command is `async` and runs the blocking client on Tauri's existing
+/// blocking pool. A synchronous command would hold the window's main
+/// thread for the whole request.
+///
 /// This is **file-based only**: no CPAL microphone capture is
 /// started from the UI. The `start_mock_listening` /
 /// `stop_mock_listening` commands remain a separate, mock-only
@@ -706,13 +711,17 @@ pub fn normalize_local_transcription_error(error: &str) -> String {
 /// original error string in parentheses for diagnosing Docker /
 /// format / server issues.
 #[tauri::command]
-fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
+async fn transcribe_wav_file_local(file_path: String) -> Result<String, String> {
     let valid_path = validate_wav_path_input(&file_path)?;
-    let provider = tardis::transcription::build_provider("local-whisper")
-        .map_err(|e| normalize_local_transcription_error(&e.to_string()))?;
-    provider
-        .transcribe(&valid_path)
-        .map_err(|e| normalize_local_transcription_error(&e.to_string()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let provider = tardis::transcription::build_provider("local-whisper")
+            .map_err(|e| normalize_local_transcription_error(&e.to_string()))?;
+        provider
+            .transcribe(&valid_path)
+            .map_err(|e| normalize_local_transcription_error(&e.to_string()))
+    })
+    .await
+    .map_err(|e| format!("file transcription task failed: {e}"))?
 }
 
 /// Current wall-clock time as Unix epoch milliseconds.
