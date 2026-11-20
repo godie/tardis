@@ -165,16 +165,23 @@ impl LocalWhisperClient {
         })?;
 
         let status = response.status();
-        let body = read_capped_body(response, MAX_RESPONSE_BYTES)
-            .with_context(|| format!("reading response body from {}", url))?;
+        let body = read_capped_body(response, MAX_RESPONSE_BYTES);
         if !status.is_success() {
+            // A failed status is the actionable fact, and the Tauri error
+            // classifier keys on "returned status". Keep it even when the
+            // error body itself is unreadable or over the cap.
+            let detail = match &body {
+                Ok(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                Err(err) => format!("<unreadable response body: {err}>"),
+            };
             return Err(anyhow!(
                 "local faster-whisper server at {} returned status {}: {}",
                 url,
                 status,
-                String::from_utf8_lossy(&body)
+                detail
             ));
         }
+        let body = body.with_context(|| format!("reading response body from {}", url))?;
 
         serde_json::from_slice(&body).with_context(|| format!("parsing JSON response from {}", url))
     }
