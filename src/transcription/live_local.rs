@@ -102,6 +102,16 @@ fn output_may_be_synthesized(mode: &ProcessMode, output: &Output) -> bool {
     !matches!(mode, ProcessMode::Respond { .. }) && output.blocked.is_none()
 }
 
+/// Can this session make a sound?
+///
+/// A dry run and respond mode both stay silent: respond replies are
+/// screen-only until the host can approve one, so the player must not be
+/// opened and a missing output device cannot stop the session before the
+/// first transcript. Translate is the only mode that reaches the speakers.
+fn playback_can_occur(mode: &AppMode, dry_run: bool) -> bool {
+    !dry_run && !matches!(mode, AppMode::Respond { .. })
+}
+
 /// Format a readable status line containing the utterance index and a
 /// human-readable status string. Callers append the result to their
 /// log / console output.
@@ -244,11 +254,14 @@ where
     // echo check below compares it with the actual capture device; the mock
     // and dry-run players open nothing, so they leave it `None`.
     let mut player_label: Option<String> = None;
-    let mut player: Box<dyn Player> = if config.dry_run {
-        // A dry run decides and renders but never makes a sound: the
-        // counting sink keeps the event stream honest while the room
-        // stays silent.
-        println!("playback:  dry run (counted, silent)");
+    let mut player: Box<dyn Player> = if !playback_can_occur(&config.mode, config.dry_run) {
+        // A dry run and respond mode both stay silent: the counting sink
+        // keeps the event stream honest while the room stays silent.
+        if config.dry_run {
+            println!("playback:  dry run (counted, silent)");
+        } else {
+            println!("output:    silent player (respond mode stays on screen)");
+        }
         Box::new(CountingPlayer::new())
     } else {
         match config.synthesizer_provider.as_str() {
@@ -893,6 +906,28 @@ mod tests {
             &respond_mode(),
             &output(OutputKind::Translate, None)
         ));
+    }
+
+    // ---- playback_can_occur --------------------------------------------
+
+    fn respond_app_mode() -> AppMode {
+        AppMode::Respond {
+            policy: crate::processor::RespondPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn translate_mode_opens_the_player_unless_dry_run() {
+        assert!(playback_can_occur(&AppMode::Translate, false));
+        assert!(!playback_can_occur(&AppMode::Translate, true));
+    }
+
+    /// Screen-only replies must not need an output device, even when the
+    /// user picked Piper.
+    #[test]
+    fn respond_mode_never_opens_the_player() {
+        assert!(!playback_can_occur(&respond_app_mode(), false));
+        assert!(!playback_can_occur(&respond_app_mode(), true));
     }
 
     // ---- live_utterance_status_message ----------------------------------
