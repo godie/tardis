@@ -797,10 +797,11 @@ safety layers landed exactly as specified.
 agreement with no listed word (`Sí, hagámoslo.`) passed the guard and was
 spoken. Respond mode now fails closed: `guard::gate_respond_reply` blocks
 every answer as `approval-required` (or with the guard's more specific
-reason), the runner refuses to synthesize an `OutputKind::Respond` output
-even if a processor forgets the block, and the reply stays on screen. An
-explicit host-approval step is still missing, so v1 speaks no respond
-reply at all.
+reason). The runner gates on the configured `ProcessMode::Respond`, not
+on `Output.kind`, so it synthesizes nothing in respond mode even when a
+processor forgets the block or mislabels the output, and the reply stays
+on screen. An explicit host-approval step is still missing, so v1 speaks
+no respond reply at all.
 
 **Files.** `src/app/config.rs` (`ProcessMode`, `RespondPolicy`,
 validation, normalize), `src/app/settings_store.rs` (the seven tests in
