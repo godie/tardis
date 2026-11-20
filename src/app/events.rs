@@ -172,9 +172,9 @@ pub struct AppOutputEvent {
     pub source_language: String,
     pub target_language: String,
     pub is_final: bool,
-    /// Why the reply must not be spoken, from the respond-mode guard;
-    /// `None` for a normal output. The event is emitted either way so
-    /// the operator sees exactly what stayed silent.
+    /// Why the reply must not be spoken, from the respond-mode safety
+    /// layers; `None` for a translated line. The event is emitted either
+    /// way so the operator sees exactly what stayed silent.
     pub blocked: Option<BlockReason>,
 }
 

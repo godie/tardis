@@ -1,13 +1,18 @@
 //! Layer b of the respond-mode safety: validate a generated reply before
-//! synthesis.
+//! synthesis, then fail closed when it cannot be certified.
 //!
 //! Layer a ([`crate::processor::decision`]) classifies the request; this
 //! layer trusts nothing about the model. Even when layer a says Answer,
 //! the LLM can volunteer a promise, so the reply is scanned for a date,
-//! an acceptance word, or an amount before it is allowed anywhere near
-//! the speakers. A blocked reply is still emitted as an `Output` event —
-//! silent in the room, visible on screen — and the runner skips
-//! synthesis.
+//! an acceptance word, or an amount. [`validate_reply`] is that lexical
+//! scan.
+//!
+//! The scan is not enough on its own, because `Sí, hagámoslo.` carries no
+//! word from the lists. [`gate_respond_reply`] is the speaking decision,
+//! and in v1 it never allows a respond reply through, because no surface
+//! can give the host's explicit approval first. A blocked reply is still emitted as
+//! an `Output` event — silent in the room, visible on screen — and the
+//! runner skips synthesis.
 //!
 //! Lexical and erring towards blocking: a reply that merely *quotes* the
 //! amount asked about is blocked too. No exceptions in v1.
@@ -17,7 +22,9 @@ use crate::processor::processor::BlockReason;
 /// The scanned result for one generated reply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Guarded {
-    /// `true` only when no block reason applied.
+    /// `true` only when the lexical scan found no block reason. It does
+    /// not mean the reply may be spoken; [`gate_respond_reply`] decides
+    /// that.
     pub allowed: bool,
     /// Every reason the reply is not allowed to be spoken.
     pub reasons: Vec<BlockReason>,
@@ -84,6 +91,20 @@ pub fn validate_reply(reply: &str) -> Guarded {
         allowed: reasons.is_empty(),
         reasons,
     }
+}
+
+/// Why this respond-mode reply must not be spoken.
+///
+/// Fail closed: v1 has no host-approval step, so every reply gets a
+/// reason. The lexical guard's first reason wins when it found one,
+/// because "date" or "money" tells the operator more than "approval
+/// required"; a reply the guard would allow still stays on screen.
+pub fn gate_respond_reply(reply: &str) -> BlockReason {
+    validate_reply(reply)
+        .reasons
+        .first()
+        .copied()
+        .unwrap_or(BlockReason::ApprovalRequired)
 }
 
 // ===== Unit tests ========================================================
@@ -166,5 +187,34 @@ mod tests {
     fn an_empty_or_whitespace_reply_is_blocked_as_empty() {
         assert_eq!(reasons_of(""), vec![BlockReason::Empty]);
         assert_eq!(reasons_of("   \n\t"), vec![BlockReason::Empty]);
+    }
+
+    // ---- gate_respond_reply (fail closed) -----------------------------
+
+    /// The leak the audit found: a plain acceptance with no listed word
+    /// passes the lexical guard, and the gate must still refuse it.
+    #[test]
+    fn an_answer_the_guard_allows_still_requires_approval() {
+        assert!(validate_reply("Sí, hagámoslo.").allowed);
+        assert_eq!(
+            gate_respond_reply("Sí, hagámoslo."),
+            BlockReason::ApprovalRequired
+        );
+    }
+
+    /// Defense in depth: when the lexical scan did find something, its
+    /// more specific reason is the one reported.
+    #[test]
+    fn the_guard_reason_wins_over_the_approval_default() {
+        assert_eq!(
+            gate_respond_reply("Claro, mañana lo reviso"),
+            BlockReason::Date
+        );
+        assert_eq!(
+            gate_respond_reply("I'll take care of it"),
+            BlockReason::Acceptance
+        );
+        assert_eq!(gate_respond_reply("The total is 30 €"), BlockReason::Money);
+        assert_eq!(gate_respond_reply("  "), BlockReason::Empty);
     }
 }

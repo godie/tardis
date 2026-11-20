@@ -62,7 +62,7 @@ use crate::audio::player::{CountingPlayer, CpalPlayer, Player};
 use crate::audio::volume::calculate_average_volume;
 use crate::config;
 use crate::processor::build_processor;
-use crate::processor::processor::{ProcessMode, Processor};
+use crate::processor::processor::{Output, ProcessMode, Processor};
 use crate::synthesis::{AudioChunk, Speech, Synthesizer, build_synthesizer, chunk_duration_ms};
 use crate::transcription;
 use crate::transcription::LocalTranscriptionProvider;
@@ -89,6 +89,51 @@ pub fn format_live_utterance_filename(utterance_index: usize) -> String {
 /// Equal-to-threshold returns `false`.
 pub fn should_transcribe_chunk(volume: f32, threshold: f32) -> bool {
     activity::is_speech_like(volume, threshold)
+}
+
+/// May this processed output reach synthesis?
+///
+/// Respond mode fails closed. v1 has no host-approval step, so the
+/// configured mode decides, not the output's own label: a processor that
+/// mislabels or fails to block a respond reply still cannot speak it.
+/// Translate output follows the guard's verdict, where `blocked == None`
+/// means allowed.
+fn output_may_be_synthesized(mode: &ProcessMode, output: &Output) -> bool {
+    !matches!(mode, ProcessMode::Respond { .. }) && output.blocked.is_none()
+}
+
+/// Can this session make a sound?
+///
+/// A dry run and respond mode both stay silent: respond replies are
+/// screen-only until the host can approve one, so the player must not be
+/// opened and a missing output device cannot stop the session before the
+/// first transcript. Translate is the only mode that reaches the speakers.
+fn playback_can_occur(mode: &AppMode, dry_run: bool) -> bool {
+    !dry_run && !matches!(mode, AppMode::Respond { .. })
+}
+
+/// Synthesize an output only after the fail-closed gate allows it.
+///
+/// The runner calls this, and so do the tests: the gate and the
+/// synthesizer call it guards are then one unit, so reverting the gate
+/// fails a test instead of silently speaking a reply.
+fn synthesize_output(
+    mode: &ProcessMode,
+    output: &Output,
+    synthesizer: &dyn Synthesizer,
+    target_language: &str,
+) -> Result<Option<(Speech, AudioChunk)>> {
+    if !output_may_be_synthesized(mode, output) {
+        return Ok(None);
+    }
+    let speech = Speech {
+        text: output.text.clone(),
+        language: target_language.to_string(),
+    };
+    match synthesizer.synthesize(&speech)? {
+        Some(chunk) => Ok(Some((speech, chunk))),
+        None => Ok(None),
+    }
 }
 
 /// Format a readable status line containing the utterance index and a
@@ -233,11 +278,14 @@ where
     // echo check below compares it with the actual capture device; the mock
     // and dry-run players open nothing, so they leave it `None`.
     let mut player_label: Option<String> = None;
-    let mut player: Box<dyn Player> = if config.dry_run {
-        // A dry run decides and renders but never makes a sound: the
-        // counting sink keeps the event stream honest while the room
-        // stays silent.
-        println!("playback:  dry run (counted, silent)");
+    let mut player: Box<dyn Player> = if !playback_can_occur(&config.mode, config.dry_run) {
+        // A dry run and respond mode both stay silent: the counting sink
+        // keeps the event stream honest while the room stays silent.
+        if config.dry_run {
+            println!("playback:  dry run (counted, silent)");
+        } else {
+            println!("output:    silent player (respond mode stays on screen)");
+        }
         Box::new(CountingPlayer::new())
     } else {
         match config.synthesizer_provider.as_str() {
@@ -673,24 +721,21 @@ where
                         // visible on screen.
                         (self.on_event)(build_output_event(utterance_index, &output));
 
-                        // A blocked reply (layer a suggestion or layer b
-                        // refusal) is shown and never synthesized. Return
-                        // false: no speaker time was consumed, so the
-                        // caller must keep listening.
-                        if output.blocked.is_some() {
-                            return false;
-                        }
-
-                        // The three-way contract, same split the
-                        // processor has: `Ok(None)` is deliberate
+                        // A blocked reply (layer a suggestion, layer b
+                        // refusal, or an unapproved respond answer) is
+                        // shown and never synthesized. Return false: no
+                        // speaker time was consumed, so the caller must
+                        // keep listening. The three-way contract, same
+                        // split the processor has: `Ok(None)` is deliberate
                         // silence (nothing to speak), `Err` is a real
                         // failure the user must see, never silence.
-                        let speech = Speech {
-                            text: output.text,
-                            language: self.target_language.to_string(),
-                        };
-                        match self.synthesizer.synthesize(&speech) {
-                            Ok(Some(chunk)) => {
+                        match synthesize_output(
+                            self.process_mode,
+                            &output,
+                            self.synthesizer,
+                            self.target_language,
+                        ) {
+                            Ok(Some((speech, chunk))) => {
                                 let duration_ms = chunk_duration_ms(&chunk);
                                 (self.on_event)(build_speech_event(
                                     utterance_index,
@@ -775,6 +820,8 @@ fn discard_blocked_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::OutputKind;
+    use crate::synthesis::MockSynthesizer;
 
     // ---- format_live_utterance_filename --------------------------------
 
@@ -811,6 +858,141 @@ mod tests {
     #[test]
     fn should_transcribe_above_threshold_returns_true() {
         assert!(should_transcribe_chunk(0.02_f32, 0.01_f32));
+    }
+
+    // ---- output_may_be_synthesized -------------------------------------
+
+    fn translate_mode() -> ProcessMode {
+        ProcessMode::Translate {
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+        }
+    }
+
+    fn respond_mode() -> ProcessMode {
+        ProcessMode::Respond {
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+            policy: crate::processor::RespondPolicy::default(),
+        }
+    }
+
+    fn output(kind: OutputKind, blocked: Option<crate::processor::BlockReason>) -> Output {
+        Output {
+            kind,
+            source_text: "hola".to_string(),
+            text: "hola".to_string(),
+            source_language: "es".to_string(),
+            target_language: "es".to_string(),
+            is_final: true,
+            blocked,
+        }
+    }
+
+    #[test]
+    fn unblocked_translate_output_may_be_synthesized() {
+        assert!(output_may_be_synthesized(
+            &translate_mode(),
+            &output(OutputKind::Translate, None)
+        ));
+    }
+
+    #[test]
+    fn blocked_translate_output_may_not_be_synthesized() {
+        assert!(!output_may_be_synthesized(
+            &translate_mode(),
+            &output(
+                OutputKind::Translate,
+                Some(crate::processor::BlockReason::Money)
+            )
+        ));
+    }
+
+    /// A processor that forgets its own block, or labels a respond reply as
+    /// a translation, must not get it onto the speakers either.
+    #[test]
+    fn respond_mode_may_never_reach_synthesis() {
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(OutputKind::Respond, None)
+        ));
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(
+                OutputKind::Respond,
+                Some(crate::processor::BlockReason::ApprovalRequired)
+            )
+        ));
+        assert!(!output_may_be_synthesized(
+            &respond_mode(),
+            &output(OutputKind::Translate, None)
+        ));
+    }
+
+    // ---- synthesize_output ---------------------------------------------
+
+    #[test]
+    fn an_allowed_translate_output_is_synthesized() {
+        let rendered = synthesize_output(
+            &translate_mode(),
+            &output(OutputKind::Translate, None),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_some());
+    }
+
+    #[test]
+    fn a_blocked_translate_output_is_not_synthesized() {
+        let rendered = synthesize_output(
+            &translate_mode(),
+            &output(
+                OutputKind::Translate,
+                Some(crate::processor::BlockReason::Money),
+            ),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_none());
+    }
+
+    /// The regression Qodo named: this drives the runner's own synthesis
+    /// call with an unblocked respond output, so reverting the gate to
+    /// `output.blocked.is_some()` makes this fail.
+    #[test]
+    fn an_unblocked_respond_output_is_not_synthesized() {
+        let rendered = synthesize_output(
+            &respond_mode(),
+            &output(OutputKind::Respond, None),
+            &MockSynthesizer::new(),
+            "es",
+        )
+        .expect("the mock synthesizer never fails");
+        assert!(rendered.is_none());
+    }
+
+    // ---- playback_can_occur --------------------------------------------
+
+    fn respond_app_mode() -> AppMode {
+        AppMode::Respond {
+            policy: crate::processor::RespondPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn translate_mode_opens_the_player_unless_dry_run() {
+        assert!(playback_can_occur(&AppMode::Translate, false));
+        assert!(!playback_can_occur(&AppMode::Translate, true));
+    }
+
+    /// Screen-only replies must not need an output device, even when the
+    /// user picked Piper.
+    #[test]
+    fn respond_mode_never_opens_the_player() {
+        assert!(!playback_can_occur(&respond_app_mode(), false));
+        assert!(!playback_can_occur(&respond_app_mode(), true));
     }
 
     // ---- live_utterance_status_message ----------------------------------

@@ -347,16 +347,16 @@ impl Processor for LlmProcessor {
                         }
                         // Layer b: the model must not be trusted to have
                         // avoided a promise just because it was asked a
-                        // question.
-                        let guarded = guard::validate_reply(&rendered);
+                        // question. The gate keeps even a clean reply off
+                        // the speakers: v1 has no host-approval step.
                         Ok(Some(Output {
                             kind: OutputKind::Respond,
                             source_text: text.to_string(),
-                            text: rendered,
+                            text: rendered.clone(),
                             source_language: source_language.clone(),
                             target_language: target_language.clone(),
                             is_final: true,
-                            blocked: guarded.reasons.first().copied(),
+                            blocked: Some(guard::gate_respond_reply(&rendered)),
                         }))
                     }
                 }

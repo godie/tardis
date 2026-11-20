@@ -49,9 +49,11 @@ pub struct UiAppEvent {
     /// (`"translate"` or `"respond"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_kind: Option<String>,
-    /// Present for `output` events whose reply the respond-mode guard
-    /// blocked: the reason label (`"commitment"`, `"date"`, `"money"`,
-    /// `"acceptance"`, `"empty"`).
+    /// Present for `output` events whose reply the respond-mode layers
+    /// blocked: the reason label (`"commitment"`, `"approval-required"`,
+    /// `"date"`, `"money"`, `"acceptance"`, `"empty"`). Every respond
+    /// reply carries one in v1, because it needs host approval before
+    /// synthesis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
     /// Present for `error` events.

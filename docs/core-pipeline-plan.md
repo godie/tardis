@@ -793,6 +793,16 @@ because the top-level language pair is the single source of truth; the
 runner joins the two at call time. `Output.blocked` and the two pure
 safety layers landed exactly as specified.
 
+**Post-audit amendment (#76).** The two layers are lexical, so an
+agreement with no listed word (`Sí, hagámoslo.`) passed the guard and was
+spoken. Respond mode now fails closed: `guard::gate_respond_reply` blocks
+every answer as `approval-required` (or with the guard's more specific
+reason). The runner gates on the configured `ProcessMode::Respond`, not
+on `Output.kind`, so it synthesizes nothing in respond mode even when a
+processor forgets the block or mislabels the output, and the reply stays
+on screen. An explicit host-approval step is still missing, so v1 speaks
+no respond reply at all.
+
 **Files.** `src/app/config.rs` (`ProcessMode`, `RespondPolicy`,
 validation, normalize), `src/app/settings_store.rs` (the seven tests in
 §2.4), `src/processor/decision.rs` (layer a: classify + decide),
@@ -873,8 +883,9 @@ Plus `ProcessMode` serde round-trip, the seven `settings_store` tests from
 **Manual.** `cargo run -- live-local-transcribe --mode respond --host "Ana" --dry-run`,
 then the same with a commitment question (`"Ana, can you confirm the price
 by Friday?"` → must print a suggestion, never a spoken answer), then
-without `--dry-run` to hear a plain answer. Tauri: pick Respond, type a
-name, press Start, ask a question out loud.
+without `--dry-run` and confirm a plain answer is printed but not heard.
+Tauri: pick Respond, type a name, press Start, ask a question out loud;
+the answer appears in the output panel and the speakers stay silent.
 
 **Risks.** The worst product risk in this plan is the assistant speaking
 when it should have stayed quiet, in front of the host. Mitigations: two
@@ -1045,7 +1056,10 @@ Resolved on review, so the PRs below do not re-litigate them.
    the UI but not synthesized). Acceptance words belong to the reply guard,
    not to the input classifier. Question detection accepts a **leading
    `¿`** as well as a trailing `?`, because recognisers drop the closing
-   mark.
+   mark. After the audit (#76) the lexical layers are defense-in-depth, not
+   the speaking decision: every respond reply is `approval-required` until
+   the host can approve one, and v1 has no approval step, so none is
+   spoken.
 6. **Which TTS provider?** **Piper** for core (PR 5), over a local HTTP
    Docker service — CPU-fast, permissive licence, small models, and the
    exact pattern faster-whisper already proves. **KittenTTS 2** is a later
