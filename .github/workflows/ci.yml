@@ -47,6 +47,9 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      - name: cargo test (tauri)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: skills installer tests
         run: sh scripts/install-skills.test.sh
 
