@@ -22,10 +22,13 @@ on:
       # namespace rationale.
       - 'tardis-v*.*.*'
 
-# Only `contents: write` is needed for uploading release assets. No
-# package-registry pushes, no OIDC / signing-key secrets in this cut.
+# Read-only by default. The build matrix runs third-party actions and compiles
+# dependencies, and none of that needs to write repository contents. The
+# `release` job is the only one that uploads, so it alone opts into
+# `contents: write`. No package-registry pushes, no OIDC / signing-key secrets
+# in this cut.
 permissions:
-  contents: write
+  contents: read
 
 # Re-pushing the same tag (common during pre-release iteration) cancels
 # the in-flight build, so a new push starts a fresh clean build instead
@@ -119,8 +122,10 @@ jobs:
     name: publish GitHub release
     needs: build
     runs-on: ubuntu-latest
-    # `permissions: contents: write` is inherited from the workflow scope above;
-    # no need for a redundant inner block here.
+    # Uploading release assets is the only step in this workflow that needs
+    # write access, so the grant lives here and nowhere else.
+    permissions:
+      contents: write
     steps:
       - name: download all runner artefacts
         uses: actions/download-artifact@v4
