@@ -141,6 +141,11 @@ if [ ! -e "${T2_ROOT}/output/agent-runs/lock" ]; then
 else
   bad "lock left behind after the run"
 fi
+if [ ! -d "${T2_ROOT}/output/agent-runs/lock.reaper" ]; then
+  ok "reaper released after stale recovery"
+else
+  bad "reaper left behind after stale recovery"
+fi
 
 # A missing / empty pid also counts as stale (the pid=0 bug).
 T2B_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2b.XXXXXX")
@@ -237,6 +242,12 @@ while [ ! -e "${SIGNAL}" ] && [ "${i}" -lt 200 ]; do
   i=$((i + 1))
 done
 if [ -e "${SIGNAL}" ]; then
+  published_pid="$(tr -cd '0-9' < "${T2E_ROOT}/output/agent-runs/lock" 2>/dev/null)"
+  if [ -n "${published_pid}" ]; then
+    ok "the published lock already carries its pid"
+  else
+    bad "the lock was published without a pid"
+  fi
   ( cd "${T2E_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" \
       bash scripts/agent-backlog-pickup.sh >"${T2E_ROOT}/tick2.log" 2>&1 ) &
   p2=$!
@@ -254,11 +265,6 @@ if [ -e "${SIGNAL}" ]; then
     ok "ticks racing the initial lock creation: exactly one agent ran"
   else
     bad "expected one agent against a published lock, got ${agents}: $(cat "${T2E_ROOT}/tick2.log" 2>/dev/null)"
-  fi
-  if [ ! -d "${T2E_ROOT}/output/agent-runs/lock.reaper" ]; then
-    ok "reaper released after the winning tick published its lock"
-  else
-    bad "reaper dir left behind"
   fi
 else
   : > "${RELEASE}"
