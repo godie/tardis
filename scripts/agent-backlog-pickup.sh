@@ -58,44 +58,98 @@ mkdir -p "${RUN_DIR}"
 # run's own state labels win: an issue already carrying ready-for-agent,
 # agent-wip or agent-stuck is never re-touched, so once work starts the
 # claim state machine stays the single authority. The board itself is
-# not written back; the human moves it after merge.
+# not written back; the human moves it after merge. The board and the
+# ready queue are both read to exhaustion, and only this repo's items
+# are touched, so a shared board or a long queue cannot hide a ticket.
+
+# One page of the board query. The cursor is omitted on the first page
+# because GitHub rejects an empty `after` value.
+board_page() { # $1 query, $2 owner, $3 number, $4 cursor (empty first)
+  if [ -n "$4" ]; then
+    gh api graphql -f "query=$1" -f "owner=$2" -F "number=$3" -f "cursor=$4"
+  else
+    gh api graphql -f "query=$1" -f "owner=$2" -F "number=$3"
+  fi
+}
 
 sync_board_labels() {
-  local board_response owner number
+  local board_query cursor page_response page_lines page_info
+  local has_next next_cursor line repo issue state labels
+  local owner number
   owner="${AGENT_BOARD_OWNER:-godie}"
   number="${AGENT_BOARD_NUMBER:-3}"
-
-  if ! board_response="$(gh api graphql -F "query=$(
-    printf 'query{ user(login: "%s") { projectV2(number: %s) { items(first: 50) { nodes { content { ... on Issue { number state repository { nameWithOwner } } } fieldValues(first: 10) { nodes { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } } }' "$owner" "$number"
-  )" 2>&1)"; then
-    console_log "board sync: gh graphql query failed, label-only pickup still runs"
+  cursor=""
+  # `gh repo view` resolves the name from the checkout and can fail,
+  # leaving it empty. Every item would then pass the
+  # `repo != TARDIS_REPO_FULL` check against "", including a board item
+  # that carries no repository at all (a pull request or a draft), so
+  # the sync would label a stranger's issue. Label-only pickup still
+  # runs.
+  if [ -z "${TARDIS_REPO_FULL}" ]; then
+    console_log "board sync: repository unknown, label-only pickup still runs"
     return 0
   fi
+  board_query='query($owner: String!, $number: Int!, $cursor: String) {
+    user(login: $owner) {
+      projectV2(number: $number) {
+        items(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            content { ... on Issue { number state repository { nameWithOwner } } }
+            fieldValues(first: 10) {
+              nodes { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+            }
+          }
+        }
+      }
+    }
+  }'
 
-  printf '%s\n' "${board_response}" | jq -r '
-    .data.user.projectV2.items.nodes[]?
-    | select([.fieldValues.nodes[].name] | index("Ready for agent") != null)
-    | .content.repository.nameWithOwner + "#" + (.content.number|tostring)
-      + " / " + (.content.state // "?")
-  ' 2>/dev/null | while IFS= read -r line; do
-    repo="${line%%#*}"
-    # A shared board carries items from every repo; only this repo's
-    # issues may be touched (delegate finding 4: `other-repo#5` must
-    # not be checked against, or labeled as, `tardis#5`).
-    if [ "${repo}" != "${TARDIS_REPO_FULL}" ]; then
-      continue
+  # Walk every page until `pageInfo` says the board is exhausted. A cap
+  # here would drop a ready item past the last page, and the docs promise
+  # the lowest ready ticket from the whole queue.
+  while :; do
+    if ! page_response="$(board_page "${board_query}" "${owner}" "${number}" "${cursor}" 2>&1)"; then
+      console_log "board sync: gh graphql query failed, label-only pickup still runs"
+      break
     fi
-    issue="${line#*#}"
-    issue="${issue%% *}"
-    state="${line##* }"
-    [ "${state}" = "OPEN" ] || continue
-    labels="$(gh issue view "${issue}" --json labels -q '[.labels[].name]|join(",")' 2>/dev/null)"
-    case ",${labels}," in
-      *,ready-for-agent,*|*,agent-wip,*|*,agent-stuck,*) continue ;;
-    esac
-    if gh issue edit "${issue}" --add-label ready-for-agent >/dev/null 2>&1; then
-      console_log "board sync: issue #${issue} earned ready-for-agent from the [Ready for agent] column"
+    page_lines="$(printf '%s\n' "${page_response}" | jq -r '
+      .data.user.projectV2.items.nodes[]?
+      | select([.fieldValues.nodes[].name] | index("Ready for agent") != null)
+      | .content.repository.nameWithOwner + "#" + (.content.number|tostring)
+        + " / " + (.content.state // "?")
+    ' 2>/dev/null)"
+
+    printf '%s\n' "${page_lines}" | while IFS= read -r line; do
+      [ -n "${line}" ] || continue
+      repo="${line%%#*}"
+      # A shared board carries items from every repo; only this repo's
+      # issues may be touched (delegate finding 4: `other-repo#5` must
+      # not be checked against, or labeled as, `tardis#5`).
+      if [ "${repo}" != "${TARDIS_REPO_FULL}" ]; then
+        continue
+      fi
+      issue="${line#*#}"
+      issue="${issue%% *}"
+      state="${line##* }"
+      [ "${state}" = "OPEN" ] || continue
+      labels="$(gh issue view "${issue}" --json labels -q '[.labels[].name]|join(",")' 2>/dev/null)"
+      case ",${labels}," in
+        *,ready-for-agent,*|*,agent-wip,*|*,agent-stuck,*) continue ;;
+      esac
+      if gh issue edit "${issue}" --add-label ready-for-agent >/dev/null 2>&1; then
+        console_log "board sync: issue #${issue} earned ready-for-agent from the [Ready for agent] column"
+      fi
+    done
+
+    page_info="$(printf '%s\n' "${page_response}" \
+      | jq -r '.data.user.projectV2.items.pageInfo | "\(.hasNextPage // false) \(.endCursor // "")"' 2>/dev/null)"
+    has_next="${page_info%% *}"
+    next_cursor="${page_info#* }"
+    if [ "${has_next}" != "true" ] || [ -z "${next_cursor}" ]; then
+      break
     fi
+    cursor="${next_cursor}"
   done
 }
 sync_board_labels
@@ -125,7 +179,14 @@ fi
 echo $$ > "${LOCK_DIR}/pid"
 trap 'rm -rf "${LOCK_DIR}" "${LOCK_DIR}.reaper"' EXIT
 
-ticket="$(gh issue list --label ready-for-agent --limit 10 --state open --json number -q '.[].number' 2>/dev/null | sort -n | head -1)"
+# Read the whole ready queue before choosing: `--paginate` follows the
+# Link header to exhaustion, so the lowest number comes from every
+# labeled ticket instead of the first ten results. The issues endpoint
+# also returns pull requests; `select(.pull_request == null)` drops
+# them, matching what `gh issue list` returned.
+ticket="$(gh api --paginate \
+  "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100" \
+  -q '.[] | select(.pull_request == null) | .number' 2>/dev/null | sort -n | head -1)"
 if [ -z "${ticket}" ]; then
   echo "$(date -u '+%FT%TZ') trigger: no issues labeled ready-for-agent, idle exit"
   exit 0
