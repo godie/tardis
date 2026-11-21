@@ -19,7 +19,8 @@ set -u
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_DIR="${REPO_DIR}/output/agent-runs"
-LOCK_DIR="${RUN_DIR}/lock"
+LOCK_FILE="${RUN_DIR}/lock"
+REAPER_DIR="${RUN_DIR}/lock.reaper"
 
 console_log() { echo "$(date -u '+%FT%TZ') $*"; }
 
@@ -100,30 +101,98 @@ sync_board_labels() {
 }
 sync_board_labels
 
-# One run at a time. Recovery is atomic under a dedicated reaper lock:
-# only the tick that holds `lock/reaper` may rm+recreate `lock`, so two
-# concurrent ticks can never both read a dead PID, delete each other's
-# fresh lock and run in parallel (delegate finding 3). A missing,
-# empty or unparsable pid file counts as stale: `kill -0 0` targets the
-# process group and always succeeds, which would have stranded the
-# lock forever.
-if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-  if ! mkdir "${LOCK_DIR}.reaper" 2>/dev/null; then
-    console_log "trigger: a previous run is active and another tick is already reaping; skipping tick"
+# One run at a time. Ownership is a file holding the owner's pid,
+# published with `ln`: the hard link appears with the pid already
+# inside, where `mkdir` plus a separate write left a window in which a
+# second tick read an empty lock and reaped it. A directory named
+# `lock` is the older script's lock (pid in `lock/pid`), and `ln` would
+# happily link inside it, so it is never treated as a claim. Returns 0
+# on success, 1 when another lock exists, 2 when the pid file cannot be
+# written.
+claim_lock() {
+  local tmp="${LOCK_FILE}.$$"
+  if [ -d "${LOCK_FILE}" ]; then
+    return 1
+  fi
+  if ! printf '%s\n' "$$" > "${tmp}"; then
+    return 2
+  fi
+  if ln "${tmp}" "${LOCK_FILE}" 2>/dev/null; then
+    if [ -f "${LOCK_FILE}" ]; then
+      rm -f "${tmp}"
+      return 0
+    fi
+    # A directory appeared after the check above: `ln` linked inside it,
+    # so drop that link and let recovery handle the legacy lock.
+    rm -f "${LOCK_FILE}/${tmp##*/}"
+    rm -f "${tmp}"
+    return 1
+  fi
+  rm -f "${tmp}"
+  if [ -e "${LOCK_FILE}" ]; then
+    return 1
+  fi
+  return 2
+}
+
+# The owner pid lives in the lock file itself, or in `lock/pid` when the
+# lock is a directory from the older script.
+lock_owner_pid() {
+  if [ -d "${LOCK_FILE}" ]; then
+    cat "${LOCK_FILE}/pid" 2>/dev/null | tr -cd '0-9'
+  else
+    cat "${LOCK_FILE}" 2>/dev/null | tr -cd '0-9'
+  fi
+}
+
+# The fast path never touches `lock.reaper`: with no lock it publishes
+# one and runs, so a kill in an ordinary pickup cannot block later ticks
+# and an orphaned reaper cannot stop a start. A lock whose pid is live
+# means skip. A lock whose pid is dead or missing is reaped under the
+# reaper, which serializes recoveries so two ticks cannot both remove
+# the stale file and publish (delegate finding 3 / audit item 10). A
+# missing, empty or unparsable pid counts as stale: `kill -0 0` targets
+# the process group and always succeeds, which would strand the lock
+# forever.
+#
+# The reaper is a sibling of `lock`, not a child: recovery deletes the
+# lock, so a nested reaper would be deleted with it. A kill inside the
+# short recovery window leaves it behind and blocks later recoveries
+# until the path in the log is removed; ordinary starts still run.
+claim_lock
+claim_status=$?
+if [ "${claim_status}" -eq 1 ]; then
+  old_pid="$(lock_owner_pid)"
+  if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+    console_log "trigger: a previous run is active (pid ${old_pid}); skipping tick"
     exit 0
   fi
-  trap 'rm -rf "${LOCK_DIR}.reaper"' EXIT
-  old_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null | tr -cd '0-9')"
-  if [ -z "${old_pid}" ] || ! kill -0 "${old_pid}" 2>/dev/null; then
-    rm -rf "${LOCK_DIR}"
-  fi
-  if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-    console_log "trigger: a previous run reclaimed the lock mid-reap; skipping tick"
+  if ! mkdir "${REAPER_DIR}" 2>/dev/null; then
+    console_log "trigger: the acquire lock is held (${REAPER_DIR}); skipping tick"
     exit 0
   fi
+  trap 'rm -rf "${REAPER_DIR}"' EXIT
+  # Re-read under the reaper: the owner checked above may have exited and
+  # another tick may have published since.
+  old_pid="$(lock_owner_pid)"
+  if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+    console_log "trigger: a previous run is active (pid ${old_pid}); skipping tick"
+    exit 0
+  fi
+  rm -rf "${LOCK_FILE}"
+  claim_lock
+  claim_status=$?
+  if [ "${claim_status}" -eq 1 ]; then
+    console_log "trigger: another tick claimed the lock; skipping tick"
+    exit 0
+  fi
+  rm -rf "${REAPER_DIR}"
 fi
-echo $$ > "${LOCK_DIR}/pid"
-trap 'rm -rf "${LOCK_DIR}" "${LOCK_DIR}.reaper"' EXIT
+if [ "${claim_status}" -ne 0 ]; then
+  console_log "trigger: could not publish ${LOCK_FILE}; skipping tick"
+  exit 1
+fi
+trap 'rm -f "${LOCK_FILE}" "${LOCK_FILE}.$$"' EXIT
 
 ticket="$(gh issue list --label ready-for-agent --limit 10 --state open --json number -q '.[].number' 2>/dev/null | sort -n | head -1)"
 if [ -z "${ticket}" ]; then
