@@ -194,21 +194,37 @@ CLI / Tauri command
   -> Frontend listener in ui/app.js (switch on payload.kind)
 ```
 
+### Session phase
+
+`src/app/session_phase.rs` owns the live-session phase. The wire labels are
+lowercase:
+
+| Phase | Meaning | Controls |
+| --- | --- | --- |
+| `idle` | no session; the worker slot is free | Start enabled, panel unlocked |
+| `starting` | Start accepted, `listening` not reported yet | Start and Stop disabled, panel locked |
+| `listening` | capture running | Stop enabled, panel locked |
+| `stopping` | Stop accepted, the worker draining | Start and Stop disabled, panel locked |
+
+`AppStatus` events carry `listening`, `stopped`, `idle` or `error`; `stopped`
+and `error` settle in `idle`, and a worker exit ends any phase. A status event
+carries the phase it settles into as `UiAppEvent::phase`; after a terminal
+event, draw that phase. `get_session_phase` reports the current slot on boot
+and after a refused Stop, and says `idle` only once cleanup finishes, because
+the slot stays taken until then.
+
+**The UI does not decide phases, it draws them.** `ui/app.js` holds one
+`sessionPhase`, taken from the event's `phase` or `get_session_phase`, and
+derives the controls from it. A status-to-phase table in JS is a second copy
+of `SessionPhase::apply_status`, and that copy is what left the panel locked
+on a session the backend had already ended.
+
 - **The mapping is pure and unit-tested.** `UiAppEvent` and
   `app_event_to_ui_event` carry every variant. A change that only reshapes
   what the UI already shows is a serialisation change on this struct. A new
   domain concept needs a new `AppEvent` variant and a matching `UiAppEvent`,
   which is a deliberate change to the event surface. `phase` appears on
-  `status` events only and mirrors `SessionPhase` lowercase labels. After a
-  terminal event, draw the event's phase; `get_session_phase` reports `idle`
-  only once worker cleanup finishes, because the slot stays taken until then.
-  The frontend keeps exactly one `sessionPhase` and draws the controls from
-  it: a local table of status-to-phase rules is a second copy of
-  `SessionPhase::apply_status`, and it is what left the panel locked on a
-  session the backend had already ended. Command outcomes come from the
-  transition table (`StartAccepted`, `StopAccepted`, `StartFailed`); resync
-  through `get_session_phase` on boot and after a refused Stop, where the
-  copied phase cannot be trusted.
+  `status` events only.
 - **Provider selection is validated in the backend.**
   `start_live_transcription` takes an optional `AppRuntimeConfig`, normalizes
   and validates it (provider and processor names included) before touching

@@ -60,15 +60,14 @@ impl MockAppState {
 /// exit (success, error, or panic) without needing to round-trip
 /// through the command handler.
 ///
-/// **Lock order:** `phase` is always acquired before `stop_signal` when
-/// both are held. [`LiveSessionState::accept_stop`] holds `phase` while it
-/// reads and clears `stop_signal`, so the take and the phase transition
-/// cannot be split by a worker exit and a new Start.
-/// [`LiveSessionState::reset_session`] releases `phase` before it locks
-/// `stop_signal`, and the other stop-signal helpers hold `stop_signal`
-/// alone. No path takes `stop_signal` and then waits for `phase`, so a
-/// concurrent `stop_live_transcription` cannot deadlock with the
-/// worker-thread cleanup.
+/// **Lock order:** every path that touches both fields takes `phase` before
+/// `stop_signal`. [`LiveSessionState::accept_stop`] holds `phase` while it
+/// reads and clears the signal, so a worker exit and a new Start cannot
+/// split the take from the transition. [`LiveSessionState::reset_session`]
+/// drops `phase` before it takes the signal, and the other stop-signal
+/// helpers hold `stop_signal` alone. Nothing takes `stop_signal` and then
+/// waits for `phase`, so cleanup and `stop_live_transcription` cannot
+/// deadlock.
 ///
 /// Field-level rationale:
 /// - `stop_signal: Mutex<Option<Arc<AtomicBool>>>` — the worker
