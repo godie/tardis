@@ -112,6 +112,7 @@ Both commands open the **TARDIS v1** window. Pick a provider, click **Start List
 | `cargo run -- say-text "<text>"` | One TTS round-trip with no microphone, session or LLM: the same `LocalHttpSynthesizer` + `CpalPlayer` the live loop uses, one request, the sentence out of the speakers. Needs the Piper container up (`docker compose -f docker/piper/docker-compose.yml up -d`) and an output device. | Yes |
 | `cargo run -- llm-translate-text "<text>"` | One LLM round-trip with no microphone, TTS or capture: the same translate prompt the live loop uses, one request, the rendered line on stdout. Use it to check `TARDIS_LLM_API_KEY`, base URL and model before wiring live capture. | Yes |
 | `cargo run -- app-mock-flow` | Sync smoke test of the `app` orchestration layer: `start_listening_mock` &rarr; `run_mock_text_flow("mock transcript: speech detected")` &rarr; `run_mock_text_flow("")` (silent-skip demo) &rarr; `stop_listening`. Prints every emitted event and the final state. No microphone, no Docker, no fs. | Yes |
+| `cargo run -- session-export-demo` | Run a mock session, fold every event into a `TranscriptSession`, and export it once at close as `session_demo.json` + `session_demo.txt` under the per-user data directory (`$XDG_DATA_HOME/tardis/sessions` or `~/.local/share/tardis/sessions` on Linux, `~/Library/Application Support/tardis/sessions` on macOS, `%APPDATA%\tardis\sessions` on Windows; owner-only on Unix). Prints both paths and reads the JSON back to confirm it deserializes. Never writes into the repo working directory. No microphone, no Docker. | Yes |
 | `cargo run -- settings-default` | Print the default `AppRuntimeConfig` as pretty JSON. Mirrors the file the Tauri shell writes on first save, so it can be piped into a fresh `runtime.json`. No FS writes, no microphone, no Docker. | Yes |
 | `cargo run -- settings-validate <path>` | Load + validate a settings JSON file at `<path>`. Prints the resolved values and exits `0` on success or `1` with the underlying `SettingsStoreError` on parse / validation / I/O failure. Mirrors the `load_runtime_settings` Tauri command. | Yes |
 
@@ -282,7 +283,7 @@ What it does not do yet:
 - System-audio capture is **macOS-only** in this release: `--source system` captures a BlackHole loopback input, while Linux and Windows return a not-supported error. Setup, the distinct playback device rule, and the future Linux/Windows backends are in [docs/system-audio.md](docs/system-audio.md).
 - Run a real translation backend
 - Streaming/partial transcripts
-- History **import/export beyond `output/history.jsonl`**: no CSV, no re-loading a past session into the window, no configurable path
+- History **import and an in-app export UI**: `cargo run -- session-export-demo` writes JSON and text session files under the per-user data directory, but the Tauri shell has no Export buttons, no CSV, no re-loading a past session into the window, and no configurable path
 - Recording / permission UX before any release candidate
 
 More detail lives in [docs/tauri-ui-shell.md](docs/tauri-ui-shell.md).

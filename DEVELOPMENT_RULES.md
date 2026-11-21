@@ -117,6 +117,10 @@ mirror one of these rows.
 | `app::events` (AppEvent / AppStatus / payload structs incl. `AppSpeechEvent` / `status_label` / `is_terminal_status`) | `tests` in `src/app/events.rs` | consumed by `app-mock-flow`, `mock-voice-flow` |
 | `app::state` (AppState mutators + Default) | `tests` in `src/app/state.rs` | consumed by `app-mock-flow` |
 | `app::service` (AppService, injected `Processor`, no CPAL/Docker/HTTP/fs) | `tests` in `src/app/service.rs` | `cargo run -- app-mock-flow` |
+| `app::session` (`TranscriptSession` + `create_session` + `apply_app_event_to_session` / `merge_*`: newest-final-wins, monotonic finality, blocked outputs excluded) | `tests` in `src/app/session.rs` | consumed by `session-export-demo`; the Tauri export buttons are future work |
+| `app::session_export` (`session_to_json` + `session_to_plain_text` + `default_session_filename`) | `tests` in `src/app/session_export.rs` | consumed by `session-export-demo` |
+| `session_store` (`session_export_dir` + `export_session` + both format writers, parent-dir creation, owner-only modes, symlink/file refusal, temp-dir tested) | `tests` in `src/session_store.rs` | `cargo run -- session-export-demo` |
+| CLI `session-export-demo` (mock `AppService` flow + event folding + per-user data-dir resolution + JSON round-trip check) | n/a (mock flow + writer glue; helpers tested above) | `cargo run -- session-export-demo` |
 | `app::session_phase` (`SessionPhase` + `SessionInput` transition table + `as_label` / `session_running`) | `tests` in `src/app/session_phase.rs` | n/a (pure; not wired yet) |
 | `app::events` (format_app_event_for_console + app_event_kind) | `tests` in `src/app/events.rs` | consumed by `live-local-transcribe` |
 | `app::live_events` (build_transcript_event + build_translation_event + build_speech_event + build_error_event) | `tests` in `src/app/live_events.rs` | consumed by `live-local-transcribe`, `mock-voice-flow` |

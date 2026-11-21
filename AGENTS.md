@@ -143,7 +143,10 @@ Two deliberate exceptions, both taking a path from the caller:
 - `history` formats JSONL records; the Tauri crate owns the file and writes
   them.
 
-Anything else in `app/` that reaches for the filesystem is a bug.
+Anything else in `app/` that reaches for the filesystem is a bug. The
+file-bound session export writer lives at the crate root
+(`src/session_store.rs`), beside `config.rs`, and takes both the session and
+the export directory from its caller.
 
 ## Two transcription abstractions, not interchangeable
 
