@@ -136,12 +136,16 @@ When you add a module, mirror an existing one:
 Tauri shell share. It never opens CPAL, Docker or HTTP handles, and it never
 decides a filesystem path.
 
-Two deliberate exceptions, both taking a path from the caller:
+Three deliberate exceptions, all taking a path from the caller:
 
 - `settings_store` reads and writes the settings file with an atomic
   write-then-rename.
 - `history` formats JSONL records; the Tauri crate owns the file and writes
   them.
+- `session_store` writes a session export (JSON or plain text) to the
+  directory the caller hands it. The caller resolves the per-user directory
+  (the CLI's `platform_data_dir`, or the Tauri shell), so this module still
+  does not decide where an artefact lives.
 
 Anything else in `app/` that reaches for the filesystem is a bug.
 

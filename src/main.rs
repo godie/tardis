@@ -548,23 +548,33 @@ fn platform_data_dir() -> Result<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        // XDG says a relative `XDG_DATA_HOME` is invalid. Ignoring it keeps
-        // the export out of the working directory.
-        if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-        {
-            return Ok(dir);
-        }
-        Ok(require_env(
-            "HOME",
-            "neither XDG_DATA_HOME nor HOME is set; cannot resolve the per-user data directory",
-        )?
-        .join(".local")
-        .join("share"))
+        let xdg_data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        linux_data_dir_from(xdg_data_home, home).ok_or_else(|| {
+            anyhow!(
+                "neither XDG_DATA_HOME nor HOME is an absolute path; \
+                 cannot resolve the per-user data directory"
+            )
+        })
     }
 }
 
+/// Pick the Linux data directory from the values already read from the
+/// environment.
+///
+/// A relative value is ignored. XDG says a relative `XDG_DATA_HOME` is
+/// invalid, and honoring one would put the export under the working
+/// directory. Pure, so the guard is testable without touching the process
+/// environment.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn linux_data_dir_from(xdg_data_home: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg_data_home.filter(|path| path.is_absolute()).or_else(|| {
+        home.filter(|path| path.is_absolute())
+            .map(|home| home.join(".local").join("share"))
+    })
+}
+
+#[cfg(any(target_os = "macos", windows))]
 fn require_env(name: &str, message: &str) -> Result<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
@@ -899,5 +909,47 @@ fn run_local_transcribe_file() -> Result<()> {
             Ok(())
         }
         Err(e) => Err(e),
+    }
+}
+
+// ===== Unit tests ========================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn linux_data_dir_prefers_an_absolute_xdg_dir() {
+        assert_eq!(
+            linux_data_dir_from(
+                Some(PathBuf::from("/xdg/data")),
+                Some(PathBuf::from("/home/person"))
+            ),
+            Some(PathBuf::from("/xdg/data"))
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn linux_data_dir_ignores_a_relative_xdg_dir() {
+        // A relative XDG_DATA_HOME is invalid per XDG and would point into
+        // the working directory, so it must not win.
+        assert_eq!(
+            linux_data_dir_from(
+                Some(PathBuf::from("relative")),
+                Some(PathBuf::from("/home/person"))
+            ),
+            Some(PathBuf::from("/home/person/.local/share"))
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn linux_data_dir_refuses_two_relative_values() {
+        assert_eq!(
+            linux_data_dir_from(Some(PathBuf::from("relative")), Some(PathBuf::from("home"))),
+            None
+        );
     }
 }

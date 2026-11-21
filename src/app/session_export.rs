@@ -113,9 +113,11 @@ pub fn session_to_plain_text(session: &TranscriptSession) -> String {
 ///
 /// Behavior:
 /// - Prefix: `"session_"`.
-/// - Body: `session_id` after simple whitespace
-///   sanitisation (each ASCII space `' '` is replaced with
-///   `_` so the result survives a shell round-trip).
+/// - Body: `session_id` after simple sanitisation so the
+///   result is always a single path component and survives a
+///   shell round-trip: every ASCII space, `/` and `\` is replaced
+///   with `_`. Without the separator mapping a caller-supplied
+///   `"../victim"` would escape the export directory.
 /// - Suffix: `'.' + extension` if `extension` does not
 ///   already start with a leading dot; otherwise
 ///   `extension` verbatim. Empty `extension` is treated as a
@@ -128,13 +130,17 @@ pub fn session_to_plain_text(session: &TranscriptSession) -> String {
 /// | `("abc123", "json")`                   | `"session_abc123.json"`             |
 /// | `("abc123", ".json")`                  | `"session_abc123.json"`             |
 /// | `("session one", "txt")`               | `"session_session_one.txt"`         |
+/// | `("../victim", "json")`                | `"session_.._victim.json"`          |
 /// | `("abc", "")`                          | `"session_abc"`                     |
 ///
 /// Pure — no FS, no allocation beyond the returned `String`.
 pub fn default_session_filename(session_id: &str, extension: &str) -> String {
     let sanitised: String = session_id
         .chars()
-        .map(|c| if c == ' ' { '_' } else { c })
+        .map(|c| match c {
+            ' ' | '/' | '\\' => '_',
+            _ => c,
+        })
         .collect();
     let suffix = if extension.is_empty() {
         String::new()
@@ -419,6 +425,25 @@ mod tests {
     }
 
     #[test]
+    fn default_filename_replaces_path_separators() {
+        // A session id is not a path: a separator would let the export
+        // escape the directory the caller chose.
+        assert_eq!(
+            default_session_filename("../victim", "json"),
+            "session_.._victim.json"
+        );
+        assert_eq!(default_session_filename("a/b", "txt"), "session_a_b.txt");
+        assert_eq!(default_session_filename("a\\b", "txt"), "session_a_b.txt");
+        for id in ["../victim", "a/b", "a\\b", "/abs", "C:\\abs"] {
+            let name = default_session_filename(id, "json");
+            assert!(
+                !name.contains('/') && !name.contains('\\'),
+                "separator survived in {name:?} for id {id:?}"
+            );
+        }
+    }
+
+    #[test]
     fn default_filename_with_empty_extension_drops_suffix() {
         // Empty extension means "no extension at all" — a
         // future shell-history display might want exactly
@@ -428,7 +453,7 @@ mod tests {
 
     #[test]
     fn default_filename_preserves_other_whitespace() {
-        // Only ASCII space is in-scope for sanitisation. A tab
+        // Only ASCII space and the path separators are mapped. A tab
         // character is left untouched — out of scope.
         // This is a lock-in test against a future expansion of
         // the sanitisation surface.

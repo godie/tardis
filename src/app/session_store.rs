@@ -147,10 +147,14 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
         match fs::DirBuilder::new().mode(PRIVATE_DIR_MODE).create(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if !fs::metadata(path)?.is_dir() {
+                // An existing link or file is refused: chmod would follow a
+                // link and the export would land somewhere the caller did
+                // not choose.
+                let metadata = fs::symlink_metadata(path)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
-                        format!("{} exists and is not a directory", path.display()),
+                        format!("{} is not a plain directory", path.display()),
                     ));
                 }
             }
@@ -351,6 +355,72 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{} must be 0600", path.display());
         }
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn a_traversal_session_id_stays_inside_the_export_directory() {
+        let dir = fresh_temp_dir("traversal");
+        let sessions = session_export_dir(&dir);
+        let mut session = sample_session();
+        session.session_id = "../escape".to_string();
+
+        let paths = export_session(&session, &sessions).expect("export must succeed");
+
+        assert_eq!(paths.json.parent(), Some(sessions.as_path()));
+        assert_eq!(paths.text.parent(), Some(sessions.as_path()));
+        assert!(
+            !dir.join("escape.json").exists(),
+            "export must not escape its directory"
+        );
+        cleanup(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_plain_file_where_the_sessions_dir_should_be() {
+        let dir = fresh_temp_dir("not_a_dir");
+        let sessions = session_export_dir(&dir);
+        fs::create_dir_all(sessions.parent().expect("sessions parent")).expect("create app dir");
+        fs::write(&sessions, "not a directory").expect("seed file");
+
+        let err = export_session(&sample_session(), &sessions).expect_err("must refuse");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("not a plain directory"),
+            "error must name the problem, got: {message}"
+        );
+        cleanup(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_symlinked_sessions_dir_and_leaves_the_target_alone() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let dir = fresh_temp_dir("symlink");
+        let target = dir.join("target");
+        fs::create_dir_all(&target).expect("create target");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).expect("set target mode");
+        let sessions = session_export_dir(&dir);
+        fs::create_dir_all(sessions.parent().expect("sessions parent")).expect("create app dir");
+        symlink(&target, &sessions).expect("create symlink");
+
+        let err = export_session(&sample_session(), &sessions).expect_err("must refuse");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("not a plain directory"),
+            "error must name the problem, got: {message}"
+        );
+        let mode = fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "target mode must not change");
+        assert!(
+            fs::read_dir(&target).expect("list target").next().is_none(),
+            "no export may land in the symlink target"
+        );
         cleanup(&dir);
     }
 }
