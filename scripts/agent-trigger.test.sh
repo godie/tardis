@@ -215,6 +215,42 @@ else
   bad "the queue query is not paginated: $(grep -F 'api ' "${SHIM_LOG}" 2>/dev/null)"
 fi
 
+# --- test 2d (finding 4): an unknown repository means no board sync ---
+
+# `gh repo view` fails when the checkout has no remote, so the repository
+# name is empty. A board item that carries no repository (a pull request
+# or a draft) renders as `#7`, and `"" != ""` is false, so the sync would
+# treat it as this repo's issue and label it. It must skip instead.
+T3D_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t3d.XXXXXX")
+mkdir -p "${T3D_ROOT}/scripts"
+cp "${HERE}/agent-backlog-pickup.sh" "${T3D_ROOT}/scripts/"
+build_shims "${T3D_ROOT}"
+cat > "${SHIM_DIR}/gh" <<'GH'
+#!/bin/bash
+echo "gh: $*" >> "${SHIM_LOG}"
+case "$1 $2" in
+  "repo view") exit 1 ;;
+  "api --paginate") : ;;
+  "api graphql")
+    cat <<'RAW'
+{"data":{"user":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+ {"content":{"number":7,"state":null,"repository":null},
+  "fieldValues":{"nodes":[{"name":"Ready for agent"}]}}
+]}}}}}
+RAW
+    ;;
+esac
+GH
+chmod +x "${SHIM_DIR}/gh"
+
+run_out=$( (cd "${T3D_ROOT}" && env -u TARDIS_REPO_FULL PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "board sync: repository unknown" <<<"${run_out}" \
+  && ! grep -q "issue view 7\|issue edit 7" "${SHIM_LOG}"; then
+  ok "an unknown repository skips the board sync instead of labeling #7"
+else
+  bad "board sync ran without a repository name: ${run_out}"
+fi
+
 # --- test 3 (finding 3): parallel ticks on a stale lock run one agent ---
 
 T2_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2.XXXXXX")

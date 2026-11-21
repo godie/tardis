@@ -79,6 +79,16 @@ sync_board_labels() {
   owner="${AGENT_BOARD_OWNER:-godie}"
   number="${AGENT_BOARD_NUMBER:-3}"
   cursor=""
+  # `gh repo view` resolves the name from the checkout and can fail,
+  # leaving it empty. Every item would then pass the
+  # `repo != TARDIS_REPO_FULL` check against "", including a board item
+  # that carries no repository at all (a pull request or a draft), so
+  # the sync would label a stranger's issue. Label-only pickup still
+  # runs.
+  if [ -z "${TARDIS_REPO_FULL}" ]; then
+    console_log "board sync: repository unknown, label-only pickup still runs"
+    return 0
+  fi
   board_query='query($owner: String!, $number: Int!, $cursor: String) {
     user(login: $owner) {
       projectV2(number: $number) {
@@ -105,7 +115,6 @@ sync_board_labels() {
     fi
     page_lines="$(printf '%s\n' "${page_response}" | jq -r '
       .data.user.projectV2.items.nodes[]?
-      | select(.content != null)
       | select([.fieldValues.nodes[].name] | index("Ready for agent") != null)
       | .content.repository.nameWithOwner + "#" + (.content.number|tostring)
         + " / " + (.content.state // "?")
