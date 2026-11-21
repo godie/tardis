@@ -3,9 +3,9 @@
 # Image: fedirz/faster-whisper-server
 #   • Wraps faster-whisper (CTranslate2 under the hood, CPU-friendly).
 #   • Exposes OpenAI-compatible POST /v1/audio/transcriptions on port 8000.
-#   • Tag :latest-cpu -> CPU-only build, no NVIDIA driver needed (slower than GPU).
-#   • Tag :latest      -> CUDA GPU build. Swap image to enable GPU; requires
-#                         the NVIDIA Container Toolkit on the host.
+#   • Tag :0.5.0-cpu -> CPU-only build, no NVIDIA driver needed (slower than GPU).
+#   • Tag :latest    -> CUDA GPU build. Swap image to enable GPU; requires
+#                       the NVIDIA Container Toolkit on the host.
 #
 # Usage:
 #   docker compose -f docker/faster-whisper/docker-compose.yml up
@@ -21,7 +21,10 @@
 
 services:
   faster-whisper:
-    image: fedirz/faster-whisper-server:latest-cpu
+    # Pinned by version tag and multi-arch manifest digest so the same
+    # checkout always runs the same server. See README section 10 before
+    # changing either part.
+    image: fedirz/faster-whisper-server:0.5.0-cpu@sha256:760e5e43d427dc6cfbbc4731934b908b7de9c7e6d5309c6a1f0c8c923a5b6030
     container_name: tardis-faster-whisper
     ports:
       # Bind only to the loopback interface so audio never leaks off-host.
@@ -41,7 +44,8 @@ services:
     # ---------- GPU support (optional, off by default) -----------------
     # To enable NVIDIA GPU acceleration:
     #   1. Install the NVIDIA Container Toolkit on the host.
-    #   2. Change `image` above to `fedirz/faster-whisper-server:latest`.
+    #   2. Change `image` above to the GPU tag you intend to run, with its
+    #      digest pinned the same way (see README section 10).
     #   3. Uncomment the deploy.resources block below.
     #
     # deploy:

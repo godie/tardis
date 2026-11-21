@@ -17,7 +17,7 @@ loopback, so audio stays on the machine.
   back. Future providers (`whisper.cpp` binary, cloud APIs) implement
   the same `transcription::LocalTranscriptionProvider` trait so the
   CLI doesn't change.
-* **CPU-first by default**: the `:latest-cpu` image works on any
+* **CPU-first by default**: the pinned `:0.5.0-cpu` image works on any
   machine with Docker; GPU is an opt-in tag swap.
 
 ## 2. How to start it
@@ -117,20 +117,20 @@ in [`docker-compose.yml`](./docker-compose.yml).
 
 ## 7. CPU vs GPU
 
-The compose file ships the `:latest-cpu` tag by default:
+The compose file ships the pinned `:0.5.0-cpu` image by default:
 
 * **CPU**: works everywhere Docker runs. The `base` model is roughly
   **2–5× realtime** on a modern laptop CPU (i.e. transcribing 1 s of
   audio takes 2–5 s). Larger models scale linearly slower.
-* **GPU**: swap `image` to `fedirz/faster-whisper-server:latest` and
-  uncomment the `deploy.resources.reservations.devices` block at the
-  bottom of `docker-compose.yml`. Requires the **NVIDIA Container
-  Toolkit**. Achieves roughly **real-time or faster** even for
-  `large-v3`.
+* **GPU**: swap `image` to the GPU tag you intend to run, pin its
+  digest the same way, and uncomment the
+  `deploy.resources.reservations.devices` block at the bottom of
+  `docker-compose.yml`. Requires the **NVIDIA Container Toolkit**.
+  Achieves roughly **real-time or faster** even for `large-v3`.
 
 CPU is the right starting point for a developer laptop; GPU is for
-production throughput. Both use the **same API contract**: switching
-tags is the only change needed; no client code changes.
+production throughput. Both use the **same API contract**: swapping the
+image is the only change needed; no client code changes.
 
 ## 8. Privacy
 
@@ -154,3 +154,24 @@ A silence-only chunk returns an empty `text`; a chunk with real speech
 prints the recognized transcript. See the top-level
 [`README.md`](../../README.md#local-faster-whisper-docker-transcription)
 for the expected CLI output shape.
+
+## 10. Dependency pinning
+
+The compose file pins the image tag and its multi-arch manifest digest
+(`0.5.0-cpu@sha256:...`), so a rebuild uses the same server even if
+Docker Hub moves the tag. Change both parts together on the `image`
+line in [`docker-compose.yml`](./docker-compose.yml).
+
+Review the pin once a quarter, and sooner when an upstream security
+advisory names the image. To move to a newer release:
+
+1. Pick a release tag from the image's tag list and confirm it supports
+   the platforms you use.
+2. Read the new digest with
+   `docker buildx imagetools inspect fedirz/faster-whisper-server:<tag>`.
+3. Update both the tag and the digest on the `image` line, then run
+   `docker compose -f docker/faster-whisper/docker-compose.yml pull`.
+4. Run the section 9 sanity check before committing the change.
+
+A GPU setup follows the same rule: pin the GPU tag with its digest
+instead of switching to a moving `latest` tag.
