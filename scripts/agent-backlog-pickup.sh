@@ -104,22 +104,45 @@ sync_board_labels
 # One run at a time. Ownership is a file holding the owner's pid,
 # published with `ln`: the hard link appears with the pid already
 # inside, where `mkdir` plus a separate write left a window in which a
-# second tick read an empty lock and reaped it. Returns 0 on success,
-# 1 when another lock exists, 2 when the pid file cannot be written.
+# second tick read an empty lock and reaped it. A directory named
+# `lock` is the older script's lock (pid in `lock/pid`), and `ln` would
+# happily link inside it, so it is never treated as a claim. Returns 0
+# on success, 1 when another lock exists, 2 when the pid file cannot be
+# written.
 claim_lock() {
   local tmp="${LOCK_FILE}.$$"
+  if [ -d "${LOCK_FILE}" ]; then
+    return 1
+  fi
   if ! printf '%s\n' "$$" > "${tmp}"; then
     return 2
   fi
   if ln "${tmp}" "${LOCK_FILE}" 2>/dev/null; then
+    if [ -f "${LOCK_FILE}" ]; then
+      rm -f "${tmp}"
+      return 0
+    fi
+    # A directory appeared after the check above: `ln` linked inside it,
+    # so drop that link and let recovery handle the legacy lock.
+    rm -f "${LOCK_FILE}/${tmp##*/}"
     rm -f "${tmp}"
-    return 0
+    return 1
   fi
   rm -f "${tmp}"
   if [ -e "${LOCK_FILE}" ]; then
     return 1
   fi
   return 2
+}
+
+# The owner pid lives in the lock file itself, or in `lock/pid` when the
+# lock is a directory from the older script.
+lock_owner_pid() {
+  if [ -d "${LOCK_FILE}" ]; then
+    cat "${LOCK_FILE}/pid" 2>/dev/null | tr -cd '0-9'
+  else
+    cat "${LOCK_FILE}" 2>/dev/null | tr -cd '0-9'
+  fi
 }
 
 # The fast path never touches `lock.reaper`: with no lock it publishes
@@ -139,7 +162,7 @@ claim_lock() {
 claim_lock
 claim_status=$?
 if [ "${claim_status}" -eq 1 ]; then
-  old_pid="$(cat "${LOCK_FILE}" 2>/dev/null | tr -cd '0-9')"
+  old_pid="$(lock_owner_pid)"
   if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
     console_log "trigger: a previous run is active (pid ${old_pid}); skipping tick"
     exit 0
@@ -151,12 +174,12 @@ if [ "${claim_status}" -eq 1 ]; then
   trap 'rm -rf "${REAPER_DIR}"' EXIT
   # Re-read under the reaper: the owner checked above may have exited and
   # another tick may have published since.
-  old_pid="$(cat "${LOCK_FILE}" 2>/dev/null | tr -cd '0-9')"
+  old_pid="$(lock_owner_pid)"
   if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
     console_log "trigger: a previous run is active (pid ${old_pid}); skipping tick"
     exit 0
   fi
-  rm -f "${LOCK_FILE}"
+  rm -rf "${LOCK_FILE}"
   claim_lock
   claim_status=$?
   if [ "${claim_status}" -eq 1 ]; then

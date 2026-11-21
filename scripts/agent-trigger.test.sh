@@ -180,6 +180,40 @@ else
   bad "live lock was reaped or claimed: ${run_out}"
 fi
 
+# A lock directory from the older script is recovered too: its pid lives
+# in `lock/pid`, and `ln` must not mistake the directory for a claim.
+T2F_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2f.XXXXXX")
+mkdir -p "${T2F_ROOT}/scripts" "${T2F_ROOT}/output/agent-runs/lock"
+cp "${HERE}/agent-backlog-pickup.sh" "${T2F_ROOT}/scripts/"
+build_shims "${T2F_ROOT}"
+export TARDIS_REPO_FULL="godie/tardis"
+echo "9999999" > "${T2F_ROOT}/output/agent-runs/lock/pid"
+
+run_out=$( (cd "${T2F_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "trigger: claiming issue #10" <<<"${run_out}" \
+  && [ ! -e "${T2F_ROOT}/output/agent-runs/lock" ] \
+  && [ "$(grep -c . "${MARKER}" 2>/dev/null || echo 0)" = "1" ]; then
+  ok "a legacy lock directory with a dead pid is recovered"
+else
+  bad "legacy lock directory blocked or doubled the run: ${run_out}"
+fi
+
+# The same directory with a live pid still blocks the tick.
+T2G_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2g.XXXXXX")
+mkdir -p "${T2G_ROOT}/scripts" "${T2G_ROOT}/output/agent-runs/lock"
+cp "${HERE}/agent-backlog-pickup.sh" "${T2G_ROOT}/scripts/"
+build_shims "${T2G_ROOT}"
+export TARDIS_REPO_FULL="godie/tardis"
+echo "$$" > "${T2G_ROOT}/output/agent-runs/lock/pid"
+
+run_out=$( (cd "${T2G_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "a previous run is active" <<<"${run_out}" \
+  && [ -d "${T2G_ROOT}/output/agent-runs/lock" ]; then
+  ok "a legacy lock directory with a live pid is left alone"
+else
+  bad "legacy live lock was reaped or claimed: ${run_out}"
+fi
+
 # An orphaned reaper, left when a tick is killed during stale recovery,
 # must not stop an ordinary start: with no lock the fast path never looks
 # at it.
