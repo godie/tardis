@@ -532,7 +532,6 @@ function setupEventListener() {
 
   const subscription = window.__TAURI__.event.listen("app-event", (event) => {
     const payload = event.payload;
-    log("app-event:", payload);
 
     switch (payload.kind) {
       case "status": {
