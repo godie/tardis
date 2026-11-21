@@ -124,18 +124,16 @@ Gaps:
 - No streaming/partial transcripts.
 - The multithreaded race test for Start/Stop + CleanupGuard is not
   present yet; the panic-safety test is single-threaded only.
-- Session transcript export is not implemented. There is no
-  `TranscriptSession` accumulator, no `session_export` / `session_store`
-  module, no export Tauri command, and no export control in the UI.
-  The shell keeps no session history, so the transcript panel shows
-  only the latest chunk. Earlier revisions of this roadmap described
-  this feature as shipped; it was never merged.
+- Session transcript export exists in the core: `TranscriptSession`
+  accumulates transcript / output events, `session_export` renders JSON and
+  text, and `session_store` writes both under the per-user data directory.
+  `cargo run -- session-export-demo` is the working caller. The Tauri shell
+  has no export command and the UI has no export control yet.
 
 Next:
 
-- Add the session accumulator (transcript + translation events per
-  session) plus JSON / plain-text export, and surface export controls
-  in the UI.
+- Surface session export controls in the Tauri UI on top of
+  `session_store::export_session`, using the same aggregation sink.
 - Generalize the process stage to a `Processor` trait (returns `Result<Option<Output>>`: `Ok(None)` is "stay silent", `Err` becomes an error event) and inject it, then add a real provider in translate mode; see [`docs/core-pipeline-plan.md`](docs/core-pipeline-plan.md).
 - Surface real translation events through the Tauri event stream.
 - Add a multithreaded Start/Stop race test to harden the cleanup.

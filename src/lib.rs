@@ -17,5 +17,6 @@ pub mod app;
 pub mod audio;
 pub mod config;
 pub mod processor;
+pub mod session_store;
 pub mod synthesis;
 pub mod transcription;

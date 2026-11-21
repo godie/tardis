@@ -19,7 +19,7 @@
 //!
 //! The module is **deliberately pure**: no FS, no CPAL, no HTTP.
 //! File-bound writers live in
-//! [`crate::app::session_store`]. Tests live in
+//! [`crate::session_store`]. Tests live in
 //! `#[cfg(test)] mod tests` at the bottom per the
 //! AGENTS.md testing contract.
 
@@ -35,7 +35,7 @@ use crate::app::session::TranscriptSession;
 /// existing consumers.
 ///
 /// Errors are surfaced as `anyhow::Error` for parity with the
-/// file-bound helpers in [`crate::app::session_store`].
+/// file-bound helpers in [`crate::session_store`].
 ///
 /// Pure — no FS access, no logging, no allocation beyond the
 /// returned `String`.

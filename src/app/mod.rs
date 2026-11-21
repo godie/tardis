@@ -28,7 +28,6 @@ pub mod service;
 pub mod session;
 pub mod session_export;
 pub mod session_phase;
-pub mod session_store;
 pub mod settings_store;
 pub mod state;
 pub mod ui_events;
