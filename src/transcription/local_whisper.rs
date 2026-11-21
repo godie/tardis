@@ -211,6 +211,7 @@ impl crate::transcription::LocalTranscriptionProvider for LocalWhisperClient {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Read, Write};
 
     // ---- build_transcription_url --------------------------------------
 
@@ -300,5 +301,127 @@ mod tests {
         assert_eq!(client.base_url, "http://localhost:8000");
         assert_eq!(client.model, "base");
         assert_eq!(client.language.as_deref(), Some("es"));
+    }
+
+    // ---- client reuse --------------------------------------------------
+
+    // A loopback stub, not Docker: two requests served over one connection.
+    // The assertions below fail if a per-call client comes back, because
+    // the second request would arrive on a second connection.
+
+    /// One HTTP/1.1 response body the stub sends for every request.
+    const STUB_BODY: &[u8] = br#"{"text": "stub transcript"}"#;
+
+    /// Serve `requests` requests, reusing the connection whenever the
+    /// client does, and return how many connections it took.
+    fn serve_keep_alive(
+        listener: std::net::TcpListener,
+        requests: usize,
+    ) -> std::io::Result<usize> {
+        let mut connections = 0;
+        let mut served = 0;
+        while served < requests {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            connections += 1;
+            while served < requests {
+                if read_request(&mut stream)?.is_none() {
+                    break;
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    STUB_BODY.len()
+                )?;
+                stream.write_all(STUB_BODY)?;
+                served += 1;
+            }
+        }
+        Ok(connections)
+    }
+
+    /// Consume one request (header block + declared body) so the next read
+    /// starts at the next request. `Ok(None)` means the client closed.
+    fn read_request(stream: &mut std::net::TcpStream) -> std::io::Result<Option<()>> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let body_start = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let needed = body_start + content_length(&buf[..body_start])?;
+        while buf.len() < needed {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(Some(()))
+    }
+
+    /// `Content-Length` from a header block, `0` when absent.
+    fn content_length(headers: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(headers);
+        for line in text.lines() {
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                return value.trim().parse().map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "bad content-length")
+                });
+            }
+        }
+        Ok(0)
+    }
+
+    /// A temp file the stub accepts as the upload; its bytes are ignored.
+    fn temp_wav(test_name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after the epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "tardis-local-whisper-{test_name}-{}-{nanos}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"RIFF").expect("write temp WAV");
+        path
+    }
+
+    #[test]
+    fn two_transcriptions_reuse_one_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
+        let address = listener.local_addr().expect("stub address");
+        let server = std::thread::spawn(move || serve_keep_alive(listener, 2));
+
+        let wav = temp_wav("two_transcriptions_reuse_one_connection");
+        let wav_arg = wav.to_string_lossy().to_string();
+        let client = LocalWhisperClient::new(format!("http://{address}"), "base", None)
+            .expect("build the HTTP client");
+
+        assert_eq!(
+            client.transcribe_wav_file(&wav_arg).expect("first request"),
+            "stub transcript"
+        );
+        assert_eq!(
+            client
+                .transcribe_wav_file(&wav_arg)
+                .expect("second request"),
+            "stub transcript"
+        );
+
+        let connections = server.join().expect("stub thread").expect("stub IO");
+        std::fs::remove_file(&wav).expect("remove temp WAV");
+        assert_eq!(
+            connections, 1,
+            "both requests must share the provider's one HTTP client"
+        );
     }
 }
