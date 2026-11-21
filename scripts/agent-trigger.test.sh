@@ -122,8 +122,7 @@ cp "${HERE}/agent-backlog-pickup.sh" "${T2_ROOT}/scripts/"
 build_shims "${T2_ROOT}"
 export TARDIS_REPO_FULL="godie/tardis"
 # A stale lock: its pid points at a process that is definitely dead.
-mkdir -p "${T2_ROOT}/output/agent-runs/lock"
-echo "9999999" > "${T2_ROOT}/output/agent-runs/lock/pid"
+echo "9999999" > "${T2_ROOT}/output/agent-runs/lock"
 
 (cd "${T2_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" bash scripts/agent-backlog-pickup.sh >/dev/null 2>&1) &
 p1=$!
@@ -137,19 +136,19 @@ if [ "${agents}" = "1" ]; then
 else
   bad "expected exactly one agent run on a stale lock, got ${agents}"
 fi
-if [ ! -d "${T2_ROOT}/output/agent-runs/lock" ]; then
+if [ ! -e "${T2_ROOT}/output/agent-runs/lock" ]; then
   ok "lock released after the run"
 else
-  bad "lock dir left behind after the run"
+  bad "lock left behind after the run"
 fi
 
-# A missing / empty pid file also counts as stale (the pid=0 bug).
+# A missing / empty pid also counts as stale (the pid=0 bug).
 T2B_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2b.XXXXXX")
-mkdir -p "${T2B_ROOT}/scripts" "${T2B_ROOT}/output/agent-runs/lock"
+mkdir -p "${T2B_ROOT}/scripts" "${T2B_ROOT}/output/agent-runs"
 cp "${HERE}/agent-backlog-pickup.sh" "${T2B_ROOT}/scripts/"
 build_shims "${T2B_ROOT}"
 export TARDIS_REPO_FULL="godie/tardis"
-: > "${T2B_ROOT}/output/agent-runs/lock/pid"
+: > "${T2B_ROOT}/output/agent-runs/lock"
 
 run_out=$( (cd "${T2B_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
 if grep -q "trigger: claiming issue #10" <<<"${run_out}"; then
@@ -161,68 +160,110 @@ fi
 # A live pid in an existing lock means another session owns the run, and
 # the tick must not reap it.
 T2C_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2c.XXXXXX")
-mkdir -p "${T2C_ROOT}/scripts" "${T2C_ROOT}/output/agent-runs/lock"
+mkdir -p "${T2C_ROOT}/scripts" "${T2C_ROOT}/output/agent-runs"
 cp "${HERE}/agent-backlog-pickup.sh" "${T2C_ROOT}/scripts/"
 build_shims "${T2C_ROOT}"
 export TARDIS_REPO_FULL="godie/tardis"
-echo "$$" > "${T2C_ROOT}/output/agent-runs/lock/pid"
+echo "$$" > "${T2C_ROOT}/output/agent-runs/lock"
 
 run_out=$( (cd "${T2C_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
 if grep -q "a previous run is active" <<<"${run_out}" \
   && ! grep -q "trigger: claiming issue" <<<"${run_out}" \
-  && [ -d "${T2C_ROOT}/output/agent-runs/lock" ]; then
+  && [ -e "${T2C_ROOT}/output/agent-runs/lock" ]; then
   ok "a live pid blocks the tick and its lock is left alone"
 else
   bad "live lock was reaped or claimed: ${run_out}"
 fi
 
-# --- test 3b (finding 3): a tick cannot reap a lock still being created ---
-
-# The other half of atomic recovery: a tick that wins `mkdir lock` must
-# publish its pid before another tick may judge the lock stale. The
-# mkdir shim sleeps after a successful `lock` creation, which widens
-# that window; a reaper without a mutex around create+publish reads the
-# missing pid, deletes the fresh lock and runs beside it.
+# An orphaned reaper, left when a tick is killed during stale recovery,
+# must not stop an ordinary start: with no lock the fast path never looks
+# at it.
 T2D_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2d.XXXXXX")
-mkdir -p "${T2D_ROOT}/scripts" "${T2D_ROOT}/output/agent-runs"
+mkdir -p "${T2D_ROOT}/scripts" "${T2D_ROOT}/output/agent-runs/lock.reaper"
 cp "${HERE}/agent-backlog-pickup.sh" "${T2D_ROOT}/scripts/"
 build_shims "${T2D_ROOT}"
 export TARDIS_REPO_FULL="godie/tardis"
-cat > "${SHIM_DIR}/mkdir" <<'MK'
+
+run_out=$( (cd "${T2D_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "trigger: claiming issue #10" <<<"${run_out}" \
+  && [ "$(grep -c . "${MARKER}" 2>/dev/null || echo 0)" = "1" ] \
+  && [ -d "${T2D_ROOT}/output/agent-runs/lock.reaper" ]; then
+  ok "an orphaned reaper does not block an ordinary pickup and is left alone"
+else
+  bad "orphaned reaper blocked a pickup or was removed: ${run_out}"
+fi
+
+# --- test 3b (finding 3): a published lock always carries its pid ---
+
+# Hold the winning tick inside `ln` after the lock is published, start a
+# second tick against that published lock, and release the first only
+# once the second has finished. The pid is already in the file, so the
+# second tick must find a live owner; a lock that appears before its pid
+# is written lets the second tick reap it and run beside the first.
+T2E_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t2e.XXXXXX")
+mkdir -p "${T2E_ROOT}/scripts" "${T2E_ROOT}/output/agent-runs"
+cp "${HERE}/agent-backlog-pickup.sh" "${T2E_ROOT}/scripts/"
+build_shims "${T2E_ROOT}"
+export TARDIS_REPO_FULL="godie/tardis"
+SIGNAL="${T2E_ROOT}/published"
+RELEASE="${T2E_ROOT}/release"
+cat > "${SHIM_DIR}/ln" <<'LN'
 #!/bin/bash
-/bin/mkdir "$@"
+/bin/ln "$@"
 status=$?
 case "$*" in
   */agent-runs/lock)
-    if [ "${status}" = "0" ] && [ -n "${PICKUP_TEST_MKDIR_DELAY:-}" ]; then
-      sleep "${PICKUP_TEST_MKDIR_DELAY}"
+    if [ "${status}" = "0" ] && [ -n "${PICKUP_TEST_LN_SIGNAL:-}" ]; then
+      : > "${PICKUP_TEST_LN_SIGNAL}"
+      i=0
+      while [ ! -e "${PICKUP_TEST_LN_RELEASE}" ] && [ "${i}" -lt 300 ]; do
+        sleep 0.01
+        i=$((i + 1))
+      done
     fi
     ;;
 esac
 exit "${status}"
-MK
-chmod +x "${SHIM_DIR}/mkdir"
+LN
+chmod +x "${SHIM_DIR}/ln"
 
-( cd "${T2D_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" \
-    PICKUP_TEST_MKDIR_DELAY=0.3 bash scripts/agent-backlog-pickup.sh >/dev/null 2>&1 ) &
+( cd "${T2E_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" \
+    PICKUP_TEST_LN_SIGNAL="${SIGNAL}" PICKUP_TEST_LN_RELEASE="${RELEASE}" \
+    bash scripts/agent-backlog-pickup.sh >/dev/null 2>&1 ) &
 p1=$!
-# Start the second tick while the first is still between mkdir and pid.
-sleep 0.05
-( cd "${T2D_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" \
-    PICKUP_TEST_MKDIR_DELAY=0.3 bash scripts/agent-backlog-pickup.sh >/dev/null 2>&1 ) &
-p2=$!
-wait "${p1}" "${p2}"
-
-agents=$(grep -c . "${MARKER}" 2>/dev/null || echo 0)
-if [ "${agents}" = "1" ]; then
-  ok "ticks racing the initial lock creation: exactly one agent ran"
+i=0
+while [ ! -e "${SIGNAL}" ] && [ "${i}" -lt 200 ]; do
+  sleep 0.01
+  i=$((i + 1))
+done
+if [ -e "${SIGNAL}" ]; then
+  ( cd "${T2E_ROOT}" && PATH="${SHIM_DIR}:$PATH" TARDIS_REPO_FULL="godie/tardis" \
+      bash scripts/agent-backlog-pickup.sh >"${T2E_ROOT}/tick2.log" 2>&1 ) &
+  p2=$!
+  # Let the second tick reach its decision, then release the first so
+  # both processes end instead of one waiting out the shim cap.
+  i=0
+  while kill -0 "${p2}" 2>/dev/null && [ "${i}" -lt 300 ]; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  : > "${RELEASE}"
+  wait "${p1}" "${p2}" 2>/dev/null
+  agents=$(grep -c . "${MARKER}" 2>/dev/null || echo 0)
+  if [ "${agents}" = "1" ] && grep -q "a previous run is active" "${T2E_ROOT}/tick2.log"; then
+    ok "ticks racing the initial lock creation: exactly one agent ran"
+  else
+    bad "expected one agent against a published lock, got ${agents}: $(cat "${T2E_ROOT}/tick2.log" 2>/dev/null)"
+  fi
+  if [ ! -d "${T2E_ROOT}/output/agent-runs/lock.reaper" ]; then
+    ok "reaper released after the winning tick published its lock"
+  else
+    bad "reaper dir left behind"
+  fi
 else
-  bad "expected one agent while a fresh lock is being created, got ${agents}"
-fi
-if [ ! -d "${T2D_ROOT}/output/agent-runs/lock.reaper" ]; then
-  ok "reaper released after the winning tick published its lock"
-else
-  bad "reaper dir left behind"
+  : > "${RELEASE}"
+  wait "${p1}" 2>/dev/null
+  bad "the first tick never published its lock"
 fi
 
 # --- test 4 (finding 6): installer survives spaces & ampersands ---
