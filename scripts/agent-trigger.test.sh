@@ -6,6 +6,8 @@
 #   finding 2 — installer must make zero pickup calls
 #   finding 3 — stale-lock recovery is atomic (parallel ticks)
 #   finding 4 — board items from other repos are never touched
+#   finding 11 — the board and the label queue are read to exhaustion,
+#                and the lowest ready number wins
 #   finding 6 — paths with spaces / `&` survive the installer
 
 set -u
@@ -35,15 +37,16 @@ case "$1 $2" in
   "repo view")
     echo '{"nameWithOwner":"godie/tardis"}'
     ;;
-  "issue list")
-    echo '10'
-    ;;
   "issue view")
     echo '[]'
     ;;
+  "api --paginate")
+    # What gh prints after applying the script's --jq to one page.
+    echo '10'
+    ;;
   "api graphql")
     cat <<'RAW'
-{"data":{"user":{"projectV2":{"items":{"nodes":[
+{"data":{"user":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
  {"content":{"number":10,"state":"OPEN","repository":{"nameWithOwner":"godie/tardis"}},
   "fieldValues":{"nodes":[{"name":"Ready for agent","field":{"name":"Status"}}]}},
  {"content":{"number":9,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}},
@@ -112,6 +115,104 @@ if grep -q "issue #10 earned ready-for-agent" <<<"${run_out}" && ! grep -q "issu
   ok "board sync touches only godie/tardis items (#10 claimed, other/repo#9 skipped)"
 else
   bad "board sync repo scoping failed: ${run_out}"
+fi
+
+# --- test 2b (finding 11): the board sync reads every page ---
+
+# Two pages, each holding a ready TARDIS item; the second page only
+# appears through the first page's `pageInfo.endCursor`, so an item past
+# the old 50-item window earns its label only if the cursor is followed.
+T3B_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t3b.XXXXXX")
+mkdir -p "${T3B_ROOT}/scripts"
+cp "${HERE}/agent-backlog-pickup.sh" "${T3B_ROOT}/scripts/"
+build_shims "${T3B_ROOT}"
+export TARDIS_REPO_FULL="godie/tardis"
+cat > "${SHIM_DIR}/gh" <<'GH'
+#!/bin/bash
+echo "gh: $*" >> "${SHIM_LOG}"
+case "$1 $2" in
+  "repo view") echo '{"nameWithOwner":"godie/tardis"}' ;;
+  "issue view") echo '[]' ;;
+  "api --paginate") echo '[]' ;;
+  "api graphql")
+    case "$*" in
+      *cursor=CURSOR1*)
+        cat <<'RAW'
+{"data":{"user":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+ {"content":{"number":12,"state":"OPEN","repository":{"nameWithOwner":"godie/tardis"}},
+  "fieldValues":{"nodes":[{"name":"Ready for agent"}]}}
+]}}}}}
+RAW
+        ;;
+      *)
+        cat <<'RAW'
+{"data":{"user":{"projectV2":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"CURSOR1"},"nodes":[
+ {"content":{"number":10,"state":"OPEN","repository":{"nameWithOwner":"godie/tardis"}},
+  "fieldValues":{"nodes":[{"name":"Ready for agent"}]}},
+ {"content":{"number":9,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}},
+  "fieldValues":{"nodes":[{"name":"Ready for agent"}]}}
+]}}}}}
+RAW
+        ;;
+    esac
+    ;;
+esac
+GH
+chmod +x "${SHIM_DIR}/gh"
+
+run_out=$( (cd "${T3B_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "issue #10 earned ready-for-agent" <<<"${run_out}" \
+  && grep -q "issue #12 earned ready-for-agent" <<<"${run_out}" \
+  && ! grep -q "issue #9 earned" <<<"${run_out}"; then
+  ok "board sync follows the cursor (#10 and #12 claimed, other/repo#9 skipped)"
+else
+  bad "board sync missed the second page: ${run_out}"
+fi
+
+# --- test 2c (finding 11): the label queue is read to exhaustion ---
+
+# One REST page stands in for the whole queue: `--paginate` follows the
+# Link header itself, so the shim is called once. The numbers arrive
+# unsorted and include a pull request, which is not a ticket. The tick
+# must claim the lowest issue number in the queue, not the first one
+# returned, and must not fall back to the abandoned ten-result query.
+T3C_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/t3c.XXXXXX")
+mkdir -p "${T3C_ROOT}/scripts"
+cp "${HERE}/agent-backlog-pickup.sh" "${T3C_ROOT}/scripts/"
+build_shims "${T3C_ROOT}"
+export TARDIS_REPO_FULL="godie/tardis"
+cat > "${SHIM_DIR}/gh" <<'GH'
+#!/bin/bash
+echo "gh: $*" >> "${SHIM_LOG}"
+case "$1 $2" in
+  "repo view") echo '{"nameWithOwner":"godie/tardis"}' ;;
+  "api graphql") echo '{"data":{"user":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  "api --paginate")
+    # gh applies --jq to each page itself; the shim stands in for that
+    # layer, so the script's filter still runs end to end.
+    expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "${prev}" = "-q" ] || [ "${prev}" = "--jq" ]; then expr="${arg}"; fi
+      prev="${arg}"
+    done
+    echo '[{"number":50},{"number":30},{"number":3,"pull_request":{"url":"https://example.invalid/pr/3"}},{"number":12},{"number":7}]' \
+      | jq -r "${expr}"
+    ;;
+esac
+GH
+chmod +x "${SHIM_DIR}/gh"
+
+run_out=$( (cd "${T3C_ROOT}" && PATH="${SHIM_DIR}:$PATH" bash scripts/agent-backlog-pickup.sh) 2>&1 )
+if grep -q "trigger: claiming issue #7" <<<"${run_out}"; then
+  ok "the tick claims the lowest issue number across the queue"
+else
+  bad "the tick picked the wrong ticket: ${run_out}"
+fi
+if grep -Fq "api --paginate repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100" "${SHIM_LOG}"; then
+  ok "the queue is fetched with --paginate and a full page size"
+else
+  bad "the queue query is not paginated: $(grep -F 'api ' "${SHIM_LOG}" 2>/dev/null)"
 fi
 
 # --- test 3 (finding 3): parallel ticks on a stale lock run one agent ---
