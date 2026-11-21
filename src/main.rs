@@ -21,22 +21,25 @@
 //!   cargo run -- app-mock-flow                              -> exercise the mock AppService flow end-to-end (no mic, no Docker)
 //!   cargo run -- mock-voice-flow                            -> full five-stage mock loop: transcript -> translation -> speech -> play (no mic, no Docker, no TTS)
 //!   cargo run -- utterance-test                             -> feed a synthetic frame pattern through the endpointing state machine (no mic)
+//!   cargo run -- session-export-demo                        -> run a mock session, then export it as JSON + text under the per-user data dir
 //!
 //! Only the `mic` mode runs forever; everything else exits on its own.
 
 // Module declarations now live in `src/lib.rs` so this binary and
 // the `tardis-ui-shell` desktop crate (`src-tauri`) share the same
 // audio + transcription + translation surface through one library.
+use std::path::PathBuf;
 use std::thread;
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tardis::{
     app::{
         config::{AppMode, AppRuntimeConfig, AudioSource, validate_runtime_config},
-        events::{AppEvent, format_app_event_for_console, status_label},
+        events::{AppEvent, AppStatus, format_app_event_for_console, status_label},
         live_events::{build_output_event, build_speech_event, build_transcript_event},
         service::AppService,
-        settings_store,
+        session::{TranscriptSession, apply_app_event_to_session, create_session},
+        session_store, settings_store,
     },
     audio,
     audio::player::{MockPlayer, Player},
@@ -68,6 +71,7 @@ fn main() -> Result<()> {
         Some("llm-translate-text") => run_llm_translate_text(),
         Some("app-mock-flow") => run_app_mock_flow(),
         Some("mock-voice-flow") => run_mock_voice_flow(),
+        Some("session-export-demo") => run_session_export_demo(),
         Some("utterance-test") => {
             audio::endpoint::run_utterance_test();
             Ok(())
@@ -77,7 +81,7 @@ fn main() -> Result<()> {
         Some(other) => {
             eprintln!("Unknown mode: {other}");
             eprintln!(
-                "Usage: cargo run [-- devices [--output] [--source mic|system] | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--source mic|system] [--input-device <id>] | -- say-text \"<text>\" | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- settings-default | -- settings-validate <path>]"
+                "Usage: cargo run [-- devices [--output] [--source mic|system] | -- mic | -- mic-5s | -- record-5s | -- chunk-test | -- mock-transcribe | -- save-chunks-test | -- mock-transcribe-file <path> | -- mock-translate | -- local-transcribe-file [--provider <name>] <path> | -- live-local-transcribe [--provider <name>] [--processor <name>] [--synthesizer <name>] [--source mic|system] [--input-device <id>] | -- say-text \"<text>\" | -- llm-translate-text \"<text>\" | -- app-mock-flow | -- mock-voice-flow | -- utterance-test | -- session-export-demo | -- settings-default | -- settings-validate <path>]"
             );
             std::process::exit(2);
         }
@@ -427,6 +431,156 @@ fn run_mock_voice_flow() -> Result<()> {
     );
     println!("\n=== done ===");
     Ok(())
+}
+
+/// CLI smoke surface for the session export.
+///
+/// Runs a mock session through [`AppService`] plus the same event builders
+/// the live runner uses, folds every event into a
+/// [`TranscriptSession`] via [`apply_app_event_to_session`], and exports
+/// the finished session once at close. The JSON and text files go under
+/// the OS per-user data directory (`session_export_dir`), never the repo
+/// working directory; see issue #77 for the location policy.
+///
+/// Folding is incremental, like the future Tauri export buttons will be:
+/// the aggregation sink is kept current while the session runs, and the
+/// render + write happen at the moment the export is asked for (here,
+/// after `stopped`).
+///
+/// No microphone, no Docker, no network. The JSON is read back and
+/// deserialized before the summary prints, so the round trip the ticket
+/// asks for is proven by the command itself.
+fn run_session_export_demo() -> Result<()> {
+    println!("=== session-export-demo (mock session -> JSON + text export) ===\n");
+
+    let config = AppRuntimeConfig::default();
+    let mut service = AppService::new(config.clone())
+        .map_err(|e| anyhow!("AppService::new with default config failed: {e}"))?;
+
+    let mut events = service.start_listening_mock();
+    // Chunk 1: the service's synthetic flow (transcript + output).
+    events.extend(service.run_mock_text_flow("mock transcript: speech detected"));
+
+    // Chunk 2: the service pins its synthetic flow to chunk 1, so a second
+    // chunk is built from the same builders the live runner uses. That
+    // gives the export more than one entry without inventing a new
+    // pipeline.
+    let second_text = "the demo folds events as the session runs";
+    let processor = build_processor(DEFAULT_PROCESSOR_NAME)?;
+    let mode = ProcessMode::Translate {
+        source_language: config.source_language.clone(),
+        target_language: config.target_language.clone(),
+    };
+    let output = processor
+        .process(second_text, &mode)?
+        .ok_or_else(|| anyhow!("mock processor returned no output for a non-empty transcript"))?;
+    events.push(build_transcript_event(
+        2,
+        second_text.to_string(),
+        config.transcription_provider.clone(),
+        true,
+        // Synthetic text: this flow never captured audio.
+        0,
+    ));
+    events.push(build_output_event(2, &output));
+    events.extend(service.stop_listening());
+
+    let mut session = create_session(
+        "demo".to_string(),
+        config.transcription_provider.clone(),
+        config.source_language.clone(),
+        config.target_language.clone(),
+        timestamp_label(),
+    );
+    for event in &events {
+        apply_app_event_to_session(&mut session, event);
+        if let AppEvent::StatusChanged(AppStatus::Stopped) = event {
+            session.ended_at = Some(timestamp_label());
+        }
+        match event {
+            AppEvent::Error(_) => eprintln!("{}", format_app_event_for_console(event)),
+            _ => println!("{}", format_app_event_for_console(event)),
+        }
+    }
+
+    let export_dir = session_store::session_export_dir(&platform_data_dir()?);
+    let paths = session_store::export_session(&session, &export_dir)?;
+
+    let json = std::fs::read_to_string(&paths.json)
+        .with_context(|| format!("could not read back {}", paths.json.display()))?;
+    let parsed: TranscriptSession = serde_json::from_str(&json)
+        .with_context(|| format!("exported JSON at {} does not parse", paths.json.display()))?;
+    if parsed != session {
+        anyhow::bail!("exported JSON does not round-trip back to the session");
+    }
+
+    println!("\n=== summary ===");
+    println!("entries:    {}", session.entries.len());
+    println!("json:       {}", paths.json.display());
+    println!("text:       {}", paths.text.display());
+    println!("round trip: ok");
+    println!("\n=== done ===");
+    Ok(())
+}
+
+/// OS per-user data directory the session exports live under.
+///
+/// Mirrors the audit line from issue #77: a session artefact never lands
+/// in the repository working directory. The Tauri shell asks
+/// `tauri::Manager::path()`; the CLI reads the platform's standard
+/// variable instead of adding a platform crate for one path.
+fn platform_data_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(require_env(
+            "HOME",
+            "HOME is not set; cannot resolve the per-user data directory",
+        )?
+        .join("Library")
+        .join("Application Support"));
+    }
+    #[cfg(windows)]
+    {
+        return require_env(
+            "APPDATA",
+            "APPDATA is not set; cannot resolve the per-user data directory",
+        );
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        // XDG says a relative `XDG_DATA_HOME` is invalid. Ignoring it keeps
+        // the export out of the working directory.
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            return Ok(dir);
+        }
+        Ok(require_env(
+            "HOME",
+            "neither XDG_DATA_HOME nor HOME is set; cannot resolve the per-user data directory",
+        )?
+        .join(".local")
+        .join("share"))
+    }
+}
+
+fn require_env(name: &str, message: &str) -> Result<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| anyhow!("{message}"))
+}
+
+/// Caller-supplied timestamp for the session metadata block.
+///
+/// Epoch seconds keep the model free of a date/time dependency; the
+/// export struct documents the field as an opaque caller string.
+fn timestamp_label() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => format!("unix:{}", elapsed.as_secs()),
+        Err(_) => "unix:0".to_string(),
+    }
 }
 
 fn print_step(name: &str) {
