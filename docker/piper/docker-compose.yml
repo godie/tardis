@@ -1,6 +1,6 @@
 # Local Piper HTTP text-to-speech server.
 #
-# Image: built from ./Dockerfile (python:3.13-slim + piper-tts[http]).
+# Image: built from ./Dockerfile (pinned python:3.13-slim + piper-tts[http] 1.8.0).
 #   - Speaks POST /synthesize with a JSON body, replies with a WAV
 #     (16-bit PCM, 22050 Hz mono for the default voice).
 #   - Voice: single-speaker es_MX-ald-medium by default. Change it with

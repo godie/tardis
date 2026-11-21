@@ -27,9 +27,10 @@ From the repo root:
 docker compose -f docker/piper/docker-compose.yml up -d
 ```
 
-The image is built from the local `Dockerfile` (`python:3.13-slim` +
-`piper-tts[http]`). The first start downloads the voice (~60 MB) into
-`./voices` on the host; later starts reuse it.
+The image is built from the local `Dockerfile` (pinned
+`python:3.13-slim` plus `piper-tts[http]` 1.8.0). The first start
+downloads the voice (~60 MB) into `./voices` on the host; later starts
+reuse it.
 
 ## 3. How to stop it
 
@@ -95,6 +96,23 @@ faster-whisper setup.
   `127.0.0.1` so nothing outside the machine can reach the server.
 * The voice file stays on the host in `./voices`. It is downloaded
   once from Hugging Face on the first start, and the compose file does
-  not block the container's outbound connections — the loopback
+  not block the container's outbound connections; the loopback
   binding covers inbound traffic only. If that matters to you,
   download the voice into `./voices` yourself before the first start.
+
+## 8. Dependency pinning
+
+The Dockerfile pins the `python:3.13-slim` base image by digest and
+`piper-tts[http]` to version `1.8.0`, so a rebuild from the same
+checkout installs the same Python runtime and server.
+
+Review the pins once a quarter, and sooner when an upstream security
+advisory names Python or Piper. To move to newer versions:
+
+1. Choose the base tag and Piper version you want.
+2. Read the base digest with
+   `docker buildx imagetools inspect python:3.13-slim`.
+3. Update both values in [`Dockerfile`](./Dockerfile).
+4. Rebuild with
+   `docker compose -f docker/piper/docker-compose.yml build` and run
+   the section 4 health check before committing.
