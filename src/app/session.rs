@@ -6,7 +6,9 @@
 //! run" surface for:
 //! - the Tauri shell's "Export JSON" / "Export Text" buttons
 //!   (read once at the moment the user clicks)
-//! - the future `cargo run -- session-export-demo` smoke command
+//! - the `cargo run -- session-export-demo` smoke command, which
+//!   folds the mock flow's events as they arrive and exports once
+//!   at close
 //!
 //! It is intentionally **not** the live-capture state machine
 //! — that lives in [`crate::app::state::AppState`] and on
@@ -20,6 +22,10 @@
 //! unit-tested in isolation per the
 //! [`crate::app`] / AGENTS.md testing contract. Tests live in
 //! `#[cfg(test)] mod tests` at the bottom of this file.
+//!
+//! Blocked outputs (a respond-mode guard reason) stay out of the
+//! session: the export records what the room heard, and a blocked
+//! reply was never spoken.
 
 use crate::app::events::{AppEvent, AppOutputEvent, AppTranscriptEvent};
 
@@ -233,6 +239,10 @@ pub fn output_entry_from_event(event: &AppOutputEvent) -> TranscriptSessionEntry
 
 /// Fold an [`AppTranslationEvent`] into `entries`.
 ///
+/// A blocked output (`blocked.is_some()`, a respond-mode guard reason)
+/// is ignored: it was never spoken, and the export records what the room
+/// heard, not every reply the model produced.
+///
 /// - If an entry with the same `chunk_index` exists, mutate it
 ///   in place: copy `translated_text`, `source_language`,
 ///   `target_language`, and `is_final` from the translation
@@ -246,6 +256,9 @@ pub fn merge_output_into_entries(
     entries: &mut Vec<TranscriptSessionEntry>,
     output: &AppOutputEvent,
 ) {
+    if output.blocked.is_some() {
+        return;
+    }
     if let Some(existing) = entries
         .iter_mut()
         .find(|e| e.chunk_index == output.chunk_index)
@@ -275,6 +288,9 @@ pub fn merge_output_into_entries(
 /// - `AppEvent::Output(_)`: merge into the matching
 ///   transcript entry when one exists, otherwise append an
 ///   output-only entry (via [`merge_output_into_entries`]).
+///   A blocked output (respond-mode guard reason) is left out of
+///   the export entirely: it was never spoken, and this surface is
+///   the record of what the room heard.
 /// - `AppEvent::StatusChanged(_)`: ignored — status lifecycle
 ///   is tracked separately on the [`crate::app::state::AppStatus`]
 ///   field, not per-chunk on the session export.
@@ -306,7 +322,7 @@ pub fn apply_app_event_to_session(session: &mut TranscriptSession, event: &AppEv
 mod tests {
     use super::*;
     use crate::app::events::{AppErrorEvent, AppStatus};
-    use crate::processor::processor::OutputKind;
+    use crate::processor::processor::{BlockReason, OutputKind};
 
     fn sample_transcript_event(chunk: usize, text: &str) -> AppTranscriptEvent {
         AppTranscriptEvent {
@@ -851,6 +867,86 @@ mod tests {
         let entry = &s.entries[0];
         assert_eq!(entry.transcript_text.as_deref(), Some("hola mundo"));
         assert!(!entry.is_final, "both partials: still not final");
+    }
+
+    // ---- blocked outputs stay off the export --------------------------
+
+    fn blocked_output_event(chunk: usize, translated: &str) -> AppEvent {
+        let mut event = sample_output_event(chunk, "book it", translated);
+        event.blocked = Some(BlockReason::Commitment);
+        AppEvent::Output(event)
+    }
+
+    #[test]
+    fn a_blocked_output_does_not_create_an_entry() {
+        // Respond mode emits the suggestion so the screen can show it,
+        // but it was never spoken. The export is the spoken-word record,
+        // so it stays out.
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(&mut s, &blocked_output_event(1, "I can book it for you"));
+        assert!(
+            s.entries.is_empty(),
+            "a blocked output must not add an entry: {:?}",
+            s.entries
+        );
+    }
+
+    #[test]
+    fn a_blocked_output_does_not_fill_the_translation_of_a_transcript_entry() {
+        // Transcript first, blocked reply second (the respond-mode order).
+        // The transcript is the spoken source; the blocked reply is not
+        // spoken, so the entry carries no translation.
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(sample_transcript_event(1, "book it")),
+        );
+        apply_app_event_to_session(&mut s, &blocked_output_event(1, "I can book it for you"));
+        assert_eq!(s.entries.len(), 1);
+        let entry = &s.entries[0];
+        assert_eq!(entry.transcript_text.as_deref(), Some("book it"));
+        assert!(
+            entry.translated_text.is_none(),
+            "blocked reply must stay off the exported translation"
+        );
+    }
+
+    #[test]
+    fn a_late_blocked_output_does_not_overwrite_a_spoken_line() {
+        let mut s = create_session(
+            "s".to_string(),
+            "mock-local".to_string(),
+            "en".to_string(),
+            "es".to_string(),
+            "t0".to_string(),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Transcript(sample_transcript_event(1, "hello")),
+        );
+        apply_app_event_to_session(
+            &mut s,
+            &AppEvent::Output(sample_output_event(1, "hello", "hola")),
+        );
+        apply_app_event_to_session(&mut s, &blocked_output_event(1, "I can book it for you"));
+        assert_eq!(s.entries.len(), 1);
+        assert_eq!(
+            s.entries[0].translated_text.as_deref(),
+            Some("hola"),
+            "only spoken output may change the exported translation"
+        );
     }
 
     #[test]
