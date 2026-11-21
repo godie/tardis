@@ -280,7 +280,6 @@ Five mock-only controls preserved for dev reference (no microphone, no Docker, n
 What it does not do yet:
 
 - System-audio capture is **macOS-only** in this release: `--source system` captures a BlackHole loopback input, while Linux and Windows return a not-supported error. Setup, the distinct playback device rule, and the future Linux/Windows backends are in [docs/system-audio.md](docs/system-audio.md).
-- Run a real translation backend
 - Streaming/partial transcripts
 - History **import/export beyond `output/history.jsonl`**: no CSV, no re-loading a past session into the window, no configurable path
 - Recording / permission UX before any release candidate
@@ -346,7 +345,7 @@ CI does **not** run hardware/audio/manual commands (`live-local-transcribe`, `mi
 
 - [x] **Per-OS bundle config is wired.** `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` configure Tauri 2. `bundle.active` is `false`, so `cargo tauri build` needs an explicit `--bundles <list>`: the release workflow passes `deb,appimage` / `dmg` / `msi,nsis` per runner. Without the flag the build exits 0 and produces no installers.
 - [x] **Linux `apt-get` block** + macOS / Windows / non-Debian Linux note live in [Tauri UI Shell Setup](#tauri-ui-shell-setup); the same block CI installs is what a developer needs locally.
-- [ ] **Pick the next tag.** Once the session-export feature lands and a real translation backend is wired in, the natural next milestone is `tardis-v0.2.0` (a bigger bundle than `tardis-v0.1.0`, which marks the Node-24 / linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone).
+- [ ] **Pick the next tag.** Once the session-export feature lands and the translation quality work (model choice and prompt tuning) is done, the natural next milestone is `tardis-v0.2.0` (a bigger bundle than `tardis-v0.1.0`, which marks the Node-24 / linux-libasound2 / Tauri-shell-setup / UI-tests-CI-gate milestone).
 - [ ] **Bump version strings.** `Cargo.toml` (`tardis` CLI), `src-tauri/Cargo.toml` (`tardis-ui-shell`), and `src-tauri/tauri.conf.json` (`identifier`, `version`, `productName`) must all agree for consistent metadata (CLI binary version, Tauri bundle installer version, AppImage / `/usr/bin/tardis-ui-shell` version). Mismatches do not fail the build but produce inconsistent version strings across artefacts.
 - [ ] **Run `cargo build --release` for the CLI binary** (no UI shell, useful for headless / CI smoke users who do not need the desktop app).
 - [ ] **Run `cargo tauri build` for the desktop shell** to produce native bundles:
