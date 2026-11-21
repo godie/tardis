@@ -20,6 +20,7 @@ set -u
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_DIR="${REPO_DIR}/output/agent-runs"
 LOCK_DIR="${RUN_DIR}/lock"
+REAPER_DIR="${RUN_DIR}/lock.reaper"
 
 console_log() { echo "$(date -u '+%FT%TZ') $*"; }
 
@@ -100,30 +101,46 @@ sync_board_labels() {
 }
 sync_board_labels
 
-# One run at a time. Recovery is atomic under a dedicated reaper lock:
-# only the tick that holds `lock/reaper` may rm+recreate `lock`, so two
-# concurrent ticks can never both read a dead PID, delete each other's
-# fresh lock and run in parallel (delegate finding 3). A missing,
-# empty or unparsable pid file counts as stale: `kill -0 0` targets the
-# process group and always succeeds, which would have stranded the
-# lock forever.
-if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-  if ! mkdir "${LOCK_DIR}.reaper" 2>/dev/null; then
-    console_log "trigger: a previous run is active and another tick is already reaping; skipping tick"
-    exit 0
-  fi
-  trap 'rm -rf "${LOCK_DIR}.reaper"' EXIT
-  old_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null | tr -cd '0-9')"
-  if [ -z "${old_pid}" ] || ! kill -0 "${old_pid}" 2>/dev/null; then
-    rm -rf "${LOCK_DIR}"
-  fi
-  if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-    console_log "trigger: a previous run reclaimed the lock mid-reap; skipping tick"
-    exit 0
-  fi
+# One run at a time. Every tick takes `lock.reaper` first and keeps it
+# until it has written its own pid, so creating a lock and reaping a
+# stale one happen in one critical section. Without that, two ticks
+# could both read a dead pid, one could create a fresh lock, and the
+# other could delete it from its stale read (delegate finding 3 /
+# audit item 10). A missing, empty or unparsable pid file counts as
+# stale: `kill -0 0` targets the process group and always succeeds,
+# which would strand the lock forever.
+#
+# The reaper is a sibling of `lock`, not a child: reaping deletes the
+# lock directory, so a nested reaper would go with it. It is held for
+# a few instructions and removed by the trap on ordinary exits. A kill
+# landing inside that window leaves it behind and blocks later ticks;
+# the log names the path to remove. That is the accepted failure mode:
+# a missed tick is cheaper than two agents on one branch.
+if ! mkdir "${REAPER_DIR}" 2>/dev/null; then
+  console_log "trigger: the acquire lock is held (${REAPER_DIR}); skipping tick"
+  exit 0
 fi
-echo $$ > "${LOCK_DIR}/pid"
-trap 'rm -rf "${LOCK_DIR}" "${LOCK_DIR}.reaper"' EXIT
+trap 'rm -rf "${REAPER_DIR}"' EXIT
+
+if [ -d "${LOCK_DIR}" ]; then
+  old_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null | tr -cd '0-9')"
+  if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+    console_log "trigger: a previous run is active (pid ${old_pid}); skipping tick"
+    exit 0
+  fi
+  rm -rf "${LOCK_DIR}"
+fi
+
+if ! mkdir "${LOCK_DIR}"; then
+  console_log "trigger: could not create ${LOCK_DIR}; skipping tick"
+  exit 1
+fi
+if ! echo $$ > "${LOCK_DIR}/pid"; then
+  console_log "trigger: could not record the lock pid; skipping tick"
+  exit 1
+fi
+rm -rf "${REAPER_DIR}"
+trap 'rm -rf "${LOCK_DIR}" "${REAPER_DIR}"' EXIT
 
 ticket="$(gh issue list --label ready-for-agent --limit 10 --state open --json number -q '.[].number' 2>/dev/null | sort -n | head -1)"
 if [ -z "${ticket}" ]; then
