@@ -104,14 +104,18 @@ impl ProviderKind {
     /// Construct a boxed provider. Reads [`crate::config::LOCAL_WHISPER_*`]
     /// for the faster-whisper variant; the mock variant needs no
     /// configuration.
-    pub fn build(&self) -> Box<dyn LocalTranscriptionProvider> {
+    ///
+    /// Fallible because the faster-whisper variant builds its HTTP
+    /// client here; the mock variant cannot fail. Nothing is sent over
+    /// the network, so a missing container is not a construction error.
+    pub fn build(&self) -> Result<Box<dyn LocalTranscriptionProvider>> {
         match self {
-            Self::LocalWhisper => Box::new(local_whisper::LocalWhisperClient::new(
+            Self::LocalWhisper => Ok(Box::new(local_whisper::LocalWhisperClient::new(
                 crate::config::LOCAL_WHISPER_BASE_URL,
                 crate::config::LOCAL_WHISPER_MODEL,
                 Some(crate::config::LOCAL_WHISPER_LANGUAGE.to_string()),
-            )),
-            Self::MockLocal => Box::new(mock_local::MockLocalProvider::new()),
+            )?)),
+            Self::MockLocal => Ok(Box::new(mock_local::MockLocalProvider::new())),
         }
     }
 }
@@ -137,7 +141,7 @@ pub fn build_provider(name: &str) -> Result<Box<dyn LocalTranscriptionProvider>>
             valid.join(", ")
         )
     })?;
-    Ok(kind.build())
+    kind.build()
 }
 
 // ===== Unit tests ========================================================
