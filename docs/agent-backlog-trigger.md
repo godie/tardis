@@ -12,9 +12,14 @@ gh issue label ready-for-agent
   -> launchd fires scripts/agent-backlog-pickup.sh every 1800 s
      -> claims the lowest-numbered labeled ticket (ready-for-agent -> agent-wip)
      -> opencode run --auto: ticket + AGENTS.md rules -> branch -> matrix -> PR
-     -> qodo review capped at 2 fix rounds, dispositions documented
+     -> qodo review capped at 3 fix rounds, dispositions documented
      -> exit non-zero: agent-wip -> agent-stuck, human comment on the ticket
 ```
+
+The review cap is three rounds because PR #57 reached it: rounds 2 and 3
+re-raised findings that were already fixed, so the loop stopped at the cap
+with a full disposition table. The number a run obeys is the one in
+`scripts/agent-backlog-pickup.sh`; this page repeats it.
 
 Guarantees, in order of importance:
 
