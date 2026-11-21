@@ -316,6 +316,79 @@ test("utterance events fill the transcript, output and speech lines", async ({ p
   await expect(page.locator("#live-error")).toBeHidden();
 });
 
+test("app-event payloads stay out of the webview console", async ({ page }) => {
+  // The backend's payloads carry live conversation text, so the handler must
+  // not echo them to the console. Record every `console.log` argument in a
+  // form that serializes an object the way the developer console shows it;
+  // otherwise a logged payload would collapse to "[object Object]" and the
+  // assertion would pass without proving anything.
+  await page.addInitScript(() => {
+    window.__consoleLines = [];
+    const log = console.log;
+    console.log = (...args) => {
+      window.__consoleLines.push(
+        args
+          .map((arg) => {
+            if (typeof arg === "string") return arg;
+            try {
+              return JSON.stringify(arg);
+            } catch {
+              return String(arg);
+            }
+          })
+          .join(" "),
+      );
+      log.apply(console, args);
+    };
+  });
+  await openShell(page);
+  await page.locator("#start-button").click();
+
+  const texts = {
+    transcript: "transcript-private-marker",
+    output: "output-private-marker",
+    speech: "speech-private-marker",
+  };
+  await page.evaluate((markers) => {
+    window.emitAppEvent({
+      kind: "transcript",
+      index: 1,
+      text: markers.transcript,
+      provider: "mock-local",
+      duration_ms: 1000,
+      is_final: true,
+    });
+    window.emitAppEvent({
+      kind: "output",
+      index: 1,
+      text: markers.output,
+      source_text: markers.transcript,
+      source_language: "en",
+      target_language: "es",
+      is_final: true,
+    });
+    window.emitAppEvent({
+      kind: "speech",
+      index: 1,
+      text: markers.speech,
+      target_language: "es",
+      duration_ms: 1000,
+      is_final: true,
+    });
+  }, texts);
+
+  // The panels prove the handler ran and consumed each payload; the console
+  // must not have seen any of their text.
+  await expect(page.locator("#transcript-content .history-text").first()).toHaveText(texts.transcript);
+  await expect(page.locator("#translation-content .history-text").first()).toHaveText(texts.output);
+  await expect(page.locator("#speech-status")).toContainText(texts.speech);
+  const leaked = await page.evaluate((markers) => {
+    const values = Object.values(markers);
+    return window.__consoleLines.filter((line) => values.some((value) => line.includes(value)));
+  }, texts);
+  expect(leaked).toEqual([]);
+});
+
 test("a double click and Enter during a transcription start one run", async ({ page }) => {
   await openShell(page);
   await page.evaluate(() => {
