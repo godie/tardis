@@ -103,8 +103,10 @@ faster-whisper setup.
 ## 8. Dependency pinning
 
 The Dockerfile pins the `python:3.13-slim` base image by digest and
-`piper-tts[http]` to version `1.8.0`, so a rebuild from the same
-checkout installs the same Python runtime and server.
+`piper-tts[http]` to version `1.8.0`, so a rebuild uses the same Python
+runtime and Piper release. pip still resolves that release's transitive
+dependencies at build time; add a lockfile if you need byte-identical
+package sets.
 
 Review the pins once a quarter, and sooner when an upstream security
 advisory names Python or Piper. To move to newer versions:

@@ -4,8 +4,9 @@
 # first start into the ./voices volume, so rebuilding the image does not
 # re-download the model.
 #
-# The base image digest and Piper version are pinned so the same checkout
-# always builds the same server. See README section 8 before changing them.
+# The base image digest and Piper version are pinned; pip still resolves the
+# release's transitive dependencies. See README section 8 before changing either
+# pin.
 
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
