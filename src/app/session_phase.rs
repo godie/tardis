@@ -19,7 +19,7 @@
 //! `worker-exited` returns any phase to [`SessionPhase::Idle`], as do the
 //! `stopped` and `error` statuses. A late `listening` status leaves
 //! [`SessionPhase::Stopping`] alone; every other status input keeps the
-//! [`SessionPhase::apply_status`] rules the UI mirrors. A stop accepted
+//! [`SessionPhase::apply_status`] rules the UI draws. A stop accepted
 //! while [`SessionPhase::Starting`] goes straight to
 //! [`SessionPhase::Stopping`], so a stop that beats the `listening` event
 //! is not lost. Every other pair is an [`IllegalTransition`].
