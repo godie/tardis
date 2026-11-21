@@ -39,11 +39,10 @@ pub struct MockLocalProvider;
 
 impl MockLocalProvider {
     /// Build a stub provider. Unit struct, so all instances are
-    /// equivalent; this constructor exists for symmetry with
-    /// [`crate::transcription::local_whisper::LocalWhisperClient::new`]
-    /// (so `--provider` dispatch in
-    /// [`crate::transcription::ProviderKind::build`] can build both
-    /// through the same call shape).
+    /// equivalent; this constructor exists so `--provider` dispatch in
+    /// [`crate::transcription::ProviderKind::build`] can construct both
+    /// variants in one match, mirroring
+    /// [`crate::transcription::local_whisper::LocalWhisperClient::new`].
     pub fn new() -> Self {
         Self
     }

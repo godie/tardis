@@ -57,11 +57,14 @@ pub fn extract_text_from_response_json(json: &serde_json::Value) -> Result<Strin
 /// future providers (`whisper.cpp` binary, cloud APIs, etc.) can be
 /// substituted at the call site without altering CLI code.
 ///
-/// All three fields are `pub` so the CLI can print them as
-/// diagnostics without going through getters; the constructor
+/// The three configuration fields are `pub` so the CLI can print them
+/// as diagnostics without going through getters; the constructor
 /// [`LocalWhisperClient::new`] is the recommended entry point and
 /// matches the field-for-field parameters of
-/// [`crate::config::LOCAL_WHISPER_*`].
+/// [`crate::config::LOCAL_WHISPER_*`]. The HTTP client is private and
+/// built once: a live session sends one request per utterance, and
+/// rebuilding the client each time would throw away the connection
+/// pool between them.
 pub struct LocalWhisperClient {
     /// Base URL of the local server, e.g. `http://localhost:8000`.
     /// Must **not** include the `/v1/audio/transcriptions` suffix;
@@ -77,22 +80,34 @@ pub struct LocalWhisperClient {
     /// adds a `language` form field; `None` omits it so the server
     /// runs auto-detection.
     pub language: Option<String>,
+    /// Reused across [`LocalWhisperClient::transcribe_wav_file`] calls so
+    /// a long session keeps its connections alive.
+    client: reqwest::blocking::Client,
 }
 
 impl LocalWhisperClient {
     /// Construct from `(base_url, model, language)`. The `Option`
     /// dimension lets callers skip the language form field for
     /// auto-detection when desired.
+    ///
+    /// Fallible because the HTTP client is built here, once per
+    /// provider. Nothing is sent over the network: a missing Docker
+    /// container is still a `transcribe_wav_file` error, not a
+    /// construction one.
     pub fn new(
         base_url: impl Into<String>,
         model: impl Into<String>,
         language: Option<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .context("building the faster-whisper HTTP client")?;
+        Ok(Self {
             base_url: base_url.into(),
             model: model.into(),
             language,
-        }
+            client,
+        })
     }
 
     /// POST a WAV file on disk to `/v1/audio/transcriptions` and
@@ -141,18 +156,19 @@ impl LocalWhisperClient {
             form = form.text("language", lang.clone());
         }
 
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .context("building reqwest blocking client")?;
-
-        let response = client.post(url).multipart(form).send().with_context(|| {
-            format!(
-                "sending POST request to local faster-whisper server at {} \
+        let response = self
+            .client
+            .post(url)
+            .multipart(form)
+            .send()
+            .with_context(|| {
+                format!(
+                    "sending POST request to local faster-whisper server at {} \
                      — is the Docker container running? \
                      (try: docker compose -f docker/faster-whisper/docker-compose.yml up)",
-                url
-            )
-        })?;
+                    url
+                )
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -271,5 +287,18 @@ mod tests {
             "error message should mention non-string, got: {}",
             err
         );
+    }
+
+    // ---- new ----------------------------------------------------------
+
+    #[test]
+    fn new_builds_the_client_and_keeps_the_config() {
+        // Building an HTTP client sends nothing: the Docker container is
+        // only reached from `transcribe_wav_file`.
+        let client = LocalWhisperClient::new("http://localhost:8000", "base", Some("es".into()))
+            .expect("building the HTTP client must succeed");
+        assert_eq!(client.base_url, "http://localhost:8000");
+        assert_eq!(client.model, "base");
+        assert_eq!(client.language.as_deref(), Some("es"));
     }
 }
